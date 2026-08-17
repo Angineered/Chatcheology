@@ -8,12 +8,12 @@ unnecessary WhatsApp-specific assumptions where practical.
 
 ## Development status
 
-**Early foundation.** The repository currently contains the solution structure, an
-initial folder layout, a synthetic test fixture and one test that proves the test
-project runs and that the fixture is available at runtime.
+**Early foundation.** The repository currently contains the solution structure, a
+synthetic test fixture, and a text parser for one pinned WhatsApp Android export
+layout.
 
-No import, parsing, media matching, database or archive functionality is implemented
-yet.
+No media matching, database, archive or user interface functionality is implemented
+yet. Parser output is returned in memory only; nothing is persisted.
 
 ## Offline and privacy first
 
@@ -44,7 +44,7 @@ file found that day.
 
 | Project | Description |
 | --- | --- |
-| `Chatcheology.Core` | Shared library. Currently structure only. |
+| `Chatcheology.Core` | Shared library. Currently the chat export text parser only. |
 | `Chatcheology.Desktop` | WPF desktop application (.NET 10, Windows). Minimal shell. |
 | `Chatcheology.Core.Tests` | xUnit tests for the core library. |
 
@@ -53,15 +53,22 @@ is not part of this repository yet.
 
 ## Supported export format
 
-The first planned supported WhatsApp export format is the Android-style layout:
+The only supported WhatsApp export format is the Android-style layout:
 
 ```text
 yyyy/MM/dd, HH:mm - Sender: Message
 ```
 
-Other WhatsApp export formats — iOS layouts, 12-hour clocks, timestamps with seconds
-and other locale variants — are expected to be supported later, but are not
-implemented yet.
+Timestamps are parsed with the invariant culture, so the result does not depend on the
+machine's regional settings. A line that does not match this layout continues the
+message above it; a line that has this layout's shape but is not a valid header is
+rejected rather than reinterpreted. Messages keep their source order, which is
+authoritative because the format only records whole minutes.
+
+Not supported yet: system messages that carry no sender (such as the end-to-end
+encryption notice), exports containing invisible text-direction markers, iOS layouts,
+12-hour clocks, timestamps with seconds, and other locale variants. Media placeholders
+are recognised as text only — no media file is inspected, matched or attached.
 
 ## Test data
 
