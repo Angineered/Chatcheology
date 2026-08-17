@@ -11,6 +11,11 @@ namespace Chatcheology.Core.Models
     /// <see cref="Environment.NewLine"/>, so that parsing the same export produces identical
     /// content on every platform.
     /// </para>
+    /// <para>
+    /// <see cref="Sender"/> and <see cref="MessageContent"/> hold structurally normalised text:
+    /// the invisible direction marks U+200E and U+200F are removed from them. No other character
+    /// is altered, and <see cref="RawContent"/> keeps the source text exactly as read.
+    /// </para>
     /// </remarks>
     public sealed class ParsedMessage
     {
@@ -44,14 +49,26 @@ namespace Chatcheology.Core.Models
         public required DateTime MessageDateTime { get; init; }
 
         /// <summary>
-        /// The sender text exactly as written in the export header, untrimmed.
+        /// Whether this is a participant message or a WhatsApp system message.
         /// </summary>
-        public required string Sender { get; init; }
+        public required MessageType MessageType { get; init; }
 
         /// <summary>
-        /// The logical message content: the text after the <c>": "</c> delimiter on the header
-        /// line, plus every continuation line, joined with <see cref="LineSeparator"/>.
+        /// The sender text as written in the export header, untrimmed apart from direction-mark
+        /// removal, or null when <see cref="MessageType"/> is <see cref="MessageType.System"/>.
         /// </summary>
+        public required string? Sender { get; init; }
+
+        /// <summary>
+        /// The logical message content, joined with <see cref="LineSeparator"/>: every
+        /// continuation line, preceded by the text after the <c>": "</c> delimiter on the header
+        /// line for a <see cref="MessageType.User"/> message, or by all header-line text following
+        /// the timestamp prefix for a <see cref="MessageType.System"/> message.
+        /// </summary>
+        /// <remarks>
+        /// Structurally normalised: U+200E and U+200F are removed. Every other character is
+        /// preserved as read.
+        /// </remarks>
         public required string MessageContent { get; init; }
 
         /// <summary>
@@ -62,7 +79,9 @@ namespace Chatcheology.Core.Models
         /// Source-preserving at the logical-text level, retained for later troubleshooting. It is
         /// not a byte-for-byte copy: a <see cref="System.IO.TextReader"/> does not report whether
         /// the source used CRLF or LF, so the original line-ending style is not recoverable from
-        /// this value. No other normalisation is applied — Unicode content is preserved as read.
+        /// this value. No other normalisation is applied — Unicode content is preserved as read,
+        /// including the U+200E and U+200F direction marks that are removed from
+        /// <see cref="MessageContent"/> and <see cref="Sender"/>.
         /// </remarks>
         public required string RawContent { get; init; }
 
@@ -82,8 +101,10 @@ namespace Chatcheology.Core.Models
         /// <see cref="MediaPlaceholderContent"/>. Computed, so it cannot drift from the content.
         /// </summary>
         /// <remarks>
-        /// The comparison is ordinal. No media type is inferred and no attachment is resolved in
-        /// this phase.
+        /// The comparison is ordinal. Because <see cref="MessageContent"/> has already had the
+        /// U+200E and U+200F direction marks removed, a placeholder carrying one of those marks is
+        /// still recognised without loosening the comparison itself. No media type is inferred and
+        /// no attachment is resolved in this phase.
         /// </remarks>
         public bool IsMediaPlaceholder =>
             string.Equals(MessageContent, MediaPlaceholderContent, StringComparison.Ordinal);

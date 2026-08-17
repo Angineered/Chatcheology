@@ -65,10 +65,29 @@ message above it; a line that has this layout's shape but is not a valid header 
 rejected rather than reinterpreted. Messages keep their source order, which is
 authoritative because the format only records whole minutes.
 
-Not supported yet: system messages that carry no sender (such as the end-to-end
-encryption notice), exports containing invisible text-direction markers, iOS layouts,
-12-hour clocks, timestamps with seconds, and other locale variants. Media placeholders
-are recognised as text only — no media file is inspected, matched or attached.
+WhatsApp's own system messages are also read. These carry the same timestamp prefix but
+no sender, for example the end-to-end encryption notice:
+
+```text
+yyyy/MM/dd, HH:mm - Messages and calls are end-to-end encrypted.
+```
+
+A timestamped line is treated as a participant message when the text after the timestamp
+carries a non-empty sender followed by the exact `": "` delimiter, and as a system
+message when that delimiter is absent. One ambiguity is accepted rather than guessed at:
+system text that itself contains `": "` is structurally identical to a participant
+message and is read as one. No heuristic tries to separate the two, because a wrong guess
+would attribute a message to someone who did not write it.
+
+The invisible direction marks U+200E and U+200F are handled, since real exports place them
+around media placeholders and system notices. They are ignored when recognising structure
+and removed from the sender and message content, while `RawContent` keeps the source text
+exactly as read. No other invisible or control character is altered.
+
+Not supported yet: iOS layouts, 12-hour clocks, timestamps with seconds, other locale
+variants, and system-message subtypes — a system message is not classified further than
+"system". Media placeholders are recognised as text only — no media file is inspected,
+matched or attached.
 
 ## Test data
 

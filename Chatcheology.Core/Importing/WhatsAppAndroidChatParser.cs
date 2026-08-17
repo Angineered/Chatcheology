@@ -1,4 +1,5 @@
-using System.Globalization;
+﻿using System.Globalization;
+using System.Text;
 using Chatcheology.Core.Models;
 
 namespace Chatcheology.Core.Importing
@@ -8,18 +9,27 @@ namespace Chatcheology.Core.Importing
     /// <c>yyyy/MM/dd, HH:mm - Sender: Message</c> into logical messages.
     /// </summary>
     /// <remarks>
-    /// The parser is deliberately narrow and conservative. It supports exactly one header layout
-    /// and fails clearly rather than guessing at anything else, so that source data is never
-    /// silently misinterpreted.
+    /// The parser is deliberately narrow and conservative. It supports exactly one timestamp
+    /// layout and fails clearly rather than guessing at anything else, so that source data is
+    /// never silently misinterpreted.
     /// <para>
     /// Supported within that layout: Unicode and emoji, senders containing spaces, colons inside
-    /// the message body, multiline continuation lines, and repeated timestamps.
+    /// the message body, multiline continuation lines, repeated timestamps, WhatsApp system
+    /// messages that carry no sender, and the invisible direction marks U+200E and U+200F.
+    /// </para>
+    /// <para>
+    /// A timestamped line is read as a <see cref="MessageType.User"/> message when the text after
+    /// the timestamp prefix contains the exact <c>": "</c> delimiter with a non-empty sender before
+    /// it, and as a <see cref="MessageType.System"/> message when that delimiter is absent
+    /// entirely. A known ambiguity remains: genuine system prose that happens to contain <c>": "</c>
+    /// is structurally indistinguishable from a user message and is read as one. No heuristic
+    /// attempts to tell them apart, because any such guess would be unreliable and would risk
+    /// misattributing a message to a participant who did not write it.
     /// </para>
     /// <para>
     /// Not supported in this phase: any other timestamp layout, 12-hour clocks, timestamps with
-    /// seconds, and system messages that have no <c>": "</c> sender delimiter (for example the
-    /// end-to-end encryption notice). Invisible direction markers such as U+200E are neither
-    /// stripped nor normalised, so a header or media placeholder carrying them is not recognised.
+    /// seconds, and system-message subtypes. Direction marks other than U+200E and U+200F are not
+    /// recognised, and no other invisible or control character is stripped.
     /// </para>
     /// <para>
     /// The parser only reads. It never writes, renames or otherwise touches the source.
@@ -37,11 +47,20 @@ namespace Chatcheology.Core.Importing
         /// <summary>Length of <c>yyyy/MM/dd, HH:mm</c>.</summary>
         private const int TimestampLength = 17;
 
-        /// <summary>Separates the timestamp from the sender.</summary>
+        /// <summary>Separates the timestamp from the rest of the line.</summary>
         private const string HeaderSeparator = " - ";
 
         /// <summary>Separates the sender from the message content.</summary>
         private const string SenderSeparator = ": ";
+
+        /// <summary>
+        /// LEFT-TO-RIGHT MARK. Written as an escape sequence because the character is invisible,
+        /// so the value cannot be altered by the encoding this file is stored or checked out with.
+        /// </summary>
+        private const char LeftToRightMark = '\u200E';
+
+        /// <summary>RIGHT-TO-LEFT MARK. Written as an escape sequence for the same reason.</summary>
+        private const char RightToLeftMark = '\u200F';
 
         /// <summary>
         /// Reads every logical message from <paramref name="reader"/>, preserving source order.
@@ -72,12 +91,17 @@ namespace Chatcheology.Core.Importing
             {
                 lineNumber++;
 
-                if (HasSupportedHeaderShape(line))
+                // Every structural decision is made on a direction-mark-free working copy, so a
+                // mark sitting before the timestamp cannot hide the start of a new message. The
+                // original line is what gets kept in RawContent.
+                var workingLine = RemoveDirectionMarks(line);
+
+                if (HasSupportedHeaderShape(workingLine))
                 {
                     // Header-shaped lines are held to the exact format, whether or not a message
                     // is already open. Degrading one to continuation text would silently absorb
                     // data that was probably meant to be a message of its own.
-                    var header = ReadHeader(line, lineNumber);
+                    var header = ReadHeader(workingLine, lineNumber);
 
                     if (pending is not null)
                     {
@@ -92,11 +116,11 @@ namespace Chatcheology.Core.Importing
                 {
                     // Any line that does not start a new supported message continues the current
                     // one. Blank and whitespace-only lines are content and are preserved.
-                    pending.AddContinuation(line, lineNumber);
+                    pending.AddContinuation(line, workingLine, lineNumber);
                     continue;
                 }
 
-                if (!string.IsNullOrWhiteSpace(line))
+                if (!string.IsNullOrWhiteSpace(workingLine))
                 {
                     throw new FormatException(
                         $"Line {lineNumber}: content appears before the first supported message " +
@@ -113,6 +137,34 @@ namespace Chatcheology.Core.Importing
             }
 
             return messages;
+        }
+
+        /// <summary>
+        /// Returns <paramref name="line"/> without any U+200E or U+200F character, or the same
+        /// instance when it contains neither.
+        /// </summary>
+        /// <remarks>
+        /// Only these two code points are removed. Other invisible characters — zero-width spaces,
+        /// no-break spaces, other bidirectional controls — are content and are left alone.
+        /// </remarks>
+        private static string RemoveDirectionMarks(string line)
+        {
+            if (line.AsSpan().IndexOfAny(LeftToRightMark, RightToLeftMark) < 0)
+            {
+                return line;
+            }
+
+            var builder = new StringBuilder(line.Length);
+
+            foreach (var character in line)
+            {
+                if (character is not (LeftToRightMark or RightToLeftMark))
+                {
+                    builder.Append(character);
+                }
+            }
+
+            return builder.ToString();
         }
 
         /// <summary>
@@ -158,7 +210,8 @@ namespace Chatcheology.Core.Importing
         }
 
         /// <summary>
-        /// Reads a header-shaped line as a header, or throws if it does not meet the exact format.
+        /// Reads a header-shaped line as a user or system message header, or throws if it does not
+        /// meet the exact format.
         /// </summary>
         private static MessageHeader ReadHeader(string line, int lineNumber)
         {
@@ -181,14 +234,16 @@ namespace Chatcheology.Core.Importing
 
             if (senderSeparatorIndex < 0)
             {
-                throw new FormatException(
-                    $"Line {lineNumber}: the line has the supported message header shape but is " +
-                    $"missing the ': ' delimiter between the sender and the message content. " +
-                    $"System messages without a sender are not supported.");
+                // No sender delimiter anywhere, so there is no sender to attribute the text to.
+                // WhatsApp's own notices take exactly this shape. The whole remainder is content,
+                // including any colon that is not followed by a space.
+                return new MessageHeader(timestamp, MessageType.System, Sender: null, remainder);
             }
 
             if (senderSeparatorIndex == 0)
             {
+                // The delimiter is present but there is nothing before it. That is structurally
+                // broken rather than a system message, so it fails instead of being guessed at.
                 throw new FormatException(
                     $"Line {lineNumber}: the line has the supported message header shape but the " +
                     $"sender is empty.");
@@ -199,10 +254,14 @@ namespace Chatcheology.Core.Importing
 
             // Only the ": " delimiter itself is consumed, so any further colons, extra leading
             // spaces and trailing spaces in the body survive untouched. An empty body is allowed.
-            return new MessageHeader(timestamp, sender, content);
+            return new MessageHeader(timestamp, MessageType.User, sender, content);
         }
 
-        private readonly record struct MessageHeader(DateTime Timestamp, string Sender, string Content);
+        private readonly record struct MessageHeader(
+            DateTime Timestamp,
+            MessageType Type,
+            string? Sender,
+            string Content);
 
         /// <summary>
         /// A logical message being accumulated while its continuation lines are read.
@@ -224,9 +283,14 @@ namespace Chatcheology.Core.Importing
                 _sourceLineEnd = lineNumber;
             }
 
-            internal void AddContinuation(string line, int lineNumber)
+            /// <param name="line">The line as read, kept for <see cref="ParsedMessage.RawContent"/>.</param>
+            /// <param name="workingLine">
+            /// The direction-mark-free copy, used for <see cref="ParsedMessage.MessageContent"/>.
+            /// </param>
+            /// <param name="lineNumber">The 1-based physical source line.</param>
+            internal void AddContinuation(string line, string workingLine, int lineNumber)
             {
-                _contentLines.Add(line);
+                _contentLines.Add(workingLine);
                 _rawLines.Add(line);
                 _sourceLineEnd = lineNumber;
             }
@@ -235,6 +299,7 @@ namespace Chatcheology.Core.Importing
             {
                 SequenceNumber = sequenceNumber,
                 MessageDateTime = _header.Timestamp,
+                MessageType = _header.Type,
                 Sender = _header.Sender,
                 MessageContent = string.Join(ParsedMessage.LineSeparator, _contentLines),
                 RawContent = string.Join(ParsedMessage.LineSeparator, _rawLines),
