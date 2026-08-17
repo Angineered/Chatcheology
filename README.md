@@ -9,11 +9,12 @@ unnecessary WhatsApp-specific assumptions where practical.
 ## Development status
 
 **Early foundation.** The repository currently contains the solution structure, a
-synthetic test fixture, and a text parser for one pinned WhatsApp Android export
-layout.
+synthetic test fixture, a text parser for one pinned WhatsApp Android export layout,
+and the first version of the workspace SQLite database.
 
-No media matching, database, archive or user interface functionality is implemented
-yet. Parser output is returned in memory only; nothing is persisted.
+No media matching, archive generation or user interface functionality is implemented
+yet. The desktop application does not use the database, and no real chat archive has
+been imported into SQLite.
 
 ## Offline and privacy first
 
@@ -30,7 +31,8 @@ was derived from.
 
 - A WPF desktop application for import, recovery and archive management.
 - A shared core library holding parsing, media inventory, matching and archive logic.
-- A SQLite working database (`workspace.db`) holding reconstruction state.
+- A SQLite working database holding reconstruction state. Schema version 1 exists; see
+  [Workspace database](#workspace-database).
 - A media inventory with SHA-256 deduplication.
 - Conservative, evidence-based media matching that can explain why a match was
   proposed and that remains reviewable by the user.
@@ -45,8 +47,10 @@ file found that day.
 | Project | Description |
 | --- | --- |
 | `Chatcheology.Core` | Shared library. Currently the chat export text parser only. |
+| `Chatcheology.Data` | Workspace SQLite persistence: schema and conversation import. |
 | `Chatcheology.Desktop` | WPF desktop application (.NET 10, Windows). Minimal shell. |
 | `Chatcheology.Core.Tests` | xUnit tests for the core library. |
+| `Chatcheology.Data.Tests` | xUnit tests for the workspace database. |
 
 A .NET MAUI read-only Android viewer for generated archives is planned for later. It
 is not part of this repository yet.
@@ -88,6 +92,39 @@ Not supported yet: iOS layouts, 12-hour clocks, timestamps with seconds, other l
 variants, and system-message subtypes — a system message is not classified further than
 "system". Media placeholders are recognised as text only — no media file is inspected,
 matched or attached.
+
+## Workspace database
+
+Parsed messages can be persisted into a workspace SQLite database. The schema version is
+recorded in SQLite's own `PRAGMA user_version` and is currently version 1, which holds:
+
+- the import source the messages came from
+- the conversation
+- its participants, and their membership of that conversation
+- the messages
+
+Creating the schema and importing a conversation are each a single transaction, so a
+failure leaves neither a partially created workspace nor a partially imported
+conversation. Foreign keys are enforced on every connection, and a message's sender must
+be a participant of the same conversation the message belongs to.
+
+Not implemented yet: attachment and media tables, media matching, archive generation, and
+any user interface for import. The desktop application does not consume the database, and
+the caller always supplies the workspace file path — no location is assumed.
+
+### Timestamps
+
+The two kinds of timestamp a workspace holds are stored differently on purpose, because
+they mean different things.
+
+A message timestamp is a local wall-clock reading, exactly as the export wrote it. It is
+stored as `2026-01-05T14:03:00` — no `Z`, no offset, no inferred conversion. The timezone
+an export was produced in is optional separate metadata recorded against the import
+source, stored as supplied and never applied to a message. Nothing derives a UTC instant
+for a message, and no historical offset or daylight-saving transition is calculated.
+
+Workspace metadata — when an import was performed, when a conversation record was created
+— is a real instant and is stored as round-trippable UTC.
 
 ## Test data
 
