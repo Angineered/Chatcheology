@@ -488,6 +488,7 @@ $RECYCLE.BIN/
 /Output/
 
 # Local archive databases
+*.db
 *.db-shm
 *.db-wal
 
