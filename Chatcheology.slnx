@@ -1,0 +1,5 @@
+<Solution>
+  <Project Path="Chatcheology.Core.Tests/Chatcheology.Core.Tests.csproj" />
+  <Project Path="Chatcheology.Core/Chatcheology.Core.csproj" />
+  <Project Path="Chatcheology.Desktop/Chatcheology.Desktop.csproj" />
+</Solution>
