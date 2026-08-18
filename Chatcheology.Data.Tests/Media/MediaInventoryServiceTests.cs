@@ -221,6 +221,133 @@ namespace Chatcheology.Data.Tests.Media
         }
 
         /// <remarks>
+        /// Direction is judged per source, not per file. A WhatsApp tree with no <c>Sent</c> folder
+        /// anywhere — a recovered or partially copied source — provides no direction evidence, so
+        /// every file is unknown rather than "not sent". Recording false would turn one absent
+        /// folder into a claim about every file beneath the root, and nothing afterwards could tell
+        /// that claim apart from evidence the source actually gave.
+        /// </remarks>
+        [Fact]
+        public void Inventory_WhatsAppSourceWithNoSentDirectories_RecordsDirectionAsUnknown()
+        {
+            using var workspace = new TemporaryWorkspaceDatabase();
+            using var media = new TemporaryMediaDirectory();
+
+            media.CreateFile("WhatsApp Images/IMG-20260724-WA0004.jpg");
+            media.CreateFile("WhatsApp Video/VID-20220128-WA0003.mp4");
+            media.CreateFile("WhatsApp Images/Sentimental/holiday.jpg");
+            media.CreateFile("WhatsApp Images/Unsent/draft.jpg");
+            media.CreateFile("loose.jpg");
+
+            var result = new MediaInventoryService()
+                .Inventory(CreateWorkspace(workspace), CreateRequest(media.RootPath));
+
+            Assert.Equal(5, result.Summary.FileCount);
+            Assert.Equal(0, result.Summary.SentCount);
+            Assert.Equal(0, result.Summary.NonSentCount);
+            Assert.Equal(5, result.Summary.DirectionUnknownCount);
+
+            // Everything else is read exactly as before; only direction is withheld.
+            Assert.Equal(2, result.Summary.FileDateCount);
+            Assert.Equal(4, result.Summary.ImageCount);
+            Assert.Equal(1, result.Summary.VideoCount);
+
+            using var connection = WorkspaceDatabase.OpenConnection(workspace.DatabasePath);
+
+            Assert.All(ReadMediaFiles(connection), file => Assert.Null(file.IsSent));
+
+            var files = ReadMediaFilesByPath(connection);
+
+            Assert.Equal("2026-07-24", files["WhatsApp Images/IMG-20260724-WA0004.jpg"].FileDate);
+        }
+
+        /// <remarks>
+        /// The counterpart: one <c>Sent</c> folder anywhere in the tree is enough to make the whole
+        /// source's direction readable, including for files that are nowhere near it.
+        /// </remarks>
+        [Fact]
+        public void Inventory_OneSentDirectory_MakesDirectionReadableForTheWholeSource()
+        {
+            using var workspace = new TemporaryWorkspaceDatabase();
+            using var media = new TemporaryMediaDirectory();
+
+            media.CreateFile("WhatsApp Images/Sent/IMG-20260724-WA0004.jpg", "sent");
+            media.CreateFile("WhatsApp Video/VID-20220128-WA0003.mp4", "received");
+            media.CreateFile("WhatsApp Images/Sentimental/holiday.jpg", "not sent");
+            media.CreateFile("WhatsApp Images/Unsent/draft.jpg", "not sent either");
+            media.CreateFile("loose.jpg", "loose");
+
+            var result = new MediaInventoryService()
+                .Inventory(CreateWorkspace(workspace), CreateRequest(media.RootPath));
+
+            Assert.Equal(1, result.Summary.SentCount);
+            Assert.Equal(4, result.Summary.NonSentCount);
+            Assert.Equal(0, result.Summary.DirectionUnknownCount);
+
+            using var connection = WorkspaceDatabase.OpenConnection(workspace.DatabasePath);
+
+            var files = ReadMediaFilesByPath(connection);
+
+            Assert.True(files["WhatsApp Images/Sent/IMG-20260724-WA0004.jpg"].IsSent);
+
+            // Sentimental and Unsent are not Sent segments, and now mean a known "not sent".
+            Assert.False(files["WhatsApp Images/Sentimental/holiday.jpg"].IsSent);
+            Assert.False(files["WhatsApp Images/Unsent/draft.jpg"].IsSent);
+            Assert.False(files["WhatsApp Video/VID-20220128-WA0003.mp4"].IsSent);
+            Assert.False(files["loose.jpg"].IsSent);
+        }
+
+        /// <remarks>
+        /// Direction belongs to the source it was read from. Two sources inventoried into one
+        /// workspace are judged separately, so a tree with <c>Sent</c> folders cannot lend its
+        /// evidence to one without.
+        /// </remarks>
+        [Fact]
+        public void Inventory_DirectionEvidenceIsNotSharedBetweenSources()
+        {
+            using var workspace = new TemporaryWorkspaceDatabase();
+            using var media = new TemporaryMediaDirectory();
+
+            var withSent = Path.Combine(media.ContainerPath, "PhoneWithSent");
+            var withoutSent = Path.Combine(media.ContainerPath, "PhoneWithoutSent");
+
+            Directory.CreateDirectory(Path.Combine(withSent, "Sent"));
+            Directory.CreateDirectory(withoutSent);
+
+            File.WriteAllText(Path.Combine(withSent, "Sent", "outgoing.jpg"), "one");
+            File.WriteAllText(Path.Combine(withSent, "incoming.jpg"), "two");
+            File.WriteAllText(Path.Combine(withoutSent, "recovered.jpg"), "three");
+
+            var databasePath = CreateWorkspace(workspace);
+            var service = new MediaInventoryService();
+
+            var evidenced = service.Inventory(
+                databasePath, CreateRequest(withSent, displayName: "Phone with sent"));
+
+            var unevidenced = service.Inventory(
+                databasePath, CreateRequest(withoutSent, displayName: "Phone without sent"));
+
+            Assert.Equal(1, evidenced.Summary.SentCount);
+            Assert.Equal(1, evidenced.Summary.NonSentCount);
+            Assert.Equal(0, evidenced.Summary.DirectionUnknownCount);
+
+            Assert.Equal(0, unevidenced.Summary.SentCount);
+            Assert.Equal(0, unevidenced.Summary.NonSentCount);
+            Assert.Equal(1, unevidenced.Summary.DirectionUnknownCount);
+
+            using var connection = WorkspaceDatabase.OpenConnection(databasePath);
+
+            var bySource = ReadMediaFiles(connection)
+                .ToLookup(file => file.MediaSourceID);
+
+            Assert.All(
+                bySource[evidenced.MediaSourceID], file => Assert.NotNull(file.IsSent));
+
+            Assert.All(
+                bySource[unevidenced.MediaSourceID], file => Assert.Null(file.IsSent));
+        }
+
+        /// <remarks>
         /// A layout this build knows no conventions for is inventoried in full, but yields no
         /// direction and no naming-derived date. Null, not false and not a guessed date.
         /// </remarks>

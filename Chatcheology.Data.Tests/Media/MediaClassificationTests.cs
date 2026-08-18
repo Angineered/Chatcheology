@@ -153,9 +153,8 @@ namespace Chatcheology.Data.Tests.Media
         [InlineData("WhatsApp Video/sent/VID-20260105-WA0002.mp4")]
         [InlineData("WhatsApp Documents/SENT/DOC-20260105-WA0003.pdf")]
         [InlineData("Sent/nested/deeper/file.jpg")]
-        public void DeriveIsSent_WholeSentDirectorySegment_IsTrue(string relativePath) =>
-            Assert.True(MediaClassification.DeriveIsSent(
-                MediaSourceTypes.WhatsAppMediaDirectory, relativePath));
+        public void HasSentDirectorySegment_WholeSegment_IsTrue(string relativePath) =>
+            Assert.True(MediaClassification.HasSentDirectorySegment(relativePath));
 
         /// <remarks>
         /// The substrings the rule must not match. A folder called <c>Sentimental</c> is not a Sent
@@ -167,28 +166,72 @@ namespace Chatcheology.Data.Tests.Media
         [InlineData("WhatsApp Images/Presented/IMG-20260105-WA0001.jpg")]
         [InlineData("WhatsApp Images/Private/IMG-20260105-WA0001.jpg")]
         [InlineData("IMG-20260105-WA0001.jpg")]
-        public void DeriveIsSent_SubstringOrNoSentDirectory_IsFalse(string relativePath) =>
-            Assert.False(MediaClassification.DeriveIsSent(
-                MediaSourceTypes.WhatsAppMediaDirectory, relativePath));
+        public void HasSentDirectorySegment_SubstringOrNoSentDirectory_IsFalse(string relativePath) =>
+            Assert.False(MediaClassification.HasSentDirectorySegment(relativePath));
 
         /// <remarks>
         /// Direction is a fact about which folder something was filed in. A file that happens to be
         /// named <c>Sent</c> is not evidence that it was.
         /// </remarks>
         [Fact]
-        public void DeriveIsSent_FileNamedSent_IsNotDirectionEvidence() =>
-            Assert.False(MediaClassification.DeriveIsSent(
-                MediaSourceTypes.WhatsAppMediaDirectory, "WhatsApp Images/Sent"));
+        public void HasSentDirectorySegment_FileNamedSent_IsNotDirectionEvidence() =>
+            Assert.False(MediaClassification.HasSentDirectorySegment("WhatsApp Images/Sent"));
 
         /// <remarks>
-        /// Null, not false. An unknown layout gives no direction evidence at all, and recording
-        /// "not sent" would assert something the source never said.
+        /// The positive case: a source that demonstrably files outgoing media under <c>Sent</c>.
+        /// Only there does a file outside those folders mean "not sent".
+        /// </remarks>
+        [Theory]
+        [InlineData("WhatsApp Images/Sent/IMG-20260105-WA0001.jpg", true)]
+        [InlineData("Sent/nested/deeper/file.jpg", true)]
+        [InlineData("WhatsApp Images/IMG-20260105-WA0001.jpg", false)]
+        [InlineData("WhatsApp Images/Sentimental/IMG-20260105-WA0001.jpg", false)]
+        [InlineData("WhatsApp Images/Unsent/IMG-20260105-WA0001.jpg", false)]
+        public void DeriveIsSent_SourceWithSentDirectories_ReadsDirection(
+            string relativePath, bool expected) =>
+            Assert.Equal(
+                expected,
+                MediaClassification.DeriveIsSent(
+                    MediaSourceTypes.WhatsAppMediaDirectory,
+                    relativePath,
+                    sourceHasSentDirectory: true));
+
+        /// <remarks>
+        /// The correction this rule exists for. A WhatsApp tree containing no <c>Sent</c> folder
+        /// anywhere — a recovered or partially copied source — says nothing about direction, and
+        /// every file in it is unknown rather than "not sent". Recording false here would turn one
+        /// missing folder into a claim about every file beneath the root, and afterwards that claim
+        /// would be indistinguishable from evidence the source really gave.
+        /// </remarks>
+        [Theory]
+        [InlineData("WhatsApp Images/IMG-20260105-WA0001.jpg")]
+        [InlineData("IMG-20260105-WA0001.jpg")]
+        [InlineData("WhatsApp Images/Sentimental/IMG-20260105-WA0001.jpg")]
+        public void DeriveIsSent_SourceWithNoSentDirectories_IsNull(string relativePath) =>
+            Assert.Null(MediaClassification.DeriveIsSent(
+                MediaSourceTypes.WhatsAppMediaDirectory,
+                relativePath,
+                sourceHasSentDirectory: false));
+
+        /// <remarks>
+        /// Null, not false. An unknown layout gives no direction evidence at all, whatever its
+        /// folders happen to be called.
         /// </remarks>
         [Theory]
         [InlineData("Sent/IMG-20260105-WA0001.jpg")]
         [InlineData("Camera/IMG-20260105-WA0001.jpg")]
         public void DeriveIsSent_UnknownSourceType_IsNull(string relativePath) =>
-            Assert.Null(MediaClassification.DeriveIsSent("GenericMediaDirectory", relativePath));
+            Assert.Null(MediaClassification.DeriveIsSent(
+                "GenericMediaDirectory", relativePath, sourceHasSentDirectory: true));
+
+        [Fact]
+        public void ReadsDirectionFromPaths_OnlyForLayoutsWithKnownFolderConventions()
+        {
+            Assert.True(MediaClassification.ReadsDirectionFromPaths(
+                MediaSourceTypes.WhatsAppMediaDirectory));
+
+            Assert.False(MediaClassification.ReadsDirectionFromPaths("GenericMediaDirectory"));
+        }
 
         [Theory]
         [InlineData("IMG-20260724-WA0004.jpg", 2026, 7, 24)]

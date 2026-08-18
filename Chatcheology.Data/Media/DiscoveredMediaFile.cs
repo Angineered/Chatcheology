@@ -32,8 +32,16 @@ namespace Chatcheology.Data.Media
         /// <summary>The date the file name encodes, or null when it encodes none.</summary>
         internal required DateOnly? FileDate { get; init; }
 
-        /// <summary>Direction read from the path, or null when the layout gives none.</summary>
-        internal required bool? IsSent { get; init; }
+        /// <summary>
+        /// Whether a directory in this file's path is <c>Sent</c>.
+        /// </summary>
+        /// <remarks>
+        /// The path fact, not the stored direction. Whether it may be read as direction depends on
+        /// whether the source has any <c>Sent</c> structure at all, which is not knowable until the
+        /// whole tree has been walked — so the conclusion belongs to
+        /// <see cref="MediaDiscovery.IsSent"/> and only the evidence is recorded here.
+        /// </remarks>
+        internal required bool HasSentDirectorySegment { get; init; }
 
         /// <summary>
         /// Whether the file carries the hidden attribute.

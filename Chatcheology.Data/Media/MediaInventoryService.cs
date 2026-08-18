@@ -127,10 +127,10 @@ namespace Chatcheology.Data.Media
             // Outside the transaction. The walk is the slow half of this operation, and holding a
             // write transaction open across it would lock the workspace for its whole duration
             // for no benefit: nothing is written until the file list is complete anyway.
-            var files = MediaFileDiscovery.Discover(
+            var discovery = MediaFileDiscovery.Discover(
                 normalisedRoot, request.SourceType, cancellationToken);
 
-            if (files.Count == 0)
+            if (discovery.Files.Count == 0)
             {
                 throw new InvalidOperationException(
                     "The selected media root contains no files, so no media source was created. " +
@@ -144,7 +144,7 @@ namespace Chatcheology.Data.Media
             var mediaSourceID =
                 InsertMediaSource(connection, transaction, request, normalisedRoot);
 
-            InsertMediaFiles(connection, transaction, mediaSourceID, files);
+            InsertMediaFiles(connection, transaction, mediaSourceID, discovery);
 
             // Anything thrown above leaves this uncalled, and disposing an uncommitted transaction
             // rolls it back, so a failed inventory leaves no source and no files rather than a
@@ -154,7 +154,7 @@ namespace Chatcheology.Data.Media
             return new MediaInventoryResult
             {
                 MediaSourceID = mediaSourceID,
-                Summary = MediaFileDiscovery.Summarise(files),
+                Summary = MediaFileDiscovery.Summarise(discovery),
             };
         }
 
@@ -302,7 +302,7 @@ namespace Chatcheology.Data.Media
             SqliteConnection connection,
             SqliteTransaction transaction,
             long mediaSourceID,
-            List<DiscoveredMediaFile> files)
+            MediaDiscovery discovery)
         {
             using var command = connection.CreateCommand();
             command.Transaction = transaction;
@@ -348,7 +348,7 @@ namespace Chatcheology.Data.Media
 
             command.Prepare();
 
-            foreach (var file in files)
+            foreach (var file in discovery.Files)
             {
                 relativePath.Value = file.RelativePath;
                 fileName.Value = file.FileName;
@@ -360,7 +360,9 @@ namespace Chatcheology.Data.Media
                     ? MediaClassification.FormatFileDate(date)
                     : DBNull.Value;
 
-                isSent.Value = file.IsSent is { } sent ? (sent ? 1 : 0) : (object)DBNull.Value;
+                isSent.Value = discovery.IsSent(file) is { } sent
+                    ? (sent ? 1 : 0)
+                    : (object)DBNull.Value;
 
                 command.ExecuteNonQuery();
             }

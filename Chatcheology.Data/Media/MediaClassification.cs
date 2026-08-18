@@ -183,42 +183,29 @@ namespace Chatcheology.Data.Media
         }
 
         /// <summary>
-        /// Whether <paramref name="canonicalRelativePath"/> says the file was sent, for a source of
-        /// <paramref name="sourceType"/>.
+        /// Whether a directory in <paramref name="canonicalRelativePath"/> is <c>Sent</c>.
         /// </summary>
         /// <param name="canonicalRelativePath">
         /// A canonical relative path as the workspace stores it: <c>/</c>-separated, with no leading
         /// separator and no traversal segments.
         /// </param>
-        /// <returns>
-        /// <see langword="true"/> when a directory in the path is <c>Sent</c>,
-        /// <see langword="false"/> when the layout is known and no directory is,
-        /// <see langword="null"/> when the source layout gives no direction evidence at all.
-        /// </returns>
         /// <remarks>
         /// Whole directory segments are compared, never substrings, so <c>Sentimental</c> and
         /// <c>Unsent</c> are not matches. The comparison ignores case because Windows directory
         /// names do.
         /// <para>
-        /// The file's own name is excluded from the comparison. Direction here is a fact about
-        /// which folder WhatsApp filed something in, and a file that happens to be named
-        /// <c>Sent</c> is not evidence that it was.
+        /// The file's own name is excluded from the comparison. Direction is a fact about which
+        /// folder WhatsApp filed something in, and a file that happens to be named <c>Sent</c> is
+        /// not evidence that it was.
         /// </para>
         /// <para>
-        /// The three-way return is the point. For a layout whose folders carry no such meaning the
-        /// answer is null — unknown — rather than false, because recording "not sent" would assert
-        /// direction evidence the source never gave.
+        /// A fact about one path and nothing more. Whether it may be read as direction is
+        /// <see cref="DeriveIsSent"/>'s question, because that depends on the source as a whole.
         /// </para>
         /// </remarks>
-        public static bool? DeriveIsSent(string sourceType, string canonicalRelativePath)
+        public static bool HasSentDirectorySegment(string canonicalRelativePath)
         {
-            ArgumentNullException.ThrowIfNull(sourceType);
             ArgumentNullException.ThrowIfNull(canonicalRelativePath);
-
-            if (!IsWhatsAppMediaDirectory(sourceType))
-            {
-                return null;
-            }
 
             var lastSeparator = canonicalRelativePath.LastIndexOf(
                 MediaSourcePath.CanonicalDirectorySeparator);
@@ -229,10 +216,8 @@ namespace Chatcheology.Data.Media
                 return false;
             }
 
-            var directories = canonicalRelativePath[..lastSeparator]
-                .Split(MediaSourcePath.CanonicalDirectorySeparator);
-
-            foreach (var directory in directories)
+            foreach (var directory in canonicalRelativePath[..lastSeparator]
+                         .Split(MediaSourcePath.CanonicalDirectorySeparator))
             {
                 if (directory.Equals(SentDirectorySegment, StringComparison.OrdinalIgnoreCase))
                 {
@@ -241,6 +226,65 @@ namespace Chatcheology.Data.Media
             }
 
             return false;
+        }
+
+        /// <summary>
+        /// Whether a source of <paramref name="sourceType"/> has folder conventions this build can
+        /// read direction from at all.
+        /// </summary>
+        /// <remarks>
+        /// A necessary condition, not a sufficient one: a source of a known layout still has to
+        /// contain a <c>Sent</c> folder before anything about direction can be concluded from it.
+        /// </remarks>
+        public static bool ReadsDirectionFromPaths(string sourceType)
+        {
+            ArgumentNullException.ThrowIfNull(sourceType);
+
+            return IsWhatsAppMediaDirectory(sourceType);
+        }
+
+        /// <summary>
+        /// What <paramref name="canonicalRelativePath"/> says about direction, given the source it
+        /// belongs to.
+        /// </summary>
+        /// <param name="sourceHasSentDirectory">
+        /// Whether any file in the same source lies under a <c>Sent</c> directory.
+        /// </param>
+        /// <returns>
+        /// <see langword="true"/> when this file lies under a <c>Sent</c> directory,
+        /// <see langword="false"/> when the source demonstrably separates sent media and this file
+        /// is not among it, and <see langword="null"/> when the source provides no direction
+        /// evidence at all.
+        /// </returns>
+        /// <remarks>
+        /// Direction is judged per source, not per file, and that is the whole point of the
+        /// parameter. In a tree that really does file outgoing media under <c>Sent</c>, a file
+        /// outside those folders is genuinely evidence of "not sent". In a tree with no <c>Sent</c>
+        /// folder anywhere — a recovered or partially copied source, for instance — the same file
+        /// is evidence of nothing, and answering <see langword="false"/> would turn a missing
+        /// folder into a claim about every file beneath the root.
+        /// <para>
+        /// Deliberately conservative, because the two mistakes are not equally recoverable. A null
+        /// says "unknown" and leaves later matching free to find out; a false says "not sent" and is
+        /// indistinguishable afterwards from evidence the source actually gave.
+        /// </para>
+        /// <para>
+        /// Nothing else is consulted. Direction is never inferred from a file name, a date, a
+        /// counter or a neighbouring file — only from the folder the source itself filed it in.
+        /// </para>
+        /// </remarks>
+        public static bool? DeriveIsSent(
+            string sourceType, string canonicalRelativePath, bool sourceHasSentDirectory)
+        {
+            ArgumentNullException.ThrowIfNull(sourceType);
+            ArgumentNullException.ThrowIfNull(canonicalRelativePath);
+
+            if (!ReadsDirectionFromPaths(sourceType) || !sourceHasSentDirectory)
+            {
+                return null;
+            }
+
+            return HasSentDirectorySegment(canonicalRelativePath);
         }
 
         /// <summary>

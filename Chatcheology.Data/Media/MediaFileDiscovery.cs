@@ -56,10 +56,11 @@ namespace Chatcheology.Data.Media
         /// files would be the same answer at several times the cost.
         /// </para>
         /// </remarks>
-        internal static List<DiscoveredMediaFile> Discover(
+        internal static MediaDiscovery Discover(
             string normalisedRoot, string sourceType, CancellationToken cancellationToken)
         {
             var discovered = new List<DiscoveredMediaFile>();
+            var anySentDirectory = false;
 
             foreach (var file in new DirectoryInfo(normalisedRoot)
                          .EnumerateFiles("*", InventoryEnumerationOptions))
@@ -71,6 +72,10 @@ namespace Chatcheology.Data.Media
 
                 var extension = MediaClassification.NormaliseExtension(file.Name);
                 var attributes = file.Attributes;
+                var hasSentDirectorySegment =
+                    MediaClassification.HasSentDirectorySegment(relativePath);
+
+                anySentDirectory |= hasSentDirectorySegment;
 
                 discovered.Add(new DiscoveredMediaFile
                 {
@@ -80,7 +85,7 @@ namespace Chatcheology.Data.Media
                     SizeBytes = file.Length,
                     MediaType = MediaClassification.Classify(extension, file.Length),
                     FileDate = MediaClassification.DeriveFileDate(sourceType, file.Name),
-                    IsSent = MediaClassification.DeriveIsSent(sourceType, relativePath),
+                    HasSentDirectorySegment = hasSentDirectorySegment,
                     IsHidden = attributes.HasFlag(FileAttributes.Hidden),
                     IsSystem = attributes.HasFlag(FileAttributes.System),
                 });
@@ -89,14 +94,29 @@ namespace Chatcheology.Data.Media
             discovered.Sort(static (left, right) =>
                 string.CompareOrdinal(left.RelativePath, right.RelativePath));
 
-            return discovered;
+            return new MediaDiscovery
+            {
+                Files = discovered,
+
+                // Settled once, from the finished walk. Asking it of the source rather than of each
+                // file is what stops a tree with no Sent folder anywhere from reporting every file
+                // as "not sent" — a claim its structure never made.
+                DirectionEvidenceAvailable =
+                    MediaClassification.ReadsDirectionFromPaths(sourceType) && anySentDirectory,
+            };
         }
 
         /// <summary>
-        /// Counts a discovered file list into the aggregate summary callers see.
+        /// Counts a completed walk into the aggregate summary callers see.
         /// </summary>
-        internal static MediaDiscoverySummary Summarise(List<DiscoveredMediaFile> files)
+        /// <remarks>
+        /// Takes the walk rather than its file list, because the direction counts depend on what
+        /// the source as a whole turned out to be, not only on each file's own path.
+        /// </remarks>
+        internal static MediaDiscoverySummary Summarise(MediaDiscovery discovery)
         {
+            var files = discovery.Files;
+
             var totalSizeBytes = 0L;
             var imageCount = 0;
             var videoCount = 0;
@@ -145,7 +165,7 @@ namespace Chatcheology.Data.Media
                         break;
                 }
 
-                switch (file.IsSent)
+                switch (discovery.IsSent(file))
                 {
                     case true:
                         sentCount++;
