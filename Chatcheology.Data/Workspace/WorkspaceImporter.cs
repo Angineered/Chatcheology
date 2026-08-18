@@ -62,8 +62,9 @@ namespace Chatcheology.Data.Workspace
         /// <paramref name="databasePath"/> as a single new conversation.
         /// </summary>
         /// <param name="databasePath">
-        /// An already-initialised workspace database, supplied by the caller. No location is assumed
-        /// here, and this method does not create or upgrade the schema.
+        /// An existing workspace database already at schema version
+        /// <see cref="WorkspaceDatabase.SchemaVersion"/>, supplied by the caller. No location is
+        /// assumed here, and this method neither creates nor migrates a workspace.
         /// </param>
         /// <exception cref="ArgumentNullException"><paramref name="request"/> is null.</exception>
         /// <exception cref="ArgumentException">
@@ -72,6 +73,13 @@ namespace Chatcheology.Data.Workspace
         /// <see cref="WorkspaceImportRequest.ImportedDateTimeUtc"/> is not UTC,
         /// <see cref="WorkspaceImportRequest.OriginalFileName"/> carries path information, or a
         /// message's timestamp or sender contradicts its type.
+        /// </exception>
+        /// <exception cref="FileNotFoundException">
+        /// There is no database at <paramref name="databasePath"/>. No file is created.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// The database is not at schema version <see cref="WorkspaceDatabase.SchemaVersion"/>. It
+        /// is left exactly as it was found, with no rows added and its version unchanged.
         /// </exception>
         /// <exception cref="SqliteException">
         /// The database rejected the import — a duplicate sequence number within the conversation,
@@ -86,7 +94,24 @@ namespace Chatcheology.Data.Workspace
             // start a transaction.
             ValidateRequest(request);
 
+            // Checked before a connection is built, because the workspace connection string opens
+            // with ReadWriteCreate: opening a path that holds no database would create an empty one
+            // purely to reject it a moment later, leaving a stray file the caller never asked for.
+            if (!File.Exists(databasePath))
+            {
+                throw new FileNotFoundException(
+                    "There is no workspace database at the supplied path. An import writes into a " +
+                    "workspace that WorkspaceDatabase.Initialise has already created; it does not " +
+                    "create one, and no file has been created here.",
+                    databasePath);
+            }
+
             using var connection = WorkspaceDatabase.OpenConnection(databasePath);
+
+            // Before the transaction, so a workspace that must not be written to is never written
+            // to at all rather than being written to and rolled back.
+            RequireCurrentSchemaVersion(connection);
+
             using var transaction = connection.BeginTransaction();
 
             var importSourceID = InsertImportSource(connection, transaction, request);
@@ -115,6 +140,54 @@ namespace Chatcheology.Data.Workspace
                 ParticipantCount = participantIDsBySender.Count,
                 MessageCount = request.Messages.Count,
             };
+        }
+
+        /// <summary>
+        /// Refuses to import into anything but a workspace at the current schema version.
+        /// </summary>
+        /// <remarks>
+        /// Creating and migrating a workspace belongs to <see cref="WorkspaceDatabase.Initialise"/>;
+        /// storing messages belongs here. Keeping those responsibilities apart is what makes an
+        /// import predictable — a caller who has not initialised the workspace is told so rather
+        /// than having the schema changed underneath them as a side effect of importing.
+        /// <para>
+        /// This matters even for an import that contains no media placeholders. Without the check,
+        /// such an import would succeed against the five-table version-1 schema and produce messages
+        /// that never passed through version 2's attachment behaviour: a workspace holding rows that
+        /// silently mean something different from every other row in it.
+        /// </para>
+        /// </remarks>
+        private static void RequireCurrentSchemaVersion(SqliteConnection connection)
+        {
+            var schemaVersion = WorkspaceDatabase.ReadSchemaVersion(connection);
+
+            if (schemaVersion == WorkspaceDatabase.SchemaVersion)
+            {
+                return;
+            }
+
+            throw new InvalidOperationException(schemaVersion switch
+            {
+                WorkspaceDatabase.UninitialisedSchemaVersion =>
+                    $"The database at the supplied path has no workspace schema (user_version " +
+                    $"{WorkspaceDatabase.UninitialisedSchemaVersion}), and an import requires " +
+                    $"version {WorkspaceDatabase.SchemaVersion}. Create the workspace with " +
+                    $"WorkspaceDatabase.Initialise first. Nothing has been written.",
+
+                WorkspaceDatabase.VersionOneSchemaVersion =>
+                    $"The workspace database is schema version " +
+                    $"{WorkspaceDatabase.VersionOneSchemaVersion} and has not been migrated to " +
+                    $"version {WorkspaceDatabase.SchemaVersion}. Run WorkspaceDatabase.Initialise " +
+                    $"to migrate it first; an import does not migrate implicitly. Nothing has been " +
+                    $"written and the database is still version " +
+                    $"{WorkspaceDatabase.VersionOneSchemaVersion}.",
+
+                _ =>
+                    $"The workspace database reports schema version {schemaVersion}, which this " +
+                    $"build does not support; an import requires version " +
+                    $"{WorkspaceDatabase.SchemaVersion}. Nothing has been written and the database " +
+                    $"is unchanged.",
+            });
         }
 
         private static void ValidateRequest(WorkspaceImportRequest request)
@@ -346,9 +419,20 @@ namespace Chatcheology.Data.Workspace
             command.ExecuteNonQuery();
         }
 
+        /// <summary>
+        /// Inserts the messages, and one unresolved attachment for each that is an exact media
+        /// placeholder.
+        /// </summary>
         /// <remarks>
-        /// One command is prepared and its parameters rebound per message, rather than building a
-        /// new command per row.
+        /// One command per statement is prepared once and its parameters rebound per message, rather
+        /// than building a new command per row.
+        /// <para>
+        /// Whether a message implies an attachment is asked of
+        /// <see cref="ParsedMessage.IsMediaPlaceholder"/> rather than decided again here, so the
+        /// importer cannot come to disagree with the parser about what a placeholder is. The
+        /// attachment rows are written by the same transaction as the messages they belong to: a
+        /// failure anywhere leaves neither.
+        /// </para>
         /// </remarks>
         private static void InsertMessages(
             SqliteConnection connection,
@@ -383,7 +467,8 @@ namespace Chatcheology.Data.Workspace
                     $messageContent,
                     $rawContent,
                     $sourceLineStart,
-                    $sourceLineEnd);
+                    $sourceLineEnd)
+                RETURNING MessageID;
                 """;
 
             command.Parameters.AddWithValue("$conversationID", conversationID);
@@ -399,6 +484,34 @@ namespace Chatcheology.Data.Workspace
             var sourceLineEnd = command.Parameters.Add("$sourceLineEnd", SqliteType.Integer);
 
             command.Prepare();
+
+            using var attachmentCommand = connection.CreateCommand();
+            attachmentCommand.Transaction = transaction;
+
+            // The ordinal and the status are private constants of the schema, not caller input.
+            // Every attachment this phase creates is the first attachment of its message and is
+            // unresolved: nothing is matched to a media asset here, and no media type is inferred,
+            // because the export text does not say what was omitted.
+            attachmentCommand.CommandText =
+                $"""
+                INSERT INTO Attachment (
+                    MessageID,
+                    Ordinal,
+                    ExpectedMediaType,
+                    ResolutionStatus,
+                    ResolvedMediaAssetID)
+                VALUES (
+                    $messageID,
+                    {WorkspaceDatabase.MediaPlaceholderAttachmentOrdinal},
+                    NULL,
+                    '{WorkspaceDatabase.UnresolvedAttachmentStatus}',
+                    NULL);
+                """;
+
+            var attachmentMessageID =
+                attachmentCommand.Parameters.Add("$messageID", SqliteType.Integer);
+
+            attachmentCommand.Prepare();
 
             foreach (var message in messages)
             {
@@ -419,7 +532,15 @@ namespace Chatcheology.Data.Workspace
                 sourceLineStart.Value = message.SourceLineStart;
                 sourceLineEnd.Value = message.SourceLineEnd;
 
-                command.ExecuteNonQuery();
+                var messageID = (long)command.ExecuteScalar()!;
+
+                if (!message.IsMediaPlaceholder)
+                {
+                    continue;
+                }
+
+                attachmentMessageID.Value = messageID;
+                attachmentCommand.ExecuteNonQuery();
             }
         }
 

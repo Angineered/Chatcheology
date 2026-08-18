@@ -20,8 +20,23 @@ namespace Chatcheology.Data.Tests.Workspace
             "Message",
         ];
 
+        private static readonly string[] VersionTwoTables =
+        [
+            "MediaSource",
+            "MediaAsset",
+            "MediaFile",
+            "MediaAssetFile",
+            "Attachment",
+        ];
+
+        /// <remarks>
+        /// The expected version is written out as a literal as well as compared to the constant. A
+        /// test that only compared against <see cref="WorkspaceDatabase.SchemaVersion"/> would keep
+        /// passing if that constant were changed by accident, which is the one thing it exists to
+        /// notice.
+        /// </remarks>
         [Fact]
-        public void Initialise_NewDatabase_SetsSchemaVersionToOne()
+        public void Initialise_NewDatabase_SetsSchemaVersionToTwo()
         {
             using var workspace = new TemporaryWorkspaceDatabase();
 
@@ -29,11 +44,12 @@ namespace Chatcheology.Data.Tests.Workspace
 
             using var connection = WorkspaceDatabase.OpenConnection(workspace.DatabasePath);
 
-            Assert.Equal(1, WorkspaceDatabase.ReadSchemaVersion(connection));
+            Assert.Equal(2, WorkspaceDatabase.ReadSchemaVersion(connection));
+            Assert.Equal(WorkspaceDatabase.SchemaVersion, WorkspaceDatabase.ReadSchemaVersion(connection));
         }
 
         [Fact]
-        public void Initialise_NewDatabase_CreatesExactlyTheFiveVersionOneTables()
+        public void Initialise_NewDatabase_CreatesTheVersionOneAndVersionTwoTables()
         {
             using var workspace = new TemporaryWorkspaceDatabase();
 
@@ -41,18 +57,39 @@ namespace Chatcheology.Data.Tests.Workspace
 
             using var connection = WorkspaceDatabase.OpenConnection(workspace.DatabasePath);
 
-            foreach (var tableName in VersionOneTables)
+            foreach (var tableName in VersionOneTables.Concat(VersionTwoTables))
             {
                 Assert.True(TableExists(connection, tableName), tableName);
             }
 
-            // The later-phase tables must not have crept in early.
-            Assert.False(TableExists(connection, "Attachment"));
-            Assert.False(TableExists(connection, "MediaAsset"));
+            // The matching tables belong to a later phase and must not have crept in early.
+            Assert.False(TableExists(connection, "MatchCandidate"));
+            Assert.False(TableExists(connection, "MatchEvidence"));
+            Assert.False(TableExists(connection, "MatchDecision"));
+        }
+
+        /// <remarks>
+        /// A brand-new workspace is created as version 2 outright rather than created as version 1
+        /// and then migrated, so its media tables start empty and its Attachment table has nothing
+        /// to derive from yet.
+        /// </remarks>
+        [Fact]
+        public void Initialise_NewDatabase_CreatesTheVersionTwoTablesEmpty()
+        {
+            using var workspace = new TemporaryWorkspaceDatabase();
+
+            WorkspaceDatabase.Initialise(workspace.DatabasePath);
+
+            using var connection = WorkspaceDatabase.OpenConnection(workspace.DatabasePath);
+
+            foreach (var tableName in VersionTwoTables)
+            {
+                Assert.Equal(0, CountRows(connection, tableName));
+            }
         }
 
         [Fact]
-        public void Initialise_ExistingVersionOneDatabase_IsAcceptedWithoutRecreatingTheSchema()
+        public void Initialise_ExistingCurrentDatabase_IsAcceptedWithoutRecreatingTheSchema()
         {
             using var workspace = new TemporaryWorkspaceDatabase();
 
@@ -70,14 +107,19 @@ namespace Chatcheology.Data.Tests.Workspace
 
             using var connection = WorkspaceDatabase.OpenConnection(workspace.DatabasePath);
 
-            Assert.Equal(1, WorkspaceDatabase.ReadSchemaVersion(connection));
+            Assert.Equal(2, WorkspaceDatabase.ReadSchemaVersion(connection));
 
             // Recreating the schema would have destroyed this row.
             Assert.Equal(1, CountRows(connection, "Conversation"));
         }
 
+        /// <remarks>
+        /// Version 1 is deliberately absent: it is the one version this build migrates rather than
+        /// rejects, and the migration has its own tests. Version 2 is the current version and is
+        /// accepted.
+        /// </remarks>
         [Theory]
-        [InlineData(2)]
+        [InlineData(3)]
         [InlineData(99)]
         public void Initialise_UnsupportedSchemaVersion_IsRejected(int userVersion)
         {
@@ -99,8 +141,9 @@ namespace Chatcheology.Data.Tests.Workspace
 
         /// <remarks>
         /// The failure is induced by a version-0 database that already contains an object colliding
-        /// with a workspace table. <c>Message</c> is created last, so creation gets part way through
-        /// and then fails, which is exactly the partial-schema case that must not survive.
+        /// with a workspace table. <c>Message</c> is the fifth of the ten tables created, so creation
+        /// gets part way through and then fails, which is exactly the partial-schema case that must
+        /// not survive.
         /// </remarks>
         [Fact]
         public void Initialise_WhenSchemaCreationFails_LeavesVersionZeroAndNoWorkspaceTables()
@@ -123,6 +166,11 @@ namespace Chatcheology.Data.Tests.Workspace
             Assert.False(TableExists(connection, "Conversation"));
             Assert.False(TableExists(connection, "Participant"));
             Assert.False(TableExists(connection, "ConversationParticipant"));
+
+            foreach (var tableName in VersionTwoTables)
+            {
+                Assert.False(TableExists(connection, tableName), tableName);
+            }
 
             // The rollback undid only what the failed attempt created.
             Assert.True(ColumnExists(connection, "Message", "Unrelated"));

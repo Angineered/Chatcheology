@@ -491,6 +491,9 @@ $RECYCLE.BIN/
 *.db
 *.db-shm
 *.db-wal
+# A rollback journal holds copies of database pages, so it can carry real conversation
+# content even though the database itself is already ignored.
+*.db-journal
 
 # Local secrets
 secrets.json

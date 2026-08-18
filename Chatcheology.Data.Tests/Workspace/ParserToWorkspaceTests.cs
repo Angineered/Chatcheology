@@ -188,12 +188,12 @@ namespace Chatcheology.Data.Tests.Workspace
             command.Parameters.AddWithValue(
                 "$mediaPlaceholderContent", ParsedMessage.MediaPlaceholderContent);
 
-            // Counted from the content itself. There is no IsMediaPlaceholder column to drift from
-            // it, and no Attachment table in this phase.
+            // Counted from the content itself. There is no IsMediaPlaceholder column on Message to
+            // drift from it: the placeholder remains a fact about the text, and the Attachment row
+            // version 2 derives from it is a separate record rather than a flag on the message.
             Assert.Equal(1L, (long)command.ExecuteScalar()!);
 
             Assert.False(ColumnExists(connection, "Message", "IsMediaPlaceholder"));
-            Assert.False(TableExists(connection, "Attachment"));
 
             var rows = ReadMessages(connection);
 

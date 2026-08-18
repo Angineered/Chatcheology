@@ -436,6 +436,251 @@ namespace Chatcheology.Data.Tests.Workspace
         }
 
         // ---------------------------------------------------------------------------------------
+        // Attachments.
+        // ---------------------------------------------------------------------------------------
+
+        [Fact]
+        public void Import_ExactMediaPlaceholder_CreatesOneUnresolvedAttachmentForThatMessage()
+        {
+            using var workspace = new TemporaryWorkspaceDatabase();
+
+            Import(
+                workspace,
+                [
+                    CreateUserMessage(1, content: "Hi Sam"),
+                    CreateUserMessage(2, content: ParsedMessage.MediaPlaceholderContent),
+                    CreateUserMessage(3, content: "See you tomorrow"),
+                ]);
+
+            using var connection = WorkspaceDatabase.OpenConnection(workspace.DatabasePath);
+
+            Assert.Equal(1, CountRows(connection, "Attachment"));
+
+            var attached = ScalarLong(
+                connection,
+                """
+                SELECT Message.SequenceNumber
+                FROM Attachment
+                JOIN Message ON Message.MessageID = Attachment.MessageID;
+                """);
+
+            Assert.Equal(2, attached);
+
+            Assert.Equal(1, ScalarLong(connection, "SELECT Ordinal FROM Attachment;"));
+            Assert.Equal(
+                "Unresolved",
+                ScalarRequiredText(connection, "SELECT ResolutionStatus FROM Attachment;"));
+            Assert.Null(ScalarText(connection, "SELECT ExpectedMediaType FROM Attachment;"));
+            Assert.Equal(
+                1,
+                ScalarLong(
+                    connection,
+                    "SELECT COUNT(*) FROM Attachment WHERE ResolvedMediaAssetID IS NULL;"));
+        }
+
+        /// <remarks>
+        /// The importer asks <see cref="ParsedMessage.IsMediaPlaceholder"/> rather than deciding for
+        /// itself, so the forms the parser refuses to call a placeholder create no attachment here
+        /// either: the placeholder with a caption, and the placeholder inside longer text.
+        /// </remarks>
+        [Theory]
+        [InlineData("see this <Media omitted> please")]
+        [InlineData("<Media omitted>\na caption")]
+        [InlineData("<media omitted>")]
+        [InlineData("Hi Sam")]
+        public void Import_ContentThatIsNotExactlyAPlaceholder_CreatesNoAttachment(string content)
+        {
+            using var workspace = new TemporaryWorkspaceDatabase();
+
+            Import(workspace, [CreateUserMessage(1, content: content)]);
+
+            using var connection = WorkspaceDatabase.OpenConnection(workspace.DatabasePath);
+
+            Assert.Equal(1, CountRows(connection, "Message"));
+            Assert.Equal(0, CountRows(connection, "Attachment"));
+        }
+
+        [Fact]
+        public void Import_ManyPlaceholders_CreatesOneAttachmentEach()
+        {
+            using var workspace = new TemporaryWorkspaceDatabase();
+
+            var messages = new[]
+            {
+                CreateUserMessage(1, content: ParsedMessage.MediaPlaceholderContent),
+                CreateUserMessage(2, content: "Hi Sam"),
+                CreateUserMessage(3, content: ParsedMessage.MediaPlaceholderContent),
+                CreateUserMessage(4, content: ParsedMessage.MediaPlaceholderContent),
+            };
+
+            Import(workspace, messages);
+
+            using var connection = WorkspaceDatabase.OpenConnection(workspace.DatabasePath);
+
+            Assert.Equal(3, CountRows(connection, "Attachment"));
+
+            // One attachment per placeholder message, and each pointing at its own message.
+            Assert.Equal(
+                3,
+                ScalarLong(connection, "SELECT COUNT(DISTINCT MessageID) FROM Attachment;"));
+
+            Assert.Equal(
+                new List<long> { 1, 3, 4 },
+                ReadColumn(
+                    connection,
+                    """
+                    SELECT Message.SequenceNumber
+                    FROM Attachment
+                    JOIN Message ON Message.MessageID = Attachment.MessageID
+                    ORDER BY Message.SequenceNumber;
+                    """));
+        }
+
+        /// <remarks>
+        /// The attachment rows must belong to the same transaction as the messages, not follow it. A
+        /// duplicate sequence number later in the same import fails the message insert after an
+        /// attachment has already been written, which is the only ordering that can tell the two
+        /// cases apart: if attachments were committed separately, this one would survive.
+        /// <para>
+        /// Reached with valid public input and no fault injection — the importer stores what it is
+        /// given rather than renumbering, so a source with a repeated sequence number is a real thing
+        /// it can be asked to store and refuse.
+        /// </para>
+        /// </remarks>
+        [Fact]
+        public void Import_FailureAfterAnAttachmentWasWritten_RollsBackTheAttachmentToo()
+        {
+            using var workspace = new TemporaryWorkspaceDatabase();
+
+            WorkspaceDatabase.Initialise(workspace.DatabasePath);
+
+            var messages = new[]
+            {
+                CreateUserMessage(1, sender: "Alex", content: ParsedMessage.MediaPlaceholderContent),
+                CreateUserMessage(2, sender: "Sam"),
+                CreateUserMessage(2, sender: "Alex"),
+            };
+
+            Assert.Throws<SqliteException>(() => new WorkspaceImporter()
+                .Import(workspace.DatabasePath, CreateRequest(messages)));
+
+            using var connection = WorkspaceDatabase.OpenConnection(workspace.DatabasePath);
+
+            AssertWorkspaceIsEmpty(connection);
+        }
+
+        // ---------------------------------------------------------------------------------------
+        // Schema-version guard.
+        // ---------------------------------------------------------------------------------------
+
+        /// <remarks>
+        /// The importer opens the workspace connection with <c>ReadWriteCreate</c>, so without an
+        /// existence check it would create an empty database purely in order to reject it.
+        /// </remarks>
+        [Fact]
+        public void Import_DatabaseThatDoesNotExist_IsRejectedWithoutCreatingAFile()
+        {
+            using var workspace = new TemporaryWorkspaceDatabase();
+
+            Assert.Throws<FileNotFoundException>(() => new WorkspaceImporter()
+                .Import(workspace.DatabasePath, CreateRequest([CreateUserMessage(1)])));
+
+            SqliteConnection.ClearAllPools();
+
+            Assert.False(File.Exists(workspace.DatabasePath));
+            Assert.Empty(Directory.GetFiles(workspace.DirectoryPath));
+        }
+
+        [Fact]
+        public void Import_DatabaseWithNoWorkspaceSchema_IsRejected()
+        {
+            using var workspace = new TemporaryWorkspaceDatabase();
+
+            // An existing file that has never been initialised: user_version 0, no tables.
+            using (var setup = WorkspaceDatabase.OpenConnection(workspace.DatabasePath))
+            {
+                Execute(setup, "CREATE TABLE Unrelated (Value TEXT NOT NULL);");
+            }
+
+            Assert.Throws<InvalidOperationException>(() => new WorkspaceImporter()
+                .Import(workspace.DatabasePath, CreateRequest([CreateUserMessage(1)])));
+
+            using var connection = WorkspaceDatabase.OpenConnection(workspace.DatabasePath);
+
+            Assert.Equal(0, WorkspaceDatabase.ReadSchemaVersion(connection));
+            Assert.False(TableExists(connection, "Message"));
+        }
+
+        /// <remarks>
+        /// The case the guard exists for. This import contains no media placeholder at all, so
+        /// without the version check it would succeed against the five-table version-1 schema and
+        /// leave messages behind that never passed through version 2's attachment behaviour.
+        /// </remarks>
+        [Fact]
+        public void Import_GenuineVersionOneDatabase_IsRejectedWithoutWritingAnything()
+        {
+            using var workspace = new TemporaryWorkspaceDatabase();
+
+            SyntheticVersionOneWorkspace.Create(workspace.DatabasePath);
+
+            var messageCountBefore = SyntheticVersionOneWorkspace.MessageCount;
+
+            Assert.Throws<InvalidOperationException>(() => new WorkspaceImporter()
+                .Import(workspace.DatabasePath, CreateRequest([CreateUserMessage(99)])));
+
+            using var connection = SyntheticVersionOneWorkspace.OpenPlainConnection(
+                workspace.DatabasePath);
+
+            Assert.Equal(1, WorkspaceDatabase.ReadSchemaVersion(connection));
+
+            Assert.Equal(1, CountRows(connection, "ImportSource"));
+            Assert.Equal(1, CountRows(connection, "Conversation"));
+            Assert.Equal(messageCountBefore, CountRows(connection, "Message"));
+
+            // Not migrated as a side effect of the attempt, either.
+            Assert.False(TableExists(connection, "Attachment"));
+        }
+
+        [Fact]
+        public void Import_DatabaseFromAnUnsupportedFutureVersion_IsRejected()
+        {
+            using var workspace = new TemporaryWorkspaceDatabase();
+
+            WorkspaceDatabase.Initialise(workspace.DatabasePath);
+
+            using (var setup = WorkspaceDatabase.OpenConnection(workspace.DatabasePath))
+            {
+                Execute(setup, "PRAGMA user_version = 3;");
+            }
+
+            Assert.Throws<InvalidOperationException>(() => new WorkspaceImporter()
+                .Import(workspace.DatabasePath, CreateRequest([CreateUserMessage(1)])));
+
+            using var connection = WorkspaceDatabase.OpenConnection(workspace.DatabasePath);
+
+            Assert.Equal(3, WorkspaceDatabase.ReadSchemaVersion(connection));
+            Assert.Equal(0, CountRows(connection, "Message"));
+        }
+
+        [Fact]
+        public void Import_CurrentVersionDatabase_IsAccepted()
+        {
+            using var workspace = new TemporaryWorkspaceDatabase();
+
+            WorkspaceDatabase.Initialise(workspace.DatabasePath);
+
+            var result = new WorkspaceImporter().Import(
+                workspace.DatabasePath,
+                CreateRequest([CreateUserMessage(1, content: ParsedMessage.MediaPlaceholderContent)]));
+
+            using var connection = WorkspaceDatabase.OpenConnection(workspace.DatabasePath);
+
+            Assert.Equal(1, result.MessageCount);
+            Assert.Equal(1, CountRows(connection, "Message"));
+            Assert.Equal(1, CountRows(connection, "Attachment"));
+        }
+
+        // ---------------------------------------------------------------------------------------
         // Helpers.
         // ---------------------------------------------------------------------------------------
 
@@ -459,6 +704,10 @@ namespace Chatcheology.Data.Tests.Workspace
             Assert.Equal(0, CountRows(connection, "Participant"));
             Assert.Equal(0, CountRows(connection, "ConversationParticipant"));
             Assert.Equal(0, CountRows(connection, "Message"));
+
+            // Attachments are written by the same transaction as the messages they belong to, so a
+            // rolled-back import must leave none of them either.
+            Assert.Equal(0, CountRows(connection, "Attachment"));
         }
 
         private static List<long> ReadColumn(SqliteConnection connection, string sql)

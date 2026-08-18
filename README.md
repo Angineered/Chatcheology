@@ -10,11 +10,11 @@ unnecessary WhatsApp-specific assumptions where practical.
 
 **Early foundation.** The repository currently contains the solution structure, a
 synthetic test fixture, a text parser for one pinned WhatsApp Android export layout,
-and the first version of the workspace SQLite database.
+and version 2 of the workspace SQLite database.
 
-No media matching, archive generation or user interface functionality is implemented
-yet. The desktop application does not use the database, and no real chat archive has
-been imported into SQLite.
+No media inventory, media matching, archive generation or user interface functionality
+is implemented yet. The desktop application does not use the database, and no real chat
+archive has been imported into SQLite.
 
 ## Offline and privacy first
 
@@ -31,7 +31,7 @@ was derived from.
 
 - A WPF desktop application for import, recovery and archive management.
 - A shared core library holding parsing, media inventory, matching and archive logic.
-- A SQLite working database holding reconstruction state. Schema version 1 exists; see
+- A SQLite working database holding reconstruction state. Schema version 2 exists; see
   [Workspace database](#workspace-database).
 - A media inventory with SHA-256 deduplication.
 - Conservative, evidence-based media matching that can explain why a match was
@@ -90,27 +90,79 @@ exactly as read. No other invisible or control character is altered.
 
 Not supported yet: iOS layouts, 12-hour clocks, timestamps with seconds, other locale
 variants, and system-message subtypes — a system message is not classified further than
-"system". Media placeholders are recognised as text only — no media file is inspected,
-matched or attached.
+"system". The parser recognises a media placeholder as text only: no media file is
+inspected, and no media type is inferred from it. Turning a placeholder into a stored
+attachment belongs to the workspace database, not the parser.
 
 ## Workspace database
 
 Parsed messages can be persisted into a workspace SQLite database. The schema version is
-recorded in SQLite's own `PRAGMA user_version` and is currently version 1, which holds:
+recorded in SQLite's own `PRAGMA user_version` and is currently version 2, which holds:
 
 - the import source the messages came from
 - the conversation
 - its participants, and their membership of that conversation
 - the messages
+- an attachment per expected media item belonging to a message
+- media sources, media files, deduplicated media assets, and which files carry which asset
 
-Creating the schema and importing a conversation are each a single transaction, so a
-failure leaves neither a partially created workspace nor a partially imported
-conversation. Foreign keys are enforced on every connection, and a message's sender must
-be a participant of the same conversation the message belongs to.
+Creating the schema, migrating it and importing a conversation are each a single
+transaction, so a failure leaves neither a partially created workspace, nor a partially
+migrated one, nor a partially imported conversation. Foreign keys are enforced on every
+connection, and a message's sender must be a participant of the same conversation the
+message belongs to.
 
-Not implemented yet: attachment and media tables, media matching, archive generation, and
-any user interface for import. The desktop application does not consume the database, and
-the caller always supplies the workspace file path — no location is assumed.
+Not implemented yet: media inventory, media matching, archive generation, and any user
+interface for import. The desktop application does not consume the database, and the
+caller always supplies the workspace file path — no location is assumed.
+
+### Attachments
+
+A media placeholder in an export says that something was omitted, not what it was. Version
+2 records that as an explicit `Attachment` row rather than as a flag on the message: one
+attachment per expected media item, created when a message's content is exactly the
+placeholder text. A placeholder that carries a caption, or that appears inside longer text,
+is ordinary message content and produces no attachment.
+
+Every attachment is created unresolved, with no expected media type and no linked asset.
+Nothing infers what kind of file was omitted, and nothing is matched to a file on disk.
+
+`ResolutionStatus` records one thing only: whether the attachment is linked to a media
+asset. Matching candidates, evidence and confidence are a later phase with tables of their
+own, deliberately kept out of this column so a proposal can never be stored as a fact.
+
+### Media model
+
+The media tables exist and are empty. They describe, in order:
+
+| Table | Holds |
+| --- | --- |
+| `MediaSource` | one user-selected physical media root |
+| `MediaFile` | one file discovered beneath a source, by path relative to that root |
+| `MediaAsset` | one unique payload, identified by its SHA-256 |
+| `MediaAssetFile` | which files carry which asset — many files, one asset |
+
+Content identity is SHA-256 and nothing else: there is no perceptual or fuzzy hashing, so
+two files are one asset only when their bytes match. Hash columns are compared without
+regard to hexadecimal letter case, so one payload cannot become two assets through casing
+alone.
+
+Nothing populates these tables yet. No media directory has been enumerated, no file has
+been hashed, and no media has been inventoried, deduplicated or matched.
+
+### Schema versions
+
+A database with no workspace schema is created as the current version outright. A
+version-1 workspace is migrated to version 2 in one transaction, which adds the five new
+tables and derives one unresolved attachment from each already-stored message whose
+content is exactly the media placeholder. Version-1 rows are never rewritten. Both paths
+apply the same version-2 statements, so a migrated workspace and a fresh one are the same
+database.
+
+Importing requires a workspace already at the current version. It does not create or
+migrate one: that is `WorkspaceDatabase.Initialise`'s responsibility, and keeping the two
+apart is what prevents an import from silently writing rows into an older schema that
+never applied the current version's rules.
 
 ### Timestamps
 
