@@ -63,6 +63,21 @@ namespace Chatcheology.Data.Workspace
         internal const int MediaPlaceholderAttachmentOrdinal = 1;
 
         /// <summary>
+        /// How every workspace metadata timestamp is stored: the round-trip format, which on a
+        /// <see cref="DateTimeKind.Utc"/> value ends in <c>Z</c> and reads back as UTC.
+        /// </summary>
+        /// <remarks>
+        /// One constant rather than one per writer. An import source's timestamp and a media
+        /// source's timestamp mean the same kind of thing — when a workspace operation happened —
+        /// and two copies of the format string could drift into storing that one meaning two ways.
+        /// <para>
+        /// Deliberately not used for a source message's wall-clock timestamp, which is a different
+        /// kind of value and is formatted separately where it is written.
+        /// </para>
+        /// </remarks>
+        internal const string UtcTimestampFormat = "O";
+
+        /// <summary>
         /// The version-1 tables, one statement per element, in creation order.
         /// </summary>
         /// <remarks>
@@ -389,18 +404,30 @@ namespace Chatcheology.Data.Workspace
         /// be fragile, because SQLite silently ignores that pragma while a transaction is open.
         /// </para>
         /// </remarks>
-        public static string BuildConnectionString(string databasePath)
+        public static string BuildConnectionString(string databasePath) =>
+            BuildConnectionString(databasePath, SqliteOpenMode.ReadWriteCreate);
+
+        /// <summary>
+        /// Builds the connection string for a file-backed workspace database opened in
+        /// <paramref name="mode"/>.
+        /// </summary>
+        /// <remarks>
+        /// The one place a workspace connection string is assembled, so that a read-only open and a
+        /// read-write open differ in exactly one property and cannot drift apart in any other.
+        /// <para>
+        /// <c>ReadWriteCreate</c> lets SQLite create the database file itself. It does not create
+        /// missing parent directories, and no directory structure is invented on the caller's
+        /// behalf. <c>ReadOnly</c> cannot create anything at all.
+        /// </para>
+        /// </remarks>
+        private static string BuildConnectionString(string databasePath, SqliteOpenMode mode)
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(databasePath);
 
             var builder = new SqliteConnectionStringBuilder
             {
                 DataSource = databasePath,
-
-                // SQLite may create the database file itself. It does not create missing parent
-                // directories, and no directory structure is invented on the caller's behalf.
-                Mode = SqliteOpenMode.ReadWriteCreate,
-
+                Mode = mode,
                 ForeignKeys = true,
             };
 
@@ -414,6 +441,67 @@ namespace Chatcheology.Data.Workspace
         public static SqliteConnection OpenConnection(string databasePath)
         {
             var connection = new SqliteConnection(BuildConnectionString(databasePath));
+
+            try
+            {
+                connection.Open();
+            }
+            catch
+            {
+                // Nothing else can dispose it yet, and leaking it would keep a pooled handle on
+                // the file.
+                connection.Dispose();
+                throw;
+            }
+
+            return connection;
+        }
+
+        /// <summary>
+        /// Opens an existing workspace read-only, for inspection that must not be able to change
+        /// what it is inspecting.
+        /// </summary>
+        /// <param name="databasePath">
+        /// The path of a workspace database that already exists. Nothing is created here under any
+        /// circumstances.
+        /// </param>
+        /// <returns>An open read-only connection. The caller owns it and must dispose it.</returns>
+        /// <remarks>
+        /// The guarantee is enforced by SQLite itself through <c>Mode=ReadOnly</c> rather than by
+        /// the caller promising not to write, so a stray <c>INSERT</c> or <c>PRAGMA user_version</c>
+        /// write fails instead of succeeding quietly.
+        /// <para>
+        /// The missing-file check is deliberate and comes first. Requesting <c>ReadOnly</c> already
+        /// prevents SQLite from creating a file, but the failure it produces is a low-level "unable
+        /// to open database file" that reads as a corrupt or locked workspace rather than as a path
+        /// that holds nothing. Callers verifying that an expected workspace is present deserve to
+        /// be told which of those two it is.
+        /// </para>
+        /// <para>
+        /// Read-only is not the same as unobserved: Microsoft.Data.Sqlite pools connections by
+        /// connection string, so a disposed read-only connection can still hold the file open until
+        /// the pool is cleared. Code that goes on to read, hash or copy the database file itself
+        /// must call <see cref="SqliteConnection.ClearAllPools"/> first.
+        /// </para>
+        /// </remarks>
+        /// <exception cref="FileNotFoundException">
+        /// There is no file at <paramref name="databasePath"/>. No file is created.
+        /// </exception>
+        public static SqliteConnection OpenReadOnlyConnection(string databasePath)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(databasePath);
+
+            if (!File.Exists(databasePath))
+            {
+                throw new FileNotFoundException(
+                    "There is no workspace database at the supplied path. A read-only open " +
+                    "inspects a workspace that already exists; it never creates one, and no file " +
+                    "has been created here.",
+                    databasePath);
+            }
+
+            var connection =
+                new SqliteConnection(BuildConnectionString(databasePath, SqliteOpenMode.ReadOnly));
 
             try
             {

@@ -40,17 +40,6 @@ namespace Chatcheology.Data.Workspace
         /// </remarks>
         private const string LocalTimestampFormat = "yyyy'-'MM'-'dd'T'HH':'mm':'ss";
 
-        /// <summary>
-        /// How workspace metadata timestamps are stored: the round-trip format, which on a
-        /// <see cref="DateTimeKind.Utc"/> value ends in <c>Z</c> and reads back as UTC.
-        /// </summary>
-        /// <remarks>
-        /// Deliberately a different format from <see cref="LocalTimestampFormat"/>. These two kinds
-        /// of timestamp mean different things, and storing them identically would invite treating a
-        /// wall-clock reading as an instant.
-        /// </remarks>
-        private const string UtcTimestampFormat = "O";
-
         /// <summary>The stored text for <see cref="MessageType.User"/>.</summary>
         private const string UserMessageTypeText = "User";
 
@@ -110,7 +99,13 @@ namespace Chatcheology.Data.Workspace
 
             // Before the transaction, so a workspace that must not be written to is never written
             // to at all rather than being written to and rolled back.
-            RequireCurrentSchemaVersion(connection);
+            //
+            // This matters even for an import that contains no media placeholders. Without the
+            // check, such an import would succeed against the five-table version-1 schema and
+            // produce messages that never passed through version 2's attachment behaviour: a
+            // workspace holding rows that silently mean something different from every other row
+            // in it.
+            WorkspaceSchemaGuard.RequireCurrentSchemaVersion(connection, "an import");
 
             using var transaction = connection.BeginTransaction();
 
@@ -140,54 +135,6 @@ namespace Chatcheology.Data.Workspace
                 ParticipantCount = participantIDsBySender.Count,
                 MessageCount = request.Messages.Count,
             };
-        }
-
-        /// <summary>
-        /// Refuses to import into anything but a workspace at the current schema version.
-        /// </summary>
-        /// <remarks>
-        /// Creating and migrating a workspace belongs to <see cref="WorkspaceDatabase.Initialise"/>;
-        /// storing messages belongs here. Keeping those responsibilities apart is what makes an
-        /// import predictable — a caller who has not initialised the workspace is told so rather
-        /// than having the schema changed underneath them as a side effect of importing.
-        /// <para>
-        /// This matters even for an import that contains no media placeholders. Without the check,
-        /// such an import would succeed against the five-table version-1 schema and produce messages
-        /// that never passed through version 2's attachment behaviour: a workspace holding rows that
-        /// silently mean something different from every other row in it.
-        /// </para>
-        /// </remarks>
-        private static void RequireCurrentSchemaVersion(SqliteConnection connection)
-        {
-            var schemaVersion = WorkspaceDatabase.ReadSchemaVersion(connection);
-
-            if (schemaVersion == WorkspaceDatabase.SchemaVersion)
-            {
-                return;
-            }
-
-            throw new InvalidOperationException(schemaVersion switch
-            {
-                WorkspaceDatabase.UninitialisedSchemaVersion =>
-                    $"The database at the supplied path has no workspace schema (user_version " +
-                    $"{WorkspaceDatabase.UninitialisedSchemaVersion}), and an import requires " +
-                    $"version {WorkspaceDatabase.SchemaVersion}. Create the workspace with " +
-                    $"WorkspaceDatabase.Initialise first. Nothing has been written.",
-
-                WorkspaceDatabase.VersionOneSchemaVersion =>
-                    $"The workspace database is schema version " +
-                    $"{WorkspaceDatabase.VersionOneSchemaVersion} and has not been migrated to " +
-                    $"version {WorkspaceDatabase.SchemaVersion}. Run WorkspaceDatabase.Initialise " +
-                    $"to migrate it first; an import does not migrate implicitly. Nothing has been " +
-                    $"written and the database is still version " +
-                    $"{WorkspaceDatabase.VersionOneSchemaVersion}.",
-
-                _ =>
-                    $"The workspace database reports schema version {schemaVersion}, which this " +
-                    $"build does not support; an import requires version " +
-                    $"{WorkspaceDatabase.SchemaVersion}. Nothing has been written and the database " +
-                    $"is unchanged.",
-            });
         }
 
         private static void ValidateRequest(WorkspaceImportRequest request)
@@ -553,8 +500,16 @@ namespace Chatcheology.Data.Workspace
         /// <summary>
         /// Formats a workspace metadata timestamp as round-trippable UTC text.
         /// </summary>
+        /// <remarks>
+        /// Uses <see cref="WorkspaceDatabase.UtcTimestampFormat"/>, the workspace's one format for
+        /// this kind of value, rather than a copy of it held here. Deliberately a different format
+        /// from <see cref="LocalTimestampFormat"/>: these two kinds of timestamp mean different
+        /// things, and storing them identically would invite treating a wall-clock reading as an
+        /// instant.
+        /// </remarks>
         private static string FormatUtc(DateTime dateTimeUtc) =>
-            dateTimeUtc.ToString(UtcTimestampFormat, CultureInfo.InvariantCulture);
+            dateTimeUtc.ToString(
+                WorkspaceDatabase.UtcTimestampFormat, CultureInfo.InvariantCulture);
 
         /// <summary>
         /// Maps <see cref="MessageType"/> to the text the database stores.
