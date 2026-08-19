@@ -1,4 +1,5 @@
 using System.Globalization;
+using Chatcheology.Data.Workspace;
 
 namespace Chatcheology.Data.Media
 {
@@ -35,7 +36,11 @@ namespace Chatcheology.Data.Media
         /// <summary>
         /// How a naming-derived date is stored: a calendar date with no time and no zone.
         /// </summary>
-        internal const string FileDateFormat = "yyyy'-'MM'-'dd";
+        /// <remarks>
+        /// The workspace's one spelling of this format, shared with the code that reads the stored
+        /// value back, rather than a second copy of it here.
+        /// </remarks>
+        internal const string FileDateFormat = WorkspaceDateFormats.FileDate;
 
         /// <summary>
         /// Extension to content kind. Lower-case invariant keys, matching what

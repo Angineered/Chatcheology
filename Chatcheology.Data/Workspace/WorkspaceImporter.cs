@@ -25,21 +25,6 @@ namespace Chatcheology.Data.Workspace
     /// </remarks>
     public sealed class WorkspaceImporter
     {
-        /// <summary>
-        /// How a source message's local wall-clock timestamp is stored.
-        /// </summary>
-        /// <remarks>
-        /// The separators are quoted so that <c>-</c> and <c>:</c> are written literally rather than
-        /// as culture-dependent separator placeholders, the same way the parser pins its own
-        /// timestamp format.
-        /// <para>
-        /// Deliberately carries no <c>Z</c> and no offset. It records a wall-clock reading exactly
-        /// as the export wrote it, and it sorts correctly as text. The supported export format has
-        /// minute precision, so the seconds component is always <c>00</c>.
-        /// </para>
-        /// </remarks>
-        private const string LocalTimestampFormat = "yyyy'-'MM'-'dd'T'HH':'mm':'ss";
-
         /// <summary>The stored text for <see cref="MessageType.User"/>.</summary>
         private const string UserMessageTypeText = "User";
 
@@ -494,8 +479,14 @@ namespace Chatcheology.Data.Workspace
         /// <summary>
         /// Formats a source message timestamp as the local wall-clock text the workspace stores.
         /// </summary>
+        /// <remarks>
+        /// Uses <see cref="WorkspaceDateFormats.MessageDateTimeLocal"/> rather than a copy of that
+        /// format held here, so the code that writes this value and the code that reads it back
+        /// cannot come to disagree about what is stored.
+        /// </remarks>
         private static string FormatLocalWallClock(DateTime messageDateTime) =>
-            messageDateTime.ToString(LocalTimestampFormat, CultureInfo.InvariantCulture);
+            messageDateTime.ToString(
+                WorkspaceDateFormats.MessageDateTimeLocal, CultureInfo.InvariantCulture);
 
         /// <summary>
         /// Formats a workspace metadata timestamp as round-trippable UTC text.
@@ -503,7 +494,8 @@ namespace Chatcheology.Data.Workspace
         /// <remarks>
         /// Uses <see cref="WorkspaceDatabase.UtcTimestampFormat"/>, the workspace's one format for
         /// this kind of value, rather than a copy of it held here. Deliberately a different format
-        /// from <see cref="LocalTimestampFormat"/>: these two kinds of timestamp mean different
+        /// from <see cref="WorkspaceDateFormats.MessageDateTimeLocal"/>: these two kinds of
+        /// timestamp mean different
         /// things, and storing them identically would invite treating a wall-clock reading as an
         /// instant.
         /// </remarks>
