@@ -78,21 +78,34 @@ namespace Chatcheology.Data.Tests.Sequence
         }
 
         /// <summary>One more copy of an asset already in the workspace.</summary>
+        /// <param name="mediaSourceID">
+        /// Which acquisition store the copy was recovered from, for a test that needs the same payload
+        /// and the same recovered position found twice.
+        /// </param>
         internal void AddCopy(
             long mediaAssetID,
             string sha256,
             DateOnly date,
             bool? isSent,
             string suffix,
-            string extension = DefaultExtension) =>
+            string extension = DefaultExtension,
+            long? mediaSourceID = null) =>
             _workspace.AddMediaFile(
-                _sourceID,
+                mediaSourceID ?? _sourceID,
                 mediaAssetID,
                 sha256,
                 date,
                 isSent,
                 fileName: Name(date, suffix) + extension,
                 extension: extension);
+
+        /// <summary>A second acquisition store, for duplicate-collapse tests.</summary>
+        internal long AddSource(string displayName = "Second synthetic source") =>
+            _workspace.AddMediaSource(displayName);
+
+        /// <summary>An asset with one dated copy per token, all in one acquisition store.</summary>
+        internal long AddAssetAtTokens(DateOnly date, bool? isSent, params int[] tokens) =>
+            AddTokenAsset(date, isSent, tokens);
 
         /// <summary>The hash an asset added through this fixture was given.</summary>
         internal static string HashOf(int assetNumber) => MatchingTestData.Hash(assetNumber);
@@ -126,6 +139,18 @@ namespace Chatcheology.Data.Tests.Sequence
             CancellationToken cancellationToken = default) =>
             new CrossDirectionSequenceCensusService().Analyse(
                 new CrossDirectionSequenceCensusRequest
+                {
+                    DatabasePath = _workspace.DatabasePath,
+                    ConversationID = MatchingTestWorkspace.ConversationID,
+                    LocalParticipantID = MatchingTestWorkspace.LocalParticipantID,
+                },
+                cancellationToken);
+
+        /// <summary>Runs the within-direction assignment census over this workspace.</summary>
+        internal WithinDirectionAssignmentCensus AnalyseAssignments(
+            CancellationToken cancellationToken = default) =>
+            new WithinDirectionAssignmentCensusService().Analyse(
+                new WithinDirectionAssignmentCensusRequest
                 {
                     DatabasePath = _workspace.DatabasePath,
                     ConversationID = MatchingTestWorkspace.ConversationID,
