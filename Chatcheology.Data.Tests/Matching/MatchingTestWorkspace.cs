@@ -36,6 +36,15 @@ namespace Chatcheology.Data.Tests.Matching
         /// <summary>The participant who belongs only to that second conversation.</summary>
         internal const long OutsiderParticipantID = 3;
 
+        /// <summary>
+        /// Passed as an extension to record none at all, which a null default cannot express.
+        /// </summary>
+        /// <remarks>
+        /// A sentinel rather than a second parameter, and one no real extension can be: Windows
+        /// forbids angle brackets in a file name.
+        /// </remarks>
+        internal const string NoExtension = "<none>";
+
         private const string ImportedDateTimeUtcText = "2026-08-17T16:00:00.0000000Z";
 
         private readonly TemporaryWorkspaceDatabase _workspace = new();
@@ -205,6 +214,14 @@ namespace Chatcheology.Data.Tests.Matching
         /// What the file row records, when a test needs it to differ from the asset's. An empty
         /// string writes a null hash: a file discovery has found but hashing has not yet reached.
         /// </param>
+        /// <param name="fileName">
+        /// The recovered file name, for a test that needs one carrying WhatsApp naming evidence.
+        /// Null keeps the neutral synthetic name the matching fixtures use, which carries none.
+        /// </param>
+        /// <param name="extension">
+        /// The recorded extension. Null keeps the default, and <see cref="NoExtension"/> records none
+        /// at all, which the archive legitimately contains.
+        /// </param>
         internal long AddMediaFile(
             long mediaSourceID,
             long? mediaAssetID,
@@ -214,7 +231,9 @@ namespace Chatcheology.Data.Tests.Matching
             string mediaType = "Image",
             long sizeBytes = 1024,
             string? storedSHA256 = null,
-            bool link = true)
+            bool link = true,
+            string? fileName = null,
+            string? extension = null)
         {
             _fileNumber++;
 
@@ -225,14 +244,31 @@ namespace Chatcheology.Data.Tests.Matching
             var storedFileDate = fileDate is { } date ? $"'{FormatDate(date)}'" : "NULL";
             var storedIsSent = isSent is { } sent ? (sent ? "1" : "0") : "NULL";
 
+            // One name, one path. The file number prefixes a caller-supplied path so two copies may
+            // legitimately share a name, as recovered WhatsApp copies commonly do, without colliding
+            // on the schema's unique (MediaSourceID, RelativePath).
+            var storedFileName = fileName ?? $"file-{_fileNumber}.bin";
+
+            var relativePath = fileName is null
+                ? $"folder/file-{_fileNumber}.bin"
+                : $"folder/{_fileNumber}-{fileName}";
+
+            var storedExtension = extension switch
+            {
+                null => "'.bin'",
+                NoExtension => "NULL",
+                _ => $"'{extension}'",
+            };
+
             Execute(
                 $"""
                 INSERT INTO MediaFile (
                     MediaSourceID, RelativePath, FileName, Extension, SizeBytes, SHA256,
                     MediaType, FileDate, IsSent)
                 VALUES (
-                    {mediaSourceID}, 'folder/file-{_fileNumber}.bin', 'file-{_fileNumber}.bin',
-                    '.bin', {sizeBytes}, {hash}, '{mediaType}', {storedFileDate}, {storedIsSent});
+                    {mediaSourceID}, '{relativePath}', '{storedFileName}',
+                    {storedExtension}, {sizeBytes}, {hash}, '{mediaType}', {storedFileDate},
+                    {storedIsSent});
                 """);
 
             var mediaFileID = ScalarLong("SELECT MAX(MediaFileID) FROM MediaFile;");
@@ -258,12 +294,22 @@ namespace Chatcheology.Data.Tests.Matching
             DateOnly? fileDate,
             bool? isSent = null,
             string mediaType = "Image",
-            long sizeBytes = 1024)
+            long sizeBytes = 1024,
+            string? fileName = null,
+            string? extension = null)
         {
             var mediaAssetID = AddMediaAsset(sha256, mediaType, sizeBytes);
 
             AddMediaFile(
-                mediaSourceID, mediaAssetID, sha256, fileDate, isSent, mediaType, sizeBytes);
+                mediaSourceID,
+                mediaAssetID,
+                sha256,
+                fileDate,
+                isSent,
+                mediaType,
+                sizeBytes,
+                fileName: fileName,
+                extension: extension);
 
             return mediaAssetID;
         }
