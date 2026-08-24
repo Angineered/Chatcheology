@@ -142,18 +142,37 @@ namespace Chatcheology.Data.Tests.Sequence
             IReadOnlyList<DeviceGroupAssignment>? deviceGroups = null,
             IReadOnlyList<StageATokenCoverageDeclaration>? stageACoverage = null,
             Action<DirectionSequencePairRow>? pairSink = null,
+            Action<DirectionSequencePairSnapshot>? snapshotSink = null,
             CancellationToken cancellationToken = default) =>
             new DirectionSequenceGateService().Analyse(
-                new DirectionSequenceGateRequest
-                {
-                    DatabasePath = _workspace.DatabasePath,
-                    ConversationID = MatchingTestWorkspace.ConversationID,
-                    LocalParticipantID = MatchingTestWorkspace.LocalParticipantID,
-                    DeviceGroups = deviceGroups ?? OneGroupForEverySource(),
-                    StageATokenCoverage = stageACoverage,
-                },
+                Request(deviceGroups, stageACoverage),
                 pairSink,
+                snapshotSink,
                 cancellationToken);
+
+        /// <summary>The gate request this fixture describes, for a caller building on it.</summary>
+        internal DirectionSequenceGateRequest Request(
+            IReadOnlyList<DeviceGroupAssignment>? deviceGroups = null,
+            IReadOnlyList<StageATokenCoverageDeclaration>? stageACoverage = null) =>
+            new()
+            {
+                DatabasePath = _workspace.DatabasePath,
+                ConversationID = MatchingTestWorkspace.ConversationID,
+                LocalParticipantID = MatchingTestWorkspace.LocalParticipantID,
+                DeviceGroups = deviceGroups ?? OneGroupForEverySource(),
+                StageATokenCoverage = stageACoverage,
+            };
+
+        /// <summary>Every pair snapshot the gate offers, in the order it offered them.</summary>
+        internal List<DirectionSequencePairSnapshot> Snapshots(
+            IReadOnlyList<DeviceGroupAssignment>? deviceGroups = null)
+        {
+            var snapshots = new List<DirectionSequencePairSnapshot>();
+
+            Analyse(deviceGroups, snapshotSink: snapshots.Add);
+
+            return snapshots;
+        }
 
         /// <summary>Every source in the workspace assigned to one device group.</summary>
         internal List<DeviceGroupAssignment> OneGroupForEverySource(
@@ -201,6 +220,165 @@ namespace Chatcheology.Data.Tests.Sequence
         internal static DirectionSequenceScopeCensus ScopeOf(
             DirectionSequenceGateCensus census, ScopeLevel scope) =>
             census.Scopes.Single(measured => measured.Scope == scope);
+
+        // ---------------------------------------------------------------------------------------
+        // Stage B2C-1.
+        // ---------------------------------------------------------------------------------------
+
+        /// <summary>
+        /// The Stage A coverage this workspace's own gate recount would produce.
+        /// </summary>
+        /// <remarks>
+        /// Derived from a first census, because a synthetic fixture has no preserved Stage A report to
+        /// carry forward. That is exactly what makes the alignment tests meaningful: the production code
+        /// has no archive figure compiled into it, so every target a test reconciles is one the test
+        /// supplied.
+        /// </remarks>
+        internal IReadOnlyList<StageATokenCoverageDeclaration> StageACoverage()
+        {
+            var census = Analyse();
+
+            return
+            [
+                .. census.Sources.Select(
+                    source => new StageATokenCoverageDeclaration
+                    {
+                        MediaSourceID = source.MediaSourceID,
+                        PhysicalObservationCount = source.PhysicalObservationCount,
+                        SupportedTokenObservationCount = source.SupportedTokenObservationCount,
+                    }),
+            ];
+        }
+
+        /// <summary>The Stage B1 declaration this workspace's own census reconciles against.</summary>
+        internal static DirectionSequenceStageB1Declaration StageB1(
+            DirectionSequenceGateCensus census, IReadOnlyList<DeviceGroupAssignment> deviceGroups) =>
+            new()
+            {
+                SupportedTokenIsMonotoneWithinLocalDate = true,
+                SupportedTokenDigitWidth = 4,
+                DistinctLogicalPositionCount =
+                    census.CrossSourceOverlap.DistinctLogicalPositionCount,
+
+                // Carried forward, not recomputed: a synthetic fixture has no Stage B1 census, and the
+                // gate does not track which assets share a key. Zero is the honest declaration for a
+                // fixture that builds one asset per file.
+                PositionsWithMoreThanOneAssetCount = 0,
+                DeviceGroups = deviceGroups,
+                DirectionBlindMediaSourceIDs =
+                [
+                    .. census.Sources
+                        .Where(source => !source.RecordsAnyDirection)
+                        .Select(source => source.MediaSourceID)
+                        .Order(),
+                ],
+            };
+
+        /// <summary>The frozen declaration this workspace's own census reconciles against.</summary>
+        internal static DirectionSequenceFrozenGateDeclaration FrozenGate(
+            DirectionSequenceGateCensus census,
+            ScopeLevel primaryScope = ScopeLevel.DeviceGroupDate)
+        {
+            var primary = ScopeOf(census, primaryScope);
+            var messages = census.MessagePopulation;
+
+            return new DirectionSequenceFrozenGateDeclaration
+            {
+                PrimaryScope = primaryScope,
+                Scopes =
+                [
+                    .. census.Scopes.Select(
+                        scope => new DirectionSequenceFrozenScopeTarget
+                        {
+                            Scope = scope.Scope,
+                            PairsWithMessageSymbols = scope.PairPopulation.PairsWithMessageSymbols,
+                            ExcludedByDirectionConflictPairCount =
+                                scope.PairPopulation.ExcludedByDirectionConflictPairCount,
+                            SupplyAssessedPairCount = scope.Supply.AfterCollapse.Population,
+                        }),
+                ],
+                ConsideredAttachmentCount = messages.ConsideredAttachmentCount,
+                DistinctAttachmentDateCount = messages.DistinctAttachmentDateCount,
+                OutgoingAttachmentCount = messages.OutgoingAttachmentCount,
+                IncomingAttachmentCount = messages.IncomingAttachmentCount,
+                MultiAttachmentMessageCount = messages.MultiAttachmentMessageCount,
+                MaximumAttachmentsOnOneMessage = messages.MaximumAttachmentsOnOneMessage,
+                SupplyInsufficientPairCountAfterCollapse =
+                    primary.Supply.AfterCollapse.SupplyInsufficientPairCount,
+                SupplySufficientPairCountAfterCollapse =
+                    primary.Supply.AfterCollapse.SupplySufficientPairCount,
+                PairsBecomingSufficientAfterCollapse =
+                    primary.Supply.PairsBecomingSufficientAfterCollapse,
+                DegeneratePairCount = primary.PairPopulation.Degenerate.DegeneratePairCount,
+                NoTokenPositionPairCount =
+                    primary.PairPopulation.Degenerate.NoTokenPositionPairCount,
+                ClassifiedPairCount = primary.PairPopulation.ClassifiedPairCount,
+                ClassifiedMessageObservationCount =
+                    primary.PairPopulation.MessageObservationsClassified,
+                BinaryDeterminatePairCount = primary.Determinacy.BinaryDeterminatePairCount,
+                BinaryInformativePairCount = primary.Determinacy.BinaryInformativePairCount,
+                GradedDeterminatePairCount = primary.Determinacy.GradedDeterminatePairCount,
+                GradedInformativePairCount = primary.Determinacy.GradedInformativePairCount,
+                BinaryInformativeAndGradedInformative =
+                    primary.Determinacy.BinaryInformativeAndGradedInformative,
+                BinaryDeterminateAndGradedInformative =
+                    primary.Determinacy.BinaryDeterminateAndGradedInformative,
+                BinaryInformativeAndGradedDeterminate =
+                    primary.Determinacy.BinaryInformativeAndGradedDeterminate,
+                BinaryDeterminateAndGradedDeterminate =
+                    primary.Determinacy.BinaryDeterminateAndGradedDeterminate,
+                ExactlyOneQrBandPairCount = BandCount(primary, DirectionSequenceQrBand.ExactlyOne),
+                ExactlyZeroQrBandPairCount = BandCount(primary, DirectionSequenceQrBand.ExactlyZero),
+                SumOfConditionalAdmissionProbability =
+                    Render(primary.Reference.SumOfConditionalAdmissionProbability),
+                SumOfConditionalAdmissionProbabilityOverInformative =
+                    Render(primary.Reference.SumOfConditionalAdmissionProbabilityOverInformative),
+                SumOfExpectedEmbeddingShare =
+                    Render(primary.Reference.SumOfExpectedEmbeddingShare),
+                SumOfExpectedEmbeddingShareOverInformative =
+                    Render(primary.Reference.SumOfExpectedEmbeddingShareOverInformative),
+            };
+        }
+
+        /// <summary>The alignment request for this workspace, reconciling against its own census.</summary>
+        internal DirectionSequenceAlignmentRequest AlignmentRequest(
+            IReadOnlyList<DeviceGroupAssignment>? deviceGroups = null,
+            DirectionSequenceFrozenGateDeclaration? frozenGate = null,
+            DirectionSequenceStageB1Declaration? stageB1 = null)
+        {
+            var groups = deviceGroups ?? OneGroupForEverySource();
+            var coverage = StageACoverage();
+            var census = Analyse(groups, coverage);
+
+            return new DirectionSequenceAlignmentRequest
+            {
+                DatabasePath = _workspace.DatabasePath,
+                ConversationID = MatchingTestWorkspace.ConversationID,
+                LocalParticipantID = MatchingTestWorkspace.LocalParticipantID,
+                DeviceGroups = groups,
+                StageATokenCoverage = coverage,
+                StageB1 = stageB1 ?? StageB1(census, groups),
+                FrozenGate = frozenGate ?? FrozenGate(census),
+            };
+        }
+
+        /// <summary>Runs the alignment stage over this workspace.</summary>
+        internal DirectionSequenceAlignmentCensus AnalyseAlignment(
+            IReadOnlyList<DeviceGroupAssignment>? deviceGroups = null,
+            DirectionSequenceFrozenGateDeclaration? frozenGate = null,
+            DirectionSequenceStageB1Declaration? stageB1 = null,
+            CancellationToken cancellationToken = default) =>
+            new DirectionSequenceAlignmentService().Analyse(
+                AlignmentRequest(deviceGroups, frozenGate, stageB1),
+                progress: null,
+                cancellationToken);
+
+        private static int BandCount(
+            DirectionSequenceScopeCensus scope, DirectionSequenceQrBand band) =>
+            scope.Reference.BandRows.Single(row => row.Band == band).PairCount;
+
+        private static string Render(double reading) =>
+            reading.ToString("F6", CultureInfo.InvariantCulture);
 
         public void Dispose() => _workspace.Dispose();
     }

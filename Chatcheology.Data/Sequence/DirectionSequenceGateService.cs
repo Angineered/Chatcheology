@@ -87,7 +87,28 @@ namespace Chatcheology.Data.Sequence
         public DirectionSequenceGateCensus Analyse(
             DirectionSequenceGateRequest request,
             Action<DirectionSequencePairRow>? pairSink = null,
-            CancellationToken cancellationToken = default)
+            CancellationToken cancellationToken = default) =>
+            Analyse(request, pairSink, snapshotSink: null, cancellationToken);
+
+        /// <summary>
+        /// The same census, additionally offering each pair's two direction streams as this census
+        /// built them.
+        /// </summary>
+        /// <remarks>
+        /// Internal because the streams are the private direction patterns and the later alignment
+        /// stage is the only caller entitled to them; the public overload above is the census as it was
+        /// before that stage existed, and behaves identically.
+        /// <para>
+        /// Unlike <paramref name="pairSink"/> every pair of the universe is offered, including the
+        /// token-only dates carrying no message symbol, because an adjacent-date control needs a
+        /// neighbour's token side whether or not that neighbour holds attachments of its own.
+        /// </para>
+        /// </remarks>
+        internal DirectionSequenceGateCensus Analyse(
+            DirectionSequenceGateRequest request,
+            Action<DirectionSequencePairRow>? pairSink,
+            Action<DirectionSequencePairSnapshot>? snapshotSink,
+            CancellationToken cancellationToken)
         {
             ArgumentNullException.ThrowIfNull(request);
             ArgumentException.ThrowIfNullOrWhiteSpace(request.DatabasePath);
@@ -118,6 +139,9 @@ namespace Chatcheology.Data.Sequence
             var sourceScope = tokens.PositionsBySourceScope();
             var deviceGroupScope = tokens.PositionsByDeviceGroupScope(groupBySource);
 
+            var sourceScopeUnsupported = tokens.UnsupportedBySourceScope();
+            var deviceGroupScopeUnsupported = tokens.UnsupportedByDeviceGroupScope(groupBySource);
+
             var pairIdentifier = 0;
             var scopes = new List<DirectionSequenceScopeCensus>();
 
@@ -128,8 +152,12 @@ namespace Chatcheology.Data.Sequence
                         scope,
                         scope == ScopeLevel.SourceDate ? sources : deviceGroups,
                         scope == ScopeLevel.SourceDate ? sourceScope : deviceGroupScope,
+                        scope == ScopeLevel.SourceDate
+                            ? sourceScopeUnsupported
+                            : deviceGroupScopeUnsupported,
                         messages,
                         pairSink,
+                        snapshotSink,
                         ref pairIdentifier,
                         cancellationToken));
             }
@@ -498,6 +526,12 @@ namespace Chatcheology.Data.Sequence
 
                 if (ReadSupportedToken(fileName, extension, suffixStart) is not { } token)
                 {
+                    // Dated, and its marker agrees with the column — the two cases that do not reach
+                    // here abort or are undated — so this observation's grammar failure belongs to a
+                    // date, and the later stage can say which pairs had incomplete grammar coverage
+                    // instead of only knowing the archive-wide figure.
+                    side.CountUnsupportedDated(mediaSourceID, fileDate);
+
                     continue;
                 }
 
@@ -1079,8 +1113,10 @@ namespace Chatcheology.Data.Sequence
             ScopeLevel scope,
             List<long> scopeKeys,
             Dictionary<ScopePairKey, SortedDictionary<ushort, LogicalPosition>> positions,
+            Dictionary<ScopePairKey, int> unsupported,
             MessageSide messages,
             Action<DirectionSequencePairRow>? pairSink,
+            Action<DirectionSequencePairSnapshot>? snapshotSink,
             ref int pairIdentifier,
             CancellationToken cancellationToken)
         {
@@ -1107,11 +1143,28 @@ namespace Chatcheology.Data.Sequence
                 {
                     cancellationToken.ThrowIfCancellationRequested();
 
-                    positions.TryGetValue(new ScopePairKey(scopeKey, date), out var atDate);
+                    var pairKey = new ScopePairKey(scopeKey, date);
 
-                    var row = accumulator.Add(
-                        BuildShape(scope, scopeKey, date, messages.PatternOn(date), atDate),
-                        ref pairIdentifier);
+                    positions.TryGetValue(pairKey, out var atDate);
+
+                    var shape = BuildShape(
+                        scope,
+                        scopeKey,
+                        date,
+                        messages.PatternOn(date),
+                        atDate,
+                        unsupported.GetValueOrDefault(pairKey));
+
+                    var row = accumulator.Add(shape, ref pairIdentifier);
+
+                    // Offered before the message-symbol filter below, because a neighbouring date's
+                    // token side is evidence for the pair beside it whether or not that neighbour
+                    // holds attachments of its own. Reads what is already computed and feeds nothing
+                    // back, so no figure of this census depends on whether a sink was supplied.
+                    if (snapshotSink is not null)
+                    {
+                        snapshotSink(SnapshotOf(shape, row));
+                    }
 
                     if (row is null)
                     {
@@ -1146,7 +1199,8 @@ namespace Chatcheology.Data.Sequence
             long scopeKey,
             DateOnly date,
             bool[] pattern,
-            SortedDictionary<ushort, LogicalPosition>? positions)
+            SortedDictionary<ushort, LogicalPosition>? positions,
+            int unsupportedTokenObservations)
         {
             var conflicting = 0;
             var unlabelled = 0;
@@ -1185,10 +1239,36 @@ namespace Chatcheology.Data.Sequence
                 EmittedTokens = [.. emitted],
                 ConflictingPositionCount = conflicting,
                 UnlabelledPositionCount = unlabelled,
+                UnsupportedTokenObservationCount = unsupportedTokenObservations,
                 OutgoingCopiesBeforeCollapse = outgoingCopies,
                 IncomingCopiesBeforeCollapse = incomingCopies,
             };
         }
+
+        /// <summary>
+        /// One pair's shape and row as an immutable snapshot for the later alignment stage.
+        /// </summary>
+        /// <remarks>
+        /// The streams are copied. This census caches its message patterns per date and shares its
+        /// logical positions between the two scopes, so handing out the originals would let a
+        /// consumer's mistake reach figures that are already preserved.
+        /// </remarks>
+        private static DirectionSequencePairSnapshot SnapshotOf(
+            PairShape shape, DirectionSequencePairRow? row) =>
+            new()
+            {
+                Scope = shape.Scope,
+                ScopeKey = shape.ScopeKey,
+                Date = shape.Date,
+                Pattern = [.. shape.Pattern],
+                EmittedTokens = [.. shape.EmittedTokens],
+                ConflictingPositionCount = shape.ConflictingPositionCount,
+                UnlabelledPositionCount = shape.UnlabelledPositionCount,
+                UnsupportedTokenObservationCount = shape.UnsupportedTokenObservationCount,
+                OutgoingCopiesBeforeCollapse = shape.OutgoingCopiesBeforeCollapse,
+                IncomingCopiesBeforeCollapse = shape.IncomingCopiesBeforeCollapse,
+                Row = row,
+            };
 
         // -------------------------------------------------------------------------------------------
         // Exact ratios, bands and distributions.
@@ -1453,6 +1533,19 @@ namespace Chatcheology.Data.Sequence
             private readonly Dictionary<PositionKey, Dictionary<long, LogicalPosition>> _positions =
                 [];
 
+            /// <summary>
+            /// Dated observations that carry no supported token, by source and date.
+            /// </summary>
+            /// <remarks>
+            /// A count and nothing else, and read by nothing this census reports: grammar coverage is
+            /// reconciled against Stage A per source, and no figure here changes because a date's
+            /// unsupported observations are now known. It exists so the later alignment stage can tell
+            /// a failed embedding on a date with complete grammar coverage from one where the grammar
+            /// dropped observations, without evaluating the grammar a second time.
+            /// </remarks>
+            private readonly Dictionary<(long MediaSourceID, DateOnly Date), int> _unsupportedDated =
+                [];
+
             internal TokenSide(List<long> sources)
             {
                 foreach (var mediaSourceID in sources)
@@ -1487,6 +1580,23 @@ namespace Chatcheology.Data.Sequence
 
             internal void CountDated(long mediaSourceID) => TallyFor(mediaSourceID)
                 .DatedObservations++;
+
+            /// <summary>
+            /// Records one dated observation whose name carries no supported four-digit token.
+            /// </summary>
+            /// <remarks>
+            /// <see cref="TallyFor"/> is called for its refusal of a source the MediaSource table does
+            /// not hold, so an unsupported row cannot be the one row that escapes that check.
+            /// </remarks>
+            internal void CountUnsupportedDated(long mediaSourceID, DateOnly date)
+            {
+                _ = TallyFor(mediaSourceID);
+
+                var key = (mediaSourceID, date);
+
+                _unsupportedDated[key] =
+                    _unsupportedDated.TryGetValue(key, out var existing) ? existing + 1 : 1;
+            }
 
             internal void RecordSupportedToken(
                 long mediaSourceID, DateOnly date, ushort token, bool? isSent)
@@ -1584,6 +1694,52 @@ namespace Chatcheology.Data.Sequence
 
                         merged.Merge(position);
                     }
+                }
+
+                return scoped;
+            }
+
+            /// <summary>
+            /// Dated unsupported observations per <c>(source, date)</c> pair.
+            /// </summary>
+            /// <remarks>
+            /// Projected by the same rule the position maps use, so a scope's grammar-coverage figure
+            /// and its positions describe the same set of sources. A source is its own scope key here,
+            /// so the count is carried straight across.
+            /// </remarks>
+            internal Dictionary<ScopePairKey, int> UnsupportedBySourceScope()
+            {
+                var scoped = new Dictionary<ScopePairKey, int>();
+
+                foreach (var ((mediaSourceID, date), count) in _unsupportedDated)
+                {
+                    scoped[new ScopePairKey(mediaSourceID, date)] = count;
+                }
+
+                return scoped;
+            }
+
+            /// <summary>
+            /// Dated unsupported observations per <c>(device group, date)</c> pair.
+            /// </summary>
+            /// <remarks>
+            /// Summed over the group's assigned sources, because a group's token side is the union of
+            /// theirs. Observations rather than positions, so nothing collapses: two sources each
+            /// holding an unsupported name on one date lost two observations, whatever those names
+            /// were.
+            /// </remarks>
+            internal Dictionary<ScopePairKey, int> UnsupportedByDeviceGroupScope(
+                Dictionary<long, long> groupBySource)
+            {
+                var scoped = new Dictionary<ScopePairKey, int>();
+
+                foreach (var ((mediaSourceID, date), count) in _unsupportedDated)
+                {
+                    var key = new ScopePairKey(groupBySource[mediaSourceID], date);
+
+                    scoped[key] = scoped.TryGetValue(key, out var existing)
+                        ? existing + count
+                        : count;
                 }
 
                 return scoped;
@@ -1778,6 +1934,15 @@ namespace Chatcheology.Data.Sequence
             internal required int ConflictingPositionCount { get; init; }
 
             internal required int UnlabelledPositionCount { get; init; }
+
+            /// <summary>
+            /// Dated observations at this pair whose names carry no supported token.
+            /// </summary>
+            /// <remarks>
+            /// Carried for the later alignment stage's coverage attribution, and read by no figure this
+            /// census reports.
+            /// </remarks>
+            internal required int UnsupportedTokenObservationCount { get; init; }
 
             internal required int OutgoingCopiesBeforeCollapse { get; init; }
 

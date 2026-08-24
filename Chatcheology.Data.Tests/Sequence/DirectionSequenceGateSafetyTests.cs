@@ -94,6 +94,61 @@ namespace Chatcheology.Data.Tests.Sequence
         }
 
         /// <remarks>
+        /// The guarantee the Stage B2C-1 extraction rests on. The alignment stage reads the streams this
+        /// census built, through a sink it can be handed; if being handed one moved any figure — or
+        /// moved a pair row, or renumbered a PairID — the preserved B2C-0 evidence would no longer
+        /// describe the code that produced it.
+        /// </remarks>
+        [Fact]
+        public void OfferingASnapshotSinkMovesNoFigureAndNoPairRow()
+        {
+            using var fixture = Populated();
+
+            var rowsWithout = new List<DirectionSequencePairRow>();
+            var without = Describe(fixture.Analyse(pairSink: rowsWithout.Add));
+
+            var rowsWith = new List<DirectionSequencePairRow>();
+            var snapshots = new List<DirectionSequencePairSnapshot>();
+
+            var with = Describe(
+                fixture.Analyse(pairSink: rowsWith.Add, snapshotSink: snapshots.Add));
+
+            Assert.Equal(without, with);
+            Assert.Equal(rowsWithout.Select(Describe), rowsWith.Select(Describe));
+            Assert.NotEmpty(snapshots);
+        }
+
+        /// <remarks>
+        /// The grammar-coverage side-channel is count-only, and the census this fixture produces already
+        /// holds a dated name that fails the grammar — so if counting it could reach a reported figure,
+        /// two runs of the same workspace would still agree while every other test in the suite moved.
+        /// This pins the narrower claim the extraction actually needs: the side-channel's own figure is
+        /// carried on the snapshot and nowhere else, and a supported name never raises it.
+        /// </remarks>
+        [Fact]
+        public void OnlyDatedUnsupportedNamesRaiseTheGrammarCoverageCount()
+        {
+            using var fixture = new DirectionSequenceGateFixture();
+            var date = DirectionSequenceGateFixture.FirstDate;
+
+            fixture.AddOutgoing(date);
+            fixture.AddToken(date, 1, isSent: true);
+
+            Assert.Equal(0, GrammarLossAt(fixture, date));
+
+            fixture.AddNamed(date, "0010-1", isSent: true);
+
+            Assert.Equal(1, GrammarLossAt(fixture, date));
+        }
+
+        private static int GrammarLossAt(DirectionSequenceGateFixture fixture, DateOnly date) =>
+            fixture.Snapshots()
+                .Where(
+                    snapshot => snapshot.Scope == ScopeLevel.DeviceGroupDate
+                        && snapshot.Date == date)
+                .Sum(snapshot => snapshot.UnsupportedTokenObservationCount);
+
+        /// <remarks>
         /// The gate reads a name for one purpose. Changing every other part of the name, the path and
         /// the source root, while leaving the marker and the four digits intact, must leave every figure
         /// where it was.
@@ -751,6 +806,40 @@ namespace Chatcheology.Data.Tests.Sequence
 
         private static string Describe(IReadOnlyList<ValueCount> distribution) =>
             "{" + string.Join(",", distribution.Select(row => $"{row.Value}={row.Count}")) + "}";
+
+        /// <summary>Every field of one pair row, so a sequence of them compares as one value.</summary>
+        private static string Describe(DirectionSequencePairRow row) =>
+            string.Join(
+                ",",
+                [
+                    row.PairID.ToString(CultureInfo.InvariantCulture),
+                    row.Scope.ToString(),
+                    row.ScopeKeyID.ToString(CultureInfo.InvariantCulture),
+                    row.State.ToString(),
+                    row.MessageSymbolCount.ToString(CultureInfo.InvariantCulture),
+                    row.MessageOutgoingCount.ToString(CultureInfo.InvariantCulture),
+                    row.MessageIncomingCount.ToString(CultureInfo.InvariantCulture),
+                    row.MessageRunCount.ToString(CultureInfo.InvariantCulture),
+                    row.MessageTransitionCount.ToString(CultureInfo.InvariantCulture),
+                    row.TokenPositionCount.ToString(CultureInfo.InvariantCulture),
+                    row.TokenOutgoingCount.ToString(CultureInfo.InvariantCulture),
+                    row.TokenIncomingCount.ToString(CultureInfo.InvariantCulture),
+                    row.TokenRunCount.ToString(CultureInfo.InvariantCulture),
+                    row.TokenOutgoingCountBeforeCollapse.ToString(CultureInfo.InvariantCulture),
+                    row.TokenIncomingCountBeforeCollapse.ToString(CultureInfo.InvariantCulture),
+                    row.OutgoingShortfall.ToString(CultureInfo.InvariantCulture),
+                    row.IncomingShortfall.ToString(CultureInfo.InvariantCulture),
+                    row.ArrangementCount.ToString(CultureInfo.InvariantCulture),
+                    row.AdmittingArrangementCount.ToString(CultureInfo.InvariantCulture),
+                    row.EmbeddingPairCount.ToString(CultureInfo.InvariantCulture),
+                    row.SquaredEmbeddingCount.ToString(CultureInfo.InvariantCulture),
+                    row.ConditionalAdmissionProbability.ToString("R", CultureInfo.InvariantCulture),
+                    row.ExpectedEmbeddingShare.ToString("R", CultureInfo.InvariantCulture),
+                    row.ExchangeableAdmissionProbability.ToString(
+                        "R", CultureInfo.InvariantCulture),
+                    row.BinaryClass.ToString(),
+                    row.GradedClass.ToString(),
+                ]);
 
         private static string DescribeWorkspaceState(DirectionSequenceGateFixture fixture) =>
             string.Join(
