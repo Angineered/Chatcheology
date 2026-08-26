@@ -30,7 +30,7 @@ namespace Chatcheology.Data.Tests.Workspace
         ];
 
         [Fact]
-        public void Migrate_VersionOneDatabase_BecomesVersionTwo()
+        public void Migrate_VersionOneDatabase_GainsTheVersionTwoTables()
         {
             using var workspace = new TemporaryWorkspaceDatabase();
 
@@ -47,7 +47,9 @@ namespace Chatcheology.Data.Tests.Workspace
 
             using var connection = WorkspaceDatabase.OpenConnection(workspace.DatabasePath);
 
-            Assert.Equal(2, WorkspaceDatabase.ReadSchemaVersion(connection));
+            // A version-1 workspace reaches the current version in one step; this file's concern is
+            // that the version-2 tables and the attachment backfill are part of that step.
+            Assert.Equal(WorkspaceDatabase.SchemaVersion, WorkspaceDatabase.ReadSchemaVersion(connection));
 
             foreach (var tableName in VersionTwoTables)
             {
@@ -158,7 +160,7 @@ namespace Chatcheology.Data.Tests.Workspace
         /// constraint, one of the two would be a schema no test had ever exercised.
         /// </remarks>
         [Fact]
-        public void Migrate_ProducesTheSameSchemaAsCreatingVersionTwoFresh()
+        public void Migrate_ProducesTheSameSchemaAsCreatingTheCurrentVersionFresh()
         {
             using var migrated = new TemporaryWorkspaceDatabase();
             using var fresh = new TemporaryWorkspaceDatabase();
@@ -200,7 +202,9 @@ namespace Chatcheology.Data.Tests.Workspace
 
             using var connection = WorkspaceDatabase.OpenConnection(workspace.DatabasePath);
 
-            Assert.Equal(2, WorkspaceDatabase.ReadSchemaVersion(connection));
+            Assert.Equal(
+                WorkspaceDatabase.SchemaVersion, WorkspaceDatabase.ReadSchemaVersion(connection));
+
             Assert.Equal(schemaAfterFirst, ReadSchemaObjects(connection));
             Assert.Equal(versionOneFactsAfterFirst, ReadVersionOneFacts(connection));
 

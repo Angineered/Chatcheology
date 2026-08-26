@@ -40,7 +40,7 @@ namespace Chatcheology.Data.Tests.Sequence
             fixture.AnalyseAssignments();
 
             Assert.Equal(before, DescribeWorkspaceState(fixture));
-            Assert.Equal(2, fixture.Workspace.ScalarLongReadOnly("PRAGMA user_version;"));
+            Assert.Equal(3, fixture.Workspace.ScalarLongReadOnly("PRAGMA user_version;"));
 
             Assert.Equal(
                 2,

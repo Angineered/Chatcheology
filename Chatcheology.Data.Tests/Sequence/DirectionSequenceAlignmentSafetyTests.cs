@@ -37,6 +37,13 @@ namespace Chatcheology.Data.Tests.Sequence
         {
             using var fixture = Populated();
 
+            // The schema declares indexes of its own, so what matters is that the run adds none:
+            // counted before and compared afterwards rather than asserted to be zero.
+            const string explicitIndexCount =
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name NOT LIKE 'sqlite_%';";
+
+            var indexesBefore = fixture.Workspace.ScalarLongReadOnly(explicitIndexCount);
+
             _ = fixture.AnalyseAlignment();
 
             Assert.Equal(
@@ -50,10 +57,7 @@ namespace Chatcheology.Data.Tests.Sequence
                     "SELECT COUNT(*) FROM Attachment WHERE ResolvedMediaAssetID IS NOT NULL;"));
 
             Assert.Equal(
-                0,
-                fixture.Workspace.ScalarLongReadOnly(
-                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' "
-                    + "AND name NOT LIKE 'sqlite_%';"));
+                indexesBefore, fixture.Workspace.ScalarLongReadOnly(explicitIndexCount));
         }
 
         [Fact]

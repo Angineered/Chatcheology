@@ -650,7 +650,8 @@ namespace Chatcheology.Data.Tests.Workspace
 
             using (var setup = WorkspaceDatabase.OpenConnection(workspace.DatabasePath))
             {
-                Execute(setup, "PRAGMA user_version = 3;");
+                // One beyond the current version: a workspace written by a build ahead of this one.
+                Execute(setup, "PRAGMA user_version = 4;");
             }
 
             Assert.Throws<InvalidOperationException>(() => new WorkspaceImporter()
@@ -658,7 +659,7 @@ namespace Chatcheology.Data.Tests.Workspace
 
             using var connection = WorkspaceDatabase.OpenConnection(workspace.DatabasePath);
 
-            Assert.Equal(3, WorkspaceDatabase.ReadSchemaVersion(connection));
+            Assert.Equal(4, WorkspaceDatabase.ReadSchemaVersion(connection));
             Assert.Equal(0, CountRows(connection, "Message"));
         }
 

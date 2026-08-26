@@ -263,7 +263,7 @@ namespace Chatcheology.Data.Tests.Media
             WaSequenceScopeTestRunner.Analyse(workspace, (sourceID, 1));
 
             Assert.Equal(before, DescribeWorkspaceState(workspace));
-            Assert.Equal(2, workspace.ScalarLongReadOnly("PRAGMA user_version;"));
+            Assert.Equal(3, workspace.ScalarLongReadOnly("PRAGMA user_version;"));
         }
 
         /// <remarks>

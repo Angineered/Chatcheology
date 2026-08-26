@@ -36,7 +36,7 @@ namespace Chatcheology.Data.Tests.Workspace
         /// notice.
         /// </remarks>
         [Fact]
-        public void Initialise_NewDatabase_SetsSchemaVersionToTwo()
+        public void Initialise_NewDatabase_SetsSchemaVersionToThree()
         {
             using var workspace = new TemporaryWorkspaceDatabase();
 
@@ -44,7 +44,7 @@ namespace Chatcheology.Data.Tests.Workspace
 
             using var connection = WorkspaceDatabase.OpenConnection(workspace.DatabasePath);
 
-            Assert.Equal(2, WorkspaceDatabase.ReadSchemaVersion(connection));
+            Assert.Equal(3, WorkspaceDatabase.ReadSchemaVersion(connection));
             Assert.Equal(WorkspaceDatabase.SchemaVersion, WorkspaceDatabase.ReadSchemaVersion(connection));
         }
 
@@ -107,19 +107,19 @@ namespace Chatcheology.Data.Tests.Workspace
 
             using var connection = WorkspaceDatabase.OpenConnection(workspace.DatabasePath);
 
-            Assert.Equal(2, WorkspaceDatabase.ReadSchemaVersion(connection));
+            Assert.Equal(3, WorkspaceDatabase.ReadSchemaVersion(connection));
 
             // Recreating the schema would have destroyed this row.
             Assert.Equal(1, CountRows(connection, "Conversation"));
         }
 
         /// <remarks>
-        /// Version 1 is deliberately absent: it is the one version this build migrates rather than
-        /// rejects, and the migration has its own tests. Version 2 is the current version and is
-        /// accepted.
+        /// Versions 1 and 2 are deliberately absent: they are the versions this build migrates rather
+        /// than rejects, and the migrations have their own tests. Version 3 is the current version and
+        /// is accepted. Version 4 stands for a workspace written by a build ahead of this one.
         /// </remarks>
         [Theory]
-        [InlineData(3)]
+        [InlineData(4)]
         [InlineData(99)]
         public void Initialise_UnsupportedSchemaVersion_IsRejected(int userVersion)
         {
@@ -141,9 +141,9 @@ namespace Chatcheology.Data.Tests.Workspace
 
         /// <remarks>
         /// The failure is induced by a version-0 database that already contains an object colliding
-        /// with a workspace table. <c>Message</c> is the fifth of the ten tables created, so creation
-        /// gets part way through and then fails, which is exactly the partial-schema case that must
-        /// not survive.
+        /// with a workspace table. <c>Message</c> is the fifth of the eighteen tables created, so
+        /// creation gets part way through and then fails, which is exactly the partial-schema case
+        /// that must not survive.
         /// </remarks>
         [Fact]
         public void Initialise_WhenSchemaCreationFails_LeavesVersionZeroAndNoWorkspaceTables()

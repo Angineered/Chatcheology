@@ -60,6 +60,14 @@ namespace Chatcheology.Data.Workspace
                     $"Nothing has been written and the database is still version " +
                     $"{WorkspaceDatabase.VersionOneSchemaVersion}.",
 
+                WorkspaceDatabase.VersionTwoSchemaVersion =>
+                    $"The workspace database is schema version " +
+                    $"{WorkspaceDatabase.VersionTwoSchemaVersion} and has not been migrated to " +
+                    $"version {WorkspaceDatabase.SchemaVersion}. Run WorkspaceDatabase.Initialise " +
+                    $"to migrate it first; {operationDescription} does not migrate implicitly. " +
+                    $"Nothing has been written and the database is still version " +
+                    $"{WorkspaceDatabase.VersionTwoSchemaVersion}.",
+
                 _ =>
                     $"The workspace database reports schema version {schemaVersion}, which this " +
                     $"build does not support; {operationDescription} requires version " +

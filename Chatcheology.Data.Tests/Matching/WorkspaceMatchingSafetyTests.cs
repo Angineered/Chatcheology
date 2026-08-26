@@ -58,7 +58,7 @@ namespace Chatcheology.Data.Tests.Matching
             Assert.Equal(before, DescribeSchema(workspace));
 
             Assert.Equal(
-                2, workspace.ScalarLongReadOnly("PRAGMA user_version;"));
+                3, workspace.ScalarLongReadOnly("PRAGMA user_version;"));
         }
 
         /// <remarks>

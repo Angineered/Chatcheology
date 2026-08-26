@@ -15,8 +15,14 @@ namespace Chatcheology.Data.Workspace
     /// The schema version lives in SQLite's own <c>PRAGMA user_version</c> header field rather than
     /// in a table of our own, so a workspace file describes itself without needing to be queried
     /// through application code. There is no migration engine: version 0 is created as the current
-    /// schema outright, version 1 is migrated by one explicit step, version
+    /// schema outright, versions 1 and 2 are each migrated by one explicit step, version
     /// <see cref="SchemaVersion"/> is accepted, and anything else is rejected.
+    /// </para>
+    /// <para>
+    /// Nothing here acquires <see cref="WorkspaceExclusiveLock"/>. Creating or migrating a workspace
+    /// is the same operation it has always been, and every existing caller keeps its behaviour; the
+    /// exclusive lock is owned by whichever caller needs a whole protocol protected, which is what
+    /// the real Phase 7 migration protocol does around this method rather than inside it.
     /// </para>
     /// <para>
     /// Write-ahead logging is deliberately not enabled, so a workspace is a single file with no
@@ -28,7 +34,7 @@ namespace Chatcheology.Data.Workspace
         /// <summary>
         /// The workspace schema version this build creates and accepts.
         /// </summary>
-        public const int SchemaVersion = 2;
+        public const int SchemaVersion = 3;
 
         /// <summary>
         /// The <c>user_version</c> of a SQLite database that has never had a workspace schema
@@ -37,9 +43,42 @@ namespace Chatcheology.Data.Workspace
         internal const int UninitialisedSchemaVersion = 0;
 
         /// <summary>
-        /// The one historical schema version this build can migrate forward.
+        /// The oldest historical schema version this build can migrate forward.
         /// </summary>
         internal const int VersionOneSchemaVersion = 1;
+
+        /// <summary>
+        /// The schema version immediately before the current one, and the version every workspace
+        /// written by the previous build carries.
+        /// </summary>
+        internal const int VersionTwoSchemaVersion = 2;
+
+        /// <summary>
+        /// Every application table a version-2 workspace has, and the only ones it has.
+        /// </summary>
+        /// <remarks>
+        /// One canonical list, shared by the pre-migration gate that refuses to migrate anything but
+        /// exactly this set and by the reconciliation that proves a migration left all ten untouched.
+        /// Two copies of it would be free to drift into disagreeing about what a version-2 workspace
+        /// is, which is precisely the bookkeeping error this single definition exists to prevent.
+        /// <para>
+        /// The order is the version-1-then-version-2 creation order, not alphabetical, so it reads
+        /// against the schema statements it describes.
+        /// </para>
+        /// </remarks>
+        internal static readonly string[] VersionTwoTableNames =
+        [
+            "ImportSource",
+            "Conversation",
+            "Participant",
+            "ConversationParticipant",
+            "Message",
+            "MediaSource",
+            "MediaAsset",
+            "MediaFile",
+            "MediaAssetFile",
+            "Attachment",
+        ];
 
         /// <summary>
         /// The stored <c>Attachment.ResolutionStatus</c> of an attachment that is not linked to a
@@ -354,6 +393,355 @@ namespace Chatcheology.Data.Workspace
         ];
 
         /// <summary>
+        /// The tables and indexes version 3 adds, one statement per element, in creation order.
+        /// </summary>
+        /// <remarks>
+        /// These are the Phase 7 evidence and decision tables. They are purely additive: no version-1
+        /// or version-2 table, column or constraint is altered by any statement here, and the only
+        /// relationship to the existing schema is a child foreign key pointing at it.
+        /// <para>
+        /// Every table starts and stays empty as far as this file is concerned. There is no backfill
+        /// and no derivation: computing evidence, ranking candidates, recording a review and
+        /// resolving an attachment are all later milestones with their own code, and a migration that
+        /// invented a single row of any of it would be asserting a matching decision the project has
+        /// not earned.
+        /// </para>
+        /// <para>
+        /// The vocabularies are spelled out as <c>CHECK</c> constraints rather than left to
+        /// application code, for the reason version 2 already applies to
+        /// <c>Attachment.ResolutionStatus</c>: a value outside the agreed set is not a value this
+        /// project has a meaning for, and the database is the one place that cannot be bypassed.
+        /// </para>
+        /// <para>
+        /// Three explicit indexes are declared, and only three. The event tables carry no
+        /// <c>UNIQUE</c> constraint to index their attachment or candidate column as a side effect,
+        /// and every later milestone reads them that way; everywhere else the primary-key and unique
+        /// constraints already index what a lookup would use, so declaring more would be indexing
+        /// against query code that does not exist yet.
+        /// </para>
+        /// </remarks>
+        private static readonly string[] VersionThreeSchemaStatements =
+        [
+            // One Phase 7 evidence run. Status is a lifecycle, not an outcome: a run that has not
+            // finished, or that failed, must never be mistaken for the current evidence, so the
+            // paired CHECK makes a completed run inseparable from the moment it completed.
+            //
+            // PreRunWorkspaceFileSha256 is the byte identity of the workspace file immediately
+            // before this run's first write. It is deliberately not an evidence fingerprint: once
+            // Phase 7 writes to the workspace, this value legitimately differs between runs because
+            // of Phase 7's own accumulating history, and a difference between two runs' values is
+            // never evidence that the underlying Phase 6 evidence changed.
+            """
+            CREATE TABLE Phase7Run (
+                RunID                      INTEGER PRIMARY KEY,
+                StartedAtUtc               TEXT NOT NULL,
+                CompletedAtUtc             TEXT NULL,
+                Status                     TEXT NOT NULL,
+                PreRunWorkspaceFileSha256  TEXT NOT NULL COLLATE NOCASE,
+                RankingDimensionSetVersion TEXT NOT NULL,
+
+                CHECK (Status IN ('Running', 'Completed', 'Failed')),
+                CHECK (Status <> 'Completed' OR CompletedAtUtc IS NOT NULL),
+                CHECK (length(PreRunWorkspaceFileSha256) = 64),
+                CHECK (length(RankingDimensionSetVersion) > 0)
+            );
+            """,
+
+            // One row per attachment per run, including every attachment that produced no candidate
+            // at all. That is the whole point of this table: a zero count is a recorded finding, and
+            // the absence of a row means the attachment was not evaluated in that run. Those are
+            // different facts and must not look alike.
+            //
+            // IsWithinDirectionImpossibleGroup and IsForcedPositionGroupShape are group-shape facts
+            // about the attachment's message, not about any candidate, which is why they live here
+            // rather than on a candidate row. RemainingCompatiblePositionCountUnderHypothesis is
+            // explanatory context only: nothing ranks by it, because a smaller surviving count is
+            // not a claim that any individual candidate is more likely to be correct.
+            """
+            CREATE TABLE AttachmentEvidenceSnapshot (
+                AttachmentEvidenceSnapshotID                    INTEGER PRIMARY KEY,
+                RunID                                           INTEGER NOT NULL,
+                AttachmentID                                    INTEGER NOT NULL,
+                ExactDateCandidateCount                         INTEGER NOT NULL,
+                AdjacentDateContextCount                        INTEGER NOT NULL,
+                HasAnyCompatibleAnnotatedCandidate              INTEGER NOT NULL,
+                HasAnyContradictoryOnlyAnnotatedCandidate       INTEGER NOT NULL,
+                IsWithinDirectionImpossibleGroup                INTEGER NOT NULL,
+                IsForcedPositionGroupShape                      INTEGER NOT NULL,
+                RemainingCompatiblePositionCountUnderHypothesis  INTEGER NULL,
+
+                UNIQUE (RunID, AttachmentID),
+
+                CHECK (ExactDateCandidateCount >= 0),
+                CHECK (AdjacentDateContextCount >= 0),
+                CHECK (HasAnyCompatibleAnnotatedCandidate IN (0, 1)),
+                CHECK (HasAnyContradictoryOnlyAnnotatedCandidate IN (0, 1)),
+                CHECK (IsWithinDirectionImpossibleGroup IN (0, 1)),
+                CHECK (IsForcedPositionGroupShape IN (0, 1)),
+                CHECK (
+                    RemainingCompatiblePositionCountUnderHypothesis IS NULL
+                    OR RemainingCompatiblePositionCountUnderHypothesis >= 0
+                ),
+
+                FOREIGN KEY (RunID) REFERENCES Phase7Run (RunID),
+                FOREIGN KEY (AttachmentID) REFERENCES Attachment (AttachmentID)
+            );
+            """,
+
+            // One exact-date candidate relation: this attachment, this deduplicated payload, in this
+            // run. Exact date only. Adjacent-date evidence is a weaker, separately modelled context
+            // and is never promoted into this table, however empty this table is for an attachment.
+            //
+            // DirectionCompatibilityAnnotation is the one candidate-level aggregate here, because it
+            // already had defined many-to-one semantics before Phase 7 existed: the matching code
+            // computes exactly this verdict from a relationship's supporting copies. Everything else
+            // Phase 6 established about sequence behaviour is a property of one physical occurrence
+            // and lives in the occurrence table, not here.
+            //
+            // ContradictoryOnly is a recorded annotation and never an exclusion. A duplicate payload
+            // can survive in another chat's or another device's history while the copy that belonged
+            // to this conversation is gone, so a candidate annotated that way stays a candidate.
+            """
+            CREATE TABLE AttachmentCandidate (
+                AttachmentCandidateID            INTEGER PRIMARY KEY,
+                RunID                            INTEGER NOT NULL,
+                AttachmentID                     INTEGER NOT NULL,
+                MediaAssetID                     INTEGER NOT NULL,
+                DirectionCompatibilityAnnotation TEXT NOT NULL,
+
+                UNIQUE (RunID, AttachmentID, MediaAssetID),
+
+                CHECK (DirectionCompatibilityAnnotation IN
+                    ('Unknown', 'Compatible', 'Mixed', 'ContradictoryOnly')),
+
+                FOREIGN KEY (RunID) REFERENCES Phase7Run (RunID),
+                FOREIGN KEY (AttachmentID) REFERENCES Attachment (AttachmentID),
+                FOREIGN KEY (MediaAssetID) REFERENCES MediaAsset (MediaAssetID)
+            );
+            """,
+
+            // Sequence evidence at the scope Phase 6 actually established it: one physical file, not
+            // one deduplicated payload. Two supporting copies of the same payload on the same date
+            // legitimately carry different tokens, so a single asset-level token or order verdict
+            // would be a property no file ever had.
+            //
+            // MediaFileID is a plain reference. No file name and no path is stored here: the token is
+            // the small integer the approved grammar already reduces a name to, which is a derived
+            // fact rather than recovered private data.
+            //
+            // The grammar pairings are biconditional on purpose. If the grammar parsed, both derived
+            // facts are computable and must be present; if it did not, neither exists and the order
+            // reading is not assessable. A half-populated occurrence row would otherwise reach a
+            // later ranking computation looking like a computed negative.
+            //
+            // The collision rule is stated with IS NOT rather than an equality that NULL would make
+            // unknown, so the constraint says what it means on its own instead of depending on the
+            // grammar constraints above it to rule the NULL case out.
+            """
+            CREATE TABLE AttachmentCandidateOccurrenceEvidence (
+                AttachmentCandidateOccurrenceEvidenceID INTEGER PRIMARY KEY,
+                AttachmentCandidateID                   INTEGER NOT NULL,
+                MediaFileID                             INTEGER NOT NULL,
+                TokenGrammarSupported                   INTEGER NOT NULL,
+                SequenceToken                           INTEGER NULL,
+                DateTokenKeyUniqueToPayload             INTEGER NULL,
+                OrderConsistencyAnnotation              TEXT NOT NULL,
+
+                UNIQUE (AttachmentCandidateID, MediaFileID),
+
+                CHECK (TokenGrammarSupported IN (0, 1)),
+                CHECK (SequenceToken IS NULL OR SequenceToken BETWEEN 0 AND 9999),
+                CHECK (DateTokenKeyUniqueToPayload IS NULL OR DateTokenKeyUniqueToPayload IN (0, 1)),
+                CHECK (OrderConsistencyAnnotation IN (
+                    'NotAssessable',
+                    'NoCompatibleArrangement',
+                    'CompatibleWithAmbiguity',
+                    'UniquelyConstrained')),
+
+                CHECK (SequenceToken IS NULL OR TokenGrammarSupported = 1),
+                CHECK (TokenGrammarSupported = 0 OR SequenceToken IS NOT NULL),
+                CHECK (DateTokenKeyUniqueToPayload IS NULL OR TokenGrammarSupported = 1),
+                CHECK (TokenGrammarSupported = 0 OR DateTokenKeyUniqueToPayload IS NOT NULL),
+
+                CHECK (TokenGrammarSupported = 1 OR OrderConsistencyAnnotation = 'NotAssessable'),
+                CHECK (
+                    DateTokenKeyUniqueToPayload IS NOT 0
+                    OR OrderConsistencyAnnotation = 'NotAssessable'
+                ),
+
+                FOREIGN KEY (AttachmentCandidateID)
+                    REFERENCES AttachmentCandidate (AttachmentCandidateID),
+
+                FOREIGN KEY (MediaFileID) REFERENCES MediaFile (MediaFileID)
+            );
+            """,
+
+            // Adjacent-date context, kept deliberately inert. It carries no evidence column and no
+            // ranking column at all, so there is nothing here a later ranking computation could read
+            // even by accident. It exists so that an attachment whose exact-date set is empty still
+            // has its weaker context recorded and visible rather than silently absent.
+            """
+            CREATE TABLE AttachmentAdjacentDateContext (
+                AttachmentAdjacentDateContextID INTEGER PRIMARY KEY,
+                RunID                           INTEGER NOT NULL,
+                AttachmentID                    INTEGER NOT NULL,
+                MediaAssetID                    INTEGER NOT NULL,
+                AdjacentOffsetDays              INTEGER NOT NULL,
+
+                UNIQUE (RunID, AttachmentID, MediaAssetID, AdjacentOffsetDays),
+
+                CHECK (AdjacentOffsetDays IN (-1, 1)),
+
+                FOREIGN KEY (RunID) REFERENCES Phase7Run (RunID),
+                FOREIGN KEY (AttachmentID) REFERENCES Attachment (AttachmentID),
+                FOREIGN KEY (MediaAssetID) REFERENCES MediaAsset (MediaAssetID)
+            );
+            """,
+
+            // A human's review of one attachment, against one specific evidence run. SourceRunID is
+            // mandatory because a review is always a review of a particular snapshot, never of "the
+            // evidence" in the abstract.
+            //
+            // The one recordable outcome is that the evidence was reviewed and found insufficient.
+            // Whether every candidate in a run has been independently disproven is derived by asking
+            // that question of that run, never stored here, because a later run's candidate set would
+            // make a stored answer quietly wrong.
+            """
+            CREATE TABLE AttachmentReviewEvent (
+                AttachmentReviewEventID INTEGER PRIMARY KEY,
+                AttachmentID            INTEGER NOT NULL,
+                SourceRunID             INTEGER NOT NULL,
+                ReviewOutcome           TEXT NOT NULL,
+                ReviewNotes             TEXT NULL,
+                ActorLabel              TEXT NULL,
+                OccurredAtUtc           TEXT NOT NULL,
+
+                CHECK (ReviewOutcome = 'ReviewedInsufficientEvidence'),
+                CHECK (ReviewNotes IS NULL OR length(ReviewNotes) > 0),
+                CHECK (ActorLabel IS NULL OR length(ActorLabel) > 0),
+
+                FOREIGN KEY (AttachmentID) REFERENCES Attachment (AttachmentID),
+                FOREIGN KEY (SourceRunID) REFERENCES Phase7Run (RunID)
+            );
+            """,
+
+            """
+            CREATE INDEX IX_AttachmentReviewEvent_AttachmentID
+                ON AttachmentReviewEvent (AttachmentID);
+            """,
+
+            // One candidate ruled out, on a stated basis of its own. The reference is to the
+            // candidate row of one run rather than to an attachment-and-asset pair, so a candidate
+            // disproven under one run's evidence is not silently treated as disproven under a later
+            // run's: that row is a different candidate record and has to be ruled out on its own.
+            //
+            // Reason is required and non-empty. Phase 6 ranking or support evidence is not sufficient
+            // content for it — agreeing with a ranking is not disproving a candidate.
+            """
+            CREATE TABLE AttachmentCandidateDispositionEvent (
+                AttachmentCandidateDispositionEventID INTEGER PRIMARY KEY,
+                AttachmentCandidateID                 INTEGER NOT NULL,
+                Disposition                           TEXT NOT NULL,
+                Reason                                TEXT NOT NULL,
+                ActorLabel                            TEXT NULL,
+                OccurredAtUtc                         TEXT NOT NULL,
+
+                CHECK (Disposition = 'IndependentlyDisproven'),
+                CHECK (length(Reason) > 0),
+                CHECK (ActorLabel IS NULL OR length(ActorLabel) > 0),
+
+                FOREIGN KEY (AttachmentCandidateID)
+                    REFERENCES AttachmentCandidate (AttachmentCandidateID)
+            );
+            """,
+
+            """
+            CREATE INDEX IX_AttachmentCandidateDispositionEvent_AttachmentCandidateID
+                ON AttachmentCandidateDispositionEvent (AttachmentCandidateID);
+            """,
+
+            // The append-only history of every resolution decision. Nothing here is ever updated or
+            // deleted: undoing a decision is a new event that says so, which is why there is no
+            // reversal timestamp to write into an existing row.
+            //
+            // A confirmation must carry an independently justified basis and a description of it. The
+            // vocabulary is closed at two values on purpose, and neither of them can express "the
+            // evidence was convincing": no combination of Phase 6 evidence identifies an individual
+            // attachment, so there is deliberately no way to record one as though it did.
+            //
+            // A revocation carries its own reason instead. Why a resolution is no longer believed is
+            // a different question from what established it, and one field holding both would blur
+            // that for every later reader.
+            //
+            // SupersedesEventID is null exactly when the event is a Confirm: a fresh confirmation has
+            // nothing to supersede, and a replacement or revocation must say what it acts against.
+            // The composite foreign key makes the superseded event's attachment the same attachment,
+            // the way Message's composite key makes a sender belong to the message's own
+            // conversation, and it needs the UNIQUE below as its parent key. SQLite's MATCH SIMPLE
+            // semantics leave it unenforced when SupersedesEventID is null, which is precisely the
+            // Confirm case.
+            //
+            // That the superseded event is the attachment's *current effective* one is a fact about
+            // current state rather than about this row, so no CHECK or foreign key can express it. It
+            // is enforced by the service that writes these events, together with the projection onto
+            // Attachment, in one transaction.
+            """
+            CREATE TABLE AttachmentResolutionEvent (
+                AttachmentResolutionEventID INTEGER PRIMARY KEY,
+                AttachmentID                INTEGER NOT NULL,
+                EventType                   TEXT NOT NULL,
+                MediaAssetID                INTEGER NULL,
+                IndependentBasisType        TEXT NULL,
+                IndependentBasisDescription TEXT NULL,
+                RevocationReason            TEXT NULL,
+                SupersedesEventID           INTEGER NULL,
+                SourceRunID                 INTEGER NULL,
+                ActorLabel                  TEXT NULL,
+                OccurredAtUtc               TEXT NOT NULL,
+
+                UNIQUE (AttachmentResolutionEventID, AttachmentID),
+
+                CHECK (EventType IN ('Confirm', 'Revoke', 'ConfirmReplacement')),
+                CHECK (IndependentBasisType IS NULL OR IndependentBasisType IN
+                    ('HumanContentOrContextInspection', 'ExternalProvenanceOrGroundTruth')),
+                CHECK (IndependentBasisDescription IS NULL
+                    OR length(IndependentBasisDescription) > 0),
+                CHECK (RevocationReason IS NULL OR length(RevocationReason) > 0),
+                CHECK (ActorLabel IS NULL OR length(ActorLabel) > 0),
+
+                CHECK (
+                    (EventType IN ('Confirm', 'ConfirmReplacement')
+                        AND MediaAssetID IS NOT NULL
+                        AND IndependentBasisType IS NOT NULL
+                        AND IndependentBasisDescription IS NOT NULL
+                        AND RevocationReason IS NULL)
+                    OR
+                    (EventType = 'Revoke'
+                        AND MediaAssetID IS NULL
+                        AND IndependentBasisType IS NULL
+                        AND IndependentBasisDescription IS NULL
+                        AND RevocationReason IS NOT NULL)
+                ),
+
+                CHECK (EventType <> 'Confirm' OR SupersedesEventID IS NULL),
+                CHECK (EventType = 'Confirm' OR SupersedesEventID IS NOT NULL),
+
+                FOREIGN KEY (AttachmentID) REFERENCES Attachment (AttachmentID),
+                FOREIGN KEY (MediaAssetID) REFERENCES MediaAsset (MediaAssetID),
+                FOREIGN KEY (SourceRunID) REFERENCES Phase7Run (RunID),
+
+                FOREIGN KEY (SupersedesEventID, AttachmentID)
+                    REFERENCES AttachmentResolutionEvent (AttachmentResolutionEventID, AttachmentID)
+            );
+            """,
+
+            """
+            CREATE INDEX IX_AttachmentResolutionEvent_AttachmentID
+                ON AttachmentResolutionEvent (AttachmentID);
+            """,
+        ];
+
+        /// <summary>
         /// Creates one unresolved attachment for every already-persisted message whose content is
         /// exactly the media placeholder.
         /// </summary>
@@ -585,14 +973,19 @@ namespace Chatcheology.Data.Workspace
                     break;
 
                 case VersionOneSchemaVersion:
-                    MigrateVersionOneToVersionTwo(connection);
+                    MigrateVersionOneToVersionThree(connection);
+                    break;
+
+                case VersionTwoSchemaVersion:
+                    MigrateVersionTwoToVersionThree(connection);
                     break;
 
                 default:
                     throw new InvalidOperationException(
                         $"The workspace database reports schema version {existingVersion}, which " +
                         $"this build does not support. This build creates and accepts version " +
-                        $"{SchemaVersion} and can migrate version {VersionOneSchemaVersion}.");
+                        $"{SchemaVersion} and can migrate versions {VersionOneSchemaVersion} and " +
+                        $"{VersionTwoSchemaVersion}.");
             }
         }
 
@@ -607,17 +1000,9 @@ namespace Chatcheology.Data.Workspace
             {
                 command.Transaction = transaction;
 
-                foreach (var statement in VersionOneSchemaStatements)
-                {
-                    command.CommandText = statement;
-                    command.ExecuteNonQuery();
-                }
-
-                foreach (var statement in VersionTwoSchemaStatements)
-                {
-                    command.CommandText = statement;
-                    command.ExecuteNonQuery();
-                }
+                ApplyStatements(command, VersionOneSchemaStatements);
+                ApplyStatements(command, VersionTwoSchemaStatements);
+                ApplyStatements(command, VersionThreeSchemaStatements);
 
                 SetSchemaVersion(command);
             }
@@ -626,19 +1011,24 @@ namespace Chatcheology.Data.Workspace
         }
 
         /// <summary>
-        /// Migrates a version-1 workspace to version 2 in one transaction.
+        /// Migrates a version-1 workspace to version <see cref="SchemaVersion"/> in one transaction.
         /// </summary>
         /// <remarks>
         /// The version-1 tables, columns and rows are left exactly as they are. Nothing is rewritten
-        /// and nothing is dropped: the migration adds the version-2 tables and derives attachments
-        /// from messages that are already persisted.
+        /// and nothing is dropped: the migration adds the version-2 tables, derives attachments from
+        /// messages that are already persisted, and adds the version-3 tables.
+        /// <para>
+        /// One transaction covering both version steps, rather than two migrations run back to back.
+        /// A version-1 workspace has always reached the current version in one atomic jump, and that
+        /// contract does not change because "current" now means one version further on.
+        /// </para>
         /// <para>
         /// Foreign keys stay enforced throughout. The new tables are created in dependency order and
         /// the only rows inserted reference messages that already exist, so there is no point at
         /// which the constraints would have to be relaxed.
         /// </para>
         /// </remarks>
-        private static void MigrateVersionOneToVersionTwo(SqliteConnection connection)
+        private static void MigrateVersionOneToVersionThree(SqliteConnection connection)
         {
             using var transaction = connection.BeginTransaction();
 
@@ -646,25 +1036,157 @@ namespace Chatcheology.Data.Workspace
             {
                 command.Transaction = transaction;
 
-                foreach (var statement in VersionTwoSchemaStatements)
-                {
-                    command.CommandText = statement;
-                    command.ExecuteNonQuery();
-                }
+                ApplyStatements(command, VersionTwoSchemaStatements);
 
                 command.CommandText = BackfillPlaceholderAttachmentsStatement;
                 command.Parameters.AddWithValue(
                     "$mediaPlaceholderContent", ParsedMessage.MediaPlaceholderContent);
                 command.ExecuteNonQuery();
 
-                // The pragma that follows carries no parameters, and a leftover one would be an
+                // The statements that follow carry no parameters, and a leftover one would be an
                 // unused-parameter error rather than a silent no-op.
                 command.Parameters.Clear();
+
+                ApplyStatements(command, VersionThreeSchemaStatements);
 
                 SetSchemaVersion(command);
             }
 
             transaction.Commit();
+        }
+
+        /// <summary>
+        /// Migrates a version-2 workspace to version <see cref="SchemaVersion"/> in one transaction.
+        /// </summary>
+        /// <remarks>
+        /// Purely additive. The version-2 tables, columns, constraints and rows are left exactly as
+        /// they are; the migration only creates the Phase 7 tables and their indexes. There is no
+        /// backfill, because no Phase 7 row can be derived from anything the workspace already holds
+        /// without asserting a matching decision that has not been justified.
+        /// <para>
+        /// The table-set gate runs first, outside the transaction, so a workspace this build refuses
+        /// to migrate is never written to at all rather than written to and rolled back.
+        /// </para>
+        /// </remarks>
+        private static void MigrateVersionTwoToVersionThree(SqliteConnection connection)
+        {
+            RequireExactVersionTwoTableSet(connection);
+
+            using var transaction = connection.BeginTransaction();
+
+            using (var command = connection.CreateCommand())
+            {
+                command.Transaction = transaction;
+
+                ApplyStatements(command, VersionThreeSchemaStatements);
+
+                SetSchemaVersion(command);
+            }
+
+            transaction.Commit();
+        }
+
+        /// <summary>
+        /// Refuses to migrate anything but a workspace holding exactly the version-2 application
+        /// tables.
+        /// </summary>
+        /// <remarks>
+        /// Phase 7 is the first phase that intentionally writes to a workspace holding evidence, so
+        /// the migration establishes what it is migrating before it changes anything. An unexpected
+        /// table means this is not the workspace the schema statements were written against, and a
+        /// missing one means it is not a complete version-2 workspace; neither is a safe starting
+        /// point, and neither is worth guessing about.
+        /// <para>
+        /// Deliberately archive-agnostic. It asserts the shape every version-2 workspace has, not the
+        /// contents of any particular one: a synthetic workspace holding three messages and no
+        /// attachments is a perfectly legitimate version-2 workspace and is accepted here. Verifying
+        /// that a specific real archive still carries its expected counts belongs to the validation
+        /// harness that knows which archive it is looking at, not to generic migration code.
+        /// </para>
+        /// <para>
+        /// Baked into the migration path rather than offered as a guard a caller must remember to
+        /// call, so that every migration — synthetic or real — is checked the same way.
+        /// </para>
+        /// </remarks>
+        /// <exception cref="InvalidOperationException">
+        /// The database does not hold exactly the version-2 application tables. Nothing has been
+        /// written and the workspace is unchanged.
+        /// </exception>
+        private static void RequireExactVersionTwoTableSet(SqliteConnection connection)
+        {
+            var actual = ReadApplicationTableNames(connection);
+
+            var expected = new SortedSet<string>(VersionTwoTableNames, StringComparer.Ordinal);
+
+            var unexpected = actual.Except(expected, StringComparer.Ordinal).ToList();
+            var missing = expected.Except(actual, StringComparer.Ordinal).ToList();
+
+            if (unexpected.Count == 0 && missing.Count == 0)
+            {
+                return;
+            }
+
+            var detail = string.Join(
+                " ",
+                new[]
+                {
+                    missing.Count > 0 ? $"Missing: {string.Join(", ", missing)}." : null,
+                    unexpected.Count > 0 ? $"Unexpected: {string.Join(", ", unexpected)}." : null,
+                }.OfType<string>());
+
+            throw new InvalidOperationException(
+                $"The workspace database reports schema version {VersionTwoSchemaVersion} but does " +
+                $"not hold exactly the {VersionTwoTableNames.Length} tables a version-" +
+                $"{VersionTwoSchemaVersion} workspace has, so this build will not migrate it to " +
+                $"version {SchemaVersion}. {detail} Nothing has been written, no version-" +
+                $"{SchemaVersion} table has been created, and the workspace is still version " +
+                $"{VersionTwoSchemaVersion}.");
+        }
+
+        /// <summary>
+        /// Reads the names of the database's application tables, excluding SQLite's own internal
+        /// ones.
+        /// </summary>
+        /// <remarks>
+        /// The <c>sqlite_</c> prefix is reserved for SQLite's own objects, so excluding it by prefix
+        /// is how an application table is distinguished from bookkeeping this project did not create.
+        /// </remarks>
+        internal static SortedSet<string> ReadApplicationTableNames(SqliteConnection connection)
+        {
+            ArgumentNullException.ThrowIfNull(connection);
+
+            using var command = connection.CreateCommand();
+            command.CommandText =
+                """
+                SELECT name
+                FROM sqlite_master
+                WHERE type = 'table'
+                  AND name NOT LIKE 'sqlite_%'
+                ORDER BY name;
+                """;
+
+            var names = new SortedSet<string>(StringComparer.Ordinal);
+
+            using var reader = command.ExecuteReader();
+
+            while (reader.Read())
+            {
+                names.Add(reader.GetString(0));
+            }
+
+            return names;
+        }
+
+        /// <summary>
+        /// Executes one schema statement collection against an open command.
+        /// </summary>
+        private static void ApplyStatements(SqliteCommand command, string[] statements)
+        {
+            foreach (var statement in statements)
+            {
+                command.CommandText = statement;
+                command.ExecuteNonQuery();
+            }
         }
 
         /// <summary>
