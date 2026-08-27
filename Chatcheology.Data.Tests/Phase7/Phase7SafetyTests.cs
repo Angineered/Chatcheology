@@ -114,8 +114,15 @@ namespace Chatcheology.Data.Tests.Phase7
                     "SELECT COUNT(*) FROM Attachment WHERE ResolvedMediaAssetID IS NOT NULL;"));
         }
 
+        /// <remarks>
+        /// What this proves is that a Stage 7.1 run <em>creates</em> no decision row, over a fixture that
+        /// has none to begin with. It is deliberately not a claim that the tables are globally empty:
+        /// once Stage 7.2 records a legitimate decision they are not, and a run must still work. That a
+        /// run leaves pre-existing decision rows untouched is proved separately, whole-row, in
+        /// <c>Phase7StageSevenOneCompatibilityTests</c>.
+        /// </remarks>
         [Fact]
-        public void Run_LeavesTheStage72EventTablesEmpty()
+        public void Run_CreatesNoStage72EventRow()
         {
             using var fixture = BuildRichFixture();
 

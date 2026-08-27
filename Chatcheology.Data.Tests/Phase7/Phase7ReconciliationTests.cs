@@ -164,30 +164,76 @@ namespace Chatcheology.Data.Tests.Phase7
             Assert.Equal(["0,0,3"], shapes);
         }
 
+        /// <remarks>
+        /// <para>Re-pointed from the obsolete global-emptiness publication check, which Stage 7.2 made
+        /// invalid: once one legitimate decision exists, "the decision tables are empty" is a property no
+        /// workspace with real history can have, and asserting it would have made evidence refresh
+        /// permanently impossible.</para>
+        /// <para>What replaces it is the property that always held and always should: a publication
+        /// changes no decision row. Rows are seeded first, so the assertion is not vacuous, and the
+        /// comparison is whole-row against a checkpoint rather than the four aggregates the run-time
+        /// tripwire reads.</para>
+        /// </remarks>
         [Fact]
-        public void Publish_TheThreeStageSevenTwoEventTables_StayEmpty()
+        public void Publish_PreExistingStageSevenTwoDecisionRows_AreUnchanged()
         {
             using var fixture = new Phase7TestFixture();
             var date = Phase7TestFixture.FirstDate;
 
-            fixture.AddOutgoingGroup(date, memberCount: 2, positionCount: 3);
+            var attachment = fixture.AddOutgoing(date);
+            var asset = fixture.AddTokenAsset(date, isSent: true, 1);
 
-            fixture.Run();
+            var first = fixture.Run();
 
-            Assert.Equal(
-                0,
-                fixture.ScalarLong(
-                    """
-                    SELECT (SELECT COUNT(*) FROM AttachmentReviewEvent)
-                         + (SELECT COUNT(*) FROM AttachmentCandidateDispositionEvent)
-                         + (SELECT COUNT(*) FROM AttachmentResolutionEvent);
-                    """));
+            var candidate = fixture.ScalarLong(
+                $"""
+                SELECT AttachmentCandidateID FROM AttachmentCandidate
+                WHERE RunID = {first.RunID} AND AttachmentID = {attachment}
+                  AND MediaAssetID = {asset};
+                """);
+
+            // Seeded directly: this test is about the publication path, not about the decision services.
+            fixture.ExecuteDirect(
+                $"""
+                INSERT INTO AttachmentReviewEvent (
+                    AttachmentID, SourceRunID, ReviewOutcome, ReviewNotes, OccurredAtUtc)
+                VALUES (
+                    {attachment}, {first.RunID}, 'ReviewedInsufficientEvidence', 'Seeded',
+                    '2026-08-27T09:00:00.0000000Z');
+
+                INSERT INTO AttachmentCandidateDispositionEvent (
+                    AttachmentCandidateID, Disposition, Reason, OccurredAtUtc)
+                VALUES (
+                    {candidate}, 'IndependentlyDisproven', 'Seeded',
+                    '2026-08-27T09:00:00.0000000Z');
+                """);
+
+            var checkpointPath = Path.Combine(fixture.DirectoryPath, "decisions-before.db");
+
+            WorkspaceCheckpoint.CopyAsPermanentCheckpoint(fixture.DatabasePath, checkpointPath);
+
+            var second = fixture.Run();
+
+            Assert.Equal("Completed", fixture.RunStatus(second.RunID));
+
+            using var live = WorkspaceDatabase.OpenReadOnlyConnection(fixture.DatabasePath);
+
+            WorkspaceCheckpoint.RequireIdenticalTables(
+                live, checkpointPath, WorkspaceDatabase.VersionThreeDecisionTableNames);
         }
 
         /// <remarks>
         /// The mid-run tripwire, which the run reads once before it starts and again inside the
-        /// publication transaction. It covers the ten pre-existing tables' row counts and the
-        /// <c>Attachment</c> resolution distribution.
+        /// publication transaction. It covers the ten pre-existing tables' row counts, the
+        /// <c>Attachment</c> resolution distribution, and a four-aggregate reading of each of the three
+        /// Stage 7.2 decision tables.
+        /// <para>
+        /// The decision-table part is a <strong>tripwire, not a fingerprint</strong>: four aggregates can
+        /// collide, so it proves neither exact primary-key-set equality nor anything about non-key
+        /// columns. What covers those is that Stage 7.1 has no data-modifying statement naming these
+        /// tables at all, asserted structurally, plus the whole-row checkpoint comparison in the Stage
+        /// 7.1/7.2 compatibility tests.
+        /// </para>
         /// </remarks>
         [Fact]
         public void Baseline_ReadsThePreExistingRowCountsAndTheAttachmentDistribution()
@@ -211,6 +257,14 @@ namespace Chatcheology.Data.Tests.Phase7
 
             Assert.Contains(
                 "Attachment[Unresolved,unlinked=1]=1", baseline.Signature, StringComparison.Ordinal);
+
+            foreach (var tableName in WorkspaceDatabase.VersionThreeDecisionTableNames)
+            {
+                Assert.Contains(
+                    tableName + "[n=0,min=0,max=0,sum=0]",
+                    baseline.Signature,
+                    StringComparison.Ordinal);
+            }
         }
 
         /// <remarks>

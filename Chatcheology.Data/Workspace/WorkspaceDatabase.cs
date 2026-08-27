@@ -81,6 +81,38 @@ namespace Chatcheology.Data.Workspace
         ];
 
         /// <summary>
+        /// The three version-3 tables that hold human decisions rather than computed evidence.
+        /// </summary>
+        /// <remarks>
+        /// One canonical list, for the same reason <see cref="VersionTwoTableNames"/> is one: the
+        /// Stage 7.2 services write them, the Stage 7.1 publication tripwire detects a change a run
+        /// observes in their row count or primary-key aggregates, and the structural tests prove the
+        /// Stage 7.1 writer names none of them. Separate copies of the list would be free to drift into
+        /// disagreeing about which tables carry decisions.
+        /// <para>
+        /// Each of those three does a different job and none of them does all of it. The tripwire is
+        /// four aggregates and can collide, so it establishes neither the exact primary-key set nor
+        /// anything about non-key columns; the structural no-DML-path tests are what cover the columns
+        /// it cannot see; and whole-row preservation is established under test by
+        /// <c>WorkspaceCheckpoint.RequireIdenticalTables</c>, which needs a checkpoint a run must never
+        /// create.
+        /// </para>
+        /// <para>
+        /// Every one of them declares its own <c>&lt;TableName&gt;ID INTEGER PRIMARY KEY</c>, which is
+        /// the convention the publication tripwire relies on to name each table's key column.
+        /// </para>
+        /// <para>
+        /// The order is the version-3 creation order, matching the schema statements below.
+        /// </para>
+        /// </remarks>
+        internal static readonly string[] VersionThreeDecisionTableNames =
+        [
+            "AttachmentReviewEvent",
+            "AttachmentCandidateDispositionEvent",
+            "AttachmentResolutionEvent",
+        ];
+
+        /// <summary>
         /// The stored <c>Attachment.ResolutionStatus</c> of an attachment that is not linked to a
         /// media asset.
         /// </summary>

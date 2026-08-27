@@ -31,10 +31,21 @@ namespace Chatcheology.Data.Phase7
         /// </summary>
         /// <remarks>
         /// Taken on a read-only connection before anything read-write is opened, and read again inside
-        /// the publication transaction. It covers the row counts of all ten pre-existing tables and
-        /// the <c>Attachment</c> resolution distribution, which is the narrow thing Stage 7.1 must be
-        /// able to say it did not touch. The whole-row proof is a test, not a run-time check: proving
-        /// byte identity needs a checkpoint copy, which a run must not create.
+        /// the publication transaction. It covers the row counts of all ten pre-existing tables, the
+        /// <c>Attachment</c> resolution distribution, and a lightweight aggregate over each of the three
+        /// Stage 7.2 decision tables — which together are the state Stage 7.1 must be able to say it did
+        /// not touch. The whole-row proof is a test, not a run-time check: proving it needs a checkpoint
+        /// copy, which a run must not create.
+        /// <para>
+        /// <strong>The decision-table part is a tripwire, not a fingerprint.</strong> It is four
+        /// aggregates per table — row count and the primary key's minimum, maximum and sum — so it
+        /// catches an ordinary insert or delete and many renumbering patterns, but four aggregates can
+        /// collide (<c>{1,2,5,6}</c> and <c>{1,3,4,6}</c> agree on all four), so it proves neither that
+        /// the exact key set is unchanged nor anything at all about non-key columns. What closes those
+        /// gaps for the case that matters is that Stage 7.1 has no data-modifying statement naming any
+        /// of these tables, which the structural tests assert, plus the synthetic whole-row comparison
+        /// against a checkpoint in the Stage 7.1/7.2 compatibility test.
+        /// </para>
         /// </remarks>
         internal static Phase7PreExistingBaseline ReadBaseline(
             SqliteConnection connection, SqliteTransaction? transaction = null)
@@ -72,8 +83,32 @@ namespace Chatcheology.Data.Phase7
                 }
             }
 
+            foreach (var tableName in WorkspaceDatabase.VersionThreeDecisionTableNames)
+            {
+                using var command = connection.CreateCommand();
+                command.Transaction = transaction;
+
+                // Same justification as the ten above: both identifiers come from a canonical list in
+                // this assembly, never from caller input, and neither can be parameterised. The key
+                // column's name follows the schema convention that list documents.
+                command.CommandText =
+                    $"SELECT COUNT(*), COALESCE(MIN({tableName}ID), 0), " +
+                    $"COALESCE(MAX({tableName}ID), 0), COALESCE(SUM({tableName}ID), 0) " +
+                    $"FROM {tableName};";
+
+                using var reader = command.ExecuteReader();
+
+                reader.Read();
+
+                parts.Add(
+                    $"{tableName}[n={Text(reader.GetInt64(0))},min={Text(reader.GetInt64(1))}," +
+                    $"max={Text(reader.GetInt64(2))},sum={Text(reader.GetInt64(3))}]");
+            }
+
             return new Phase7PreExistingBaseline(string.Join("|", parts));
         }
+
+        private static string Text(long value) => value.ToString(CultureInfo.InvariantCulture);
 
         /// <summary>
         /// Runs every publication check against <paramref name="transaction"/>, throwing on the first
@@ -117,7 +152,6 @@ namespace Chatcheology.Data.Phase7
             VerifyOccurrenceRowShapes(connection, transaction, runID);
             VerifyTwoPassAgreement(payload);
             VerifyPreExistingDataUnchanged(connection, transaction, baseline);
-            VerifyStageSevenTwoTablesEmpty(connection, transaction);
         }
 
         /// <summary>
@@ -159,8 +193,8 @@ namespace Chatcheology.Data.Phase7
         /// both possible causes without accusing either.
         /// </remarks>
         internal static string DescribePreExistingDataChange(string before, string after) =>
-            $"The workspace's pre-existing data changed during this run: the ten pre-existing tables " +
-            $"and the Attachment resolution distribution read '{before}' before the run began and " +
+            $"The workspace's pre-existing data changed during this run: the ten pre-existing tables, " +
+            $"the Attachment resolution distribution and the three Stage 7.2 decision tables read '{before}' before the run began and " +
             $"'{after}' inside the publication transaction. Either they were changed from outside " +
             $"this project's cooperating lock protocol, or this run has a defect. This run cannot " +
             $"distinguish those, so it publishes nothing and is marked Failed. No evidence row was " +
@@ -532,13 +566,6 @@ namespace Chatcheology.Data.Phase7
                 DescribePreExistingDataChange(baseline.Signature, now.Signature));
         }
 
-        private static void VerifyStageSevenTwoTablesEmpty(
-            SqliteConnection connection, SqliteTransaction transaction) =>
-            RequireEqual(
-                "the three Stage 7.2 event tables are still empty",
-                0,
-                ScalarLong(connection, transaction, StageSevenTwoEventRowCountStatement));
-
         // ---------------------------------------------------------------------------------------
         // Statements.
         // ---------------------------------------------------------------------------------------
@@ -567,7 +594,6 @@ namespace Chatcheology.Data.Phase7
             GroupInvariantStatement,
             DirectionInvariantStatement,
             OccurrenceRowShapeStatement,
-            StageSevenTwoEventRowCountStatement,
         ];
 
         private const string AttachmentResolutionDistributionStatement =
@@ -844,13 +870,6 @@ namespace Chatcheology.Data.Phase7
                            OR o.OrderConsistencyAnnotation <> 'NotAssessable'))
                   OR (o.DateTokenKeyUniqueToPayload = 0
                       AND o.OrderConsistencyAnnotation <> 'NotAssessable'));
-            """;
-
-        private const string StageSevenTwoEventRowCountStatement =
-            """
-            SELECT (SELECT COUNT(*) FROM AttachmentReviewEvent)
-                 + (SELECT COUNT(*) FROM AttachmentCandidateDispositionEvent)
-                 + (SELECT COUNT(*) FROM AttachmentResolutionEvent);
             """;
 
         // ---------------------------------------------------------------------------------------
