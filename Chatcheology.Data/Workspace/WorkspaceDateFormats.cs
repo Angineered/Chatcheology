@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 
 namespace Chatcheology.Data.Workspace
 {
@@ -35,6 +35,23 @@ namespace Chatcheology.Data.Workspace
         /// How <c>MediaFile.FileDate</c> is stored: a calendar date with no time and no zone.
         /// </summary>
         internal const string FileDate = "yyyy'-'MM'-'dd";
+
+        /// <summary>
+        /// Writes a wall-clock reading in the form <c>Message.MessageDateTimeLocal</c> stores.
+        /// </summary>
+        /// <remarks>
+        /// Here so that a caller needing a comparable value — the conversation viewer builds a
+        /// local-midnight threshold to find the first message on or after a chosen date — pairs the
+        /// format with <see cref="CultureInfo.InvariantCulture"/> the same way every other use of
+        /// it does, rather than pairing them again at the call site.
+        /// <para>
+        /// The stored form is fixed width and zero padded, so its text order is also its
+        /// chronological order. That is what makes a <c>&gt;=</c> comparison against a value built
+        /// here a comparison of instants rather than of strings that merely look like dates.
+        /// </para>
+        /// </remarks>
+        internal static string FormatMessageDateTimeLocal(DateTime value) =>
+            value.ToString(MessageDateTimeLocal, CultureInfo.InvariantCulture);
 
         /// <summary>
         /// Reads a stored <c>Message.MessageDateTimeLocal</c>.

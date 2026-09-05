@@ -8,13 +8,15 @@ unnecessary WhatsApp-specific assumptions where practical.
 
 ## Development status
 
-**Early foundation.** The repository currently contains the solution structure, a
+**Foundation, plus a read-only viewer.** The repository contains the solution structure, a
 synthetic test fixture, a text parser for one pinned WhatsApp Android export layout,
-version 2 of the workspace SQLite database, and the media inventory, hashing and
-deduplication services described below.
+version 3 of the workspace SQLite database, the media inventory, hashing and deduplication
+services described below, the evidence and reconstruction path that records what an
+attachment currently is or why it is not anything yet, and a desktop application that
+browses a workspace read-only.
 
-No media matching, archive generation or user interface functionality is implemented yet.
-The desktop application does not use the database.
+Archive generation is not implemented. Neither is any user interface for import, inventory
+or human review: the desktop application reads a workspace and never writes to one.
 
 ## Offline and privacy first
 
@@ -31,7 +33,7 @@ was derived from.
 
 - A WPF desktop application for import, recovery and archive management.
 - A shared core library holding parsing, media inventory, matching and archive logic.
-- A SQLite working database holding reconstruction state. Schema version 2 exists; see
+- A SQLite working database holding reconstruction state. Schema version 3 exists; see
   [Workspace database](#workspace-database).
 - A media inventory with SHA-256 deduplication.
 - Conservative, evidence-based media matching that can explain why a match was
@@ -48,7 +50,7 @@ file found that day.
 | --- | --- |
 | `Chatcheology.Core` | Shared library. Currently the chat export text parser only. |
 | `Chatcheology.Data` | Workspace SQLite persistence: schema, conversation import, and media inventory. |
-| `Chatcheology.Desktop` | WPF desktop application (.NET 10, Windows). Minimal shell. |
+| `Chatcheology.Desktop` | WPF desktop application (.NET 10, Windows). Read-only conversation viewer. |
 | `Chatcheology.Core.Tests` | xUnit tests for the core library. |
 | `Chatcheology.Data.Tests` | xUnit tests for the workspace database and media inventory. |
 
@@ -97,7 +99,7 @@ attachment belongs to the workspace database, not the parser.
 ## Workspace database
 
 Parsed messages can be persisted into a workspace SQLite database. The schema version is
-recorded in SQLite's own `PRAGMA user_version` and is currently version 2, which holds:
+recorded in SQLite's own `PRAGMA user_version` and is currently version 3, which holds:
 
 - the import source the messages came from
 - the conversation
@@ -105,6 +107,8 @@ recorded in SQLite's own `PRAGMA user_version` and is currently version 2, which
 - the messages
 - an attachment per expected media item belonging to a message
 - media sources, media files, deduplicated media assets, and which files carry which asset
+- the evidence a matching run recorded, the candidates it found, and the review,
+  disposition and resolution events a person has since written
 
 Creating the schema, migrating it and importing a conversation are each a single
 transaction, so a failure leaves neither a partially created workspace, nor a partially
@@ -112,8 +116,8 @@ migrated one, nor a partially imported conversation. Foreign keys are enforced o
 connection, and a message's sender must be a participant of the same conversation the
 message belongs to.
 
-Not implemented yet: media matching, archive generation, and any user interface for
-import or inventory. The desktop application does not consume the database, and the caller
+Not implemented yet: archive generation, and any user interface for import, inventory or
+human review. The desktop application consumes the database read-only, and the caller
 always supplies the workspace file path — no location is assumed.
 
 ### Attachments
@@ -196,19 +200,34 @@ their tests exist; running them over a real archive is a separate, deliberate st
 
 ### Not implemented
 
-Duration, width and height are never populated: no media metadata is extracted, and no
-image or video library is referenced. Nothing matches media to messages — attachments stay
-unresolved, and file dates, direction and file names are preserved purely as evidence for a
-matching phase that does not exist yet. Missing is better than wrong.
+Duration, width and height are never populated by the inventory: no media metadata is
+extracted, and no image or video library is referenced. Nothing resolves an attachment
+automatically — file dates, direction and file names are recorded as evidence a person
+weighs, and an attachment stays unresolved until someone decides otherwise. Missing is
+better than wrong.
+
+### What the source does not carry
+
+A chat export is not the chat application. Some things the application shows on screen are
+simply not written into the exported text, and where the source does not carry a fact,
+Chatcheology does not reconstruct one.
+
+In particular, Chatcheology does not infer reply relationships, forwarded-message status or
+reactions when those facts are not present in the imported source. They are not represented
+in the workspace and the viewer does not display them. There is no plan to add a manual
+annotation workflow for them: a person retyping from memory what an export omitted would be
+creating a record rather than preserving one, which is the opposite of what this project is
+for.
 
 ### Schema versions
 
 A database with no workspace schema is created as the current version outright. A
-version-1 workspace is migrated to version 2 in one transaction, which adds the five new
-tables and derives one unresolved attachment from each already-stored message whose
-content is exactly the media placeholder. Version-1 rows are never rewritten. Both paths
-apply the same version-2 statements, so a migrated workspace and a fresh one are the same
-database.
+version-1 or version-2 workspace is migrated to version 3 in one transaction. The
+version-2 step adds the media and attachment tables and derives one unresolved attachment
+from each already-stored message whose content is exactly the media placeholder; the
+version-3 step adds the evidence and decision tables, all of them empty. Existing rows are
+never rewritten, and every path applies the same statements, so a migrated workspace and a
+fresh one are the same database.
 
 Importing requires a workspace already at the current version. It does not create or
 migrate one: that is `WorkspaceDatabase.Initialise`'s responsibility, and keeping the two

@@ -4,9 +4,217 @@
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         xmlns:local="clr-namespace:Chatcheology.Desktop"
+        xmlns:vm="clr-namespace:Chatcheology.Desktop.ViewModels"
+        xmlns:controls="clr-namespace:Chatcheology.Desktop.Controls"
         mc:Ignorable="d"
-        Title="MainWindow" Height="450" Width="800">
-    <Grid>
+        Title="Chatcheology" Height="720" Width="1000"
+        Background="#FFF4F2EE">
 
-    </Grid>
+    <Window.Resources>
+        <BooleanToVisibilityConverter x:Key="BoolToVisibility" />
+
+        <!-- One attachment, in exactly one of its three states.
+
+             Unresolved is the archive's ordinary state and is coloured as a neutral note, never as
+             a warning: an attachment nobody has matched is not a fault, and colouring hundreds of
+             them as problems would report the project's own caution as damage.
+
+             A resolved attachment whose file is not reachable is styled as resolved, because it
+             is not an unresolved one. -->
+        <DataTemplate x:Key="AttachmentTemplate" DataType="{x:Type vm:AttachmentViewModel}">
+            <Border Margin="0,6,0,0" Padding="8" CornerRadius="4" BorderThickness="1">
+                <Border.Style>
+                    <Style TargetType="Border">
+                        <Setter Property="BorderBrush" Value="#FFB8B2A8" />
+                        <Setter Property="Background" Value="#FFEDE9E2" />
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding IsUnresolved}" Value="True">
+                                <Setter Property="BorderBrush" Value="#FFC7CDD4" />
+                                <Setter Property="Background" Value="#FFF3F5F8" />
+                            </DataTrigger>
+                            <DataTrigger Binding="{Binding IsResolvedAndUnavailable}" Value="True">
+                                <Setter Property="BorderBrush" Value="#FF8A8A8A" />
+                                <Setter Property="Background" Value="#FFE8E8E8" />
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </Border.Style>
+
+                <StackPanel>
+                    <TextBlock Text="{Binding HeadlineText}" FontWeight="SemiBold"
+                               TextWrapping="Wrap" />
+
+                    <TextBlock Text="{Binding AssetText}" Margin="0,2,0,0" Foreground="#FF3C3C3C"
+                               TextWrapping="Wrap"
+                               Visibility="{Binding HasAssetText,
+                                   Converter={StaticResource BoolToVisibility}}" />
+
+                    <TextBlock Text="{Binding DetailText}" Margin="0,2,0,0" FontSize="11"
+                               Foreground="#FF5A5A5A" TextWrapping="Wrap" />
+
+                    <Image Source="{Binding Thumbnail}" Margin="0,6,0,0"
+                           MaxWidth="320" MaxHeight="320"
+                           HorizontalAlignment="Left" Stretch="Uniform"
+                           Visibility="{Binding HasThumbnail,
+                               Converter={StaticResource BoolToVisibility}}" />
+
+                    <TextBlock Text="{Binding FileName}" Margin="0,4,0,0" FontSize="11"
+                               Foreground="#FF5A5A5A" TextWrapping="Wrap"
+                               Visibility="{Binding IsResolvedAndAvailable,
+                                   Converter={StaticResource BoolToVisibility}}" />
+
+                    <Button Content="Open media" Margin="0,4,0,0" Padding="8,2"
+                            HorizontalAlignment="Left"
+                            Click="OpenMediaClick"
+                            Visibility="{Binding CanOpenExternally,
+                                Converter={StaticResource BoolToVisibility}}" />
+
+                    <TextBlock Text="{Binding OpenError}" Margin="0,4,0,0" FontSize="11"
+                               Foreground="#FF8A2727" TextWrapping="Wrap" />
+                </StackPanel>
+            </Border>
+        </DataTemplate>
+
+        <!-- One message. The date separator is a property of the message rather than a grouping,
+             because WPF grouping switches container virtualisation off. -->
+        <DataTemplate DataType="{x:Type vm:MessageViewModel}">
+            <StackPanel>
+                <Border Margin="0,12,0,8" Padding="10,3" CornerRadius="9"
+                        Background="#FFDDD7CC" HorizontalAlignment="Center"
+                        Visibility="{Binding HasDateSeparator,
+                            Converter={StaticResource BoolToVisibility}}">
+                    <TextBlock Text="{Binding DateSeparatorText}" FontSize="11"
+                               Foreground="#FF3C3C3C" />
+                </Border>
+
+                <Border MaxWidth="620" Margin="8,2" Padding="10,7" CornerRadius="6"
+                        Background="White" BorderBrush="#FFDAD5CC" BorderThickness="1"
+                        HorizontalAlignment="{Binding BubbleAlignment}">
+                    <StackPanel>
+                        <DockPanel LastChildFill="False">
+                            <TextBlock Text="{Binding SenderText}" FontWeight="SemiBold"
+                                       Foreground="{Binding SenderBrush}"
+                                       DockPanel.Dock="Left" />
+
+                            <TextBlock Text="{Binding TimeText}" Margin="16,0,0,0" FontSize="11"
+                                       Foreground="#FF7A7A7A" DockPanel.Dock="Right" />
+                        </DockPanel>
+
+                        <!-- Inlines rather than Text, so web and email addresses are followable.
+                             Displaying one contacts nothing; a link is only followed on a click. -->
+                        <TextBlock Margin="0,3,0,0" TextWrapping="Wrap"
+                                   controls:LinkedText.Spans="{Binding TextSpans}"
+                                   Visibility="{Binding HasMessageText,
+                                       Converter={StaticResource BoolToVisibility}}" />
+
+                        <ItemsControl ItemsSource="{Binding Attachments}"
+                                      ItemTemplate="{StaticResource AttachmentTemplate}"
+                                      Visibility="{Binding HasAttachments,
+                                          Converter={StaticResource BoolToVisibility}}" />
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+        </DataTemplate>
+    </Window.Resources>
+
+    <DockPanel>
+        <!-- Toolbar -->
+        <Border DockPanel.Dock="Top" Background="#FFE7E2D9" BorderBrush="#FFCFC8BC"
+                BorderThickness="0,0,0,1" Padding="8,6">
+            <DockPanel LastChildFill="False">
+                <TextBlock Text="Chatcheology" FontWeight="Bold" FontSize="14"
+                           VerticalAlignment="Center" Margin="0,0,16,0" DockPanel.Dock="Left" />
+
+                <Button Content="Open Workspace…" Padding="10,3" Margin="0,0,12,0"
+                        Command="{Binding OpenWorkspaceCommand}" DockPanel.Dock="Left" />
+
+                <TextBlock Text="Conversation" VerticalAlignment="Center" Margin="0,0,6,0"
+                           DockPanel.Dock="Left" />
+
+                <ComboBox Width="200" Margin="0,0,16,0" DockPanel.Dock="Left"
+                          ItemsSource="{Binding Conversations}"
+                          SelectedItem="{Binding SelectedConversation}"
+                          DisplayMemberPath="Title" />
+
+                <TextBlock Text="Show as" VerticalAlignment="Center" Margin="0,0,6,0"
+                           DockPanel.Dock="Left" />
+
+                <ComboBox Width="150" Margin="0,0,16,0" DockPanel.Dock="Left"
+                          ItemsSource="{Binding Participants}"
+                          SelectedItem="{Binding LocalParticipant}"
+                          DisplayMemberPath="DisplayName"
+                          ToolTip="Session only. Nothing is written to the workspace." />
+
+                <DatePicker Width="130" Margin="0,0,6,0" DockPanel.Dock="Left"
+                            SelectedDate="{Binding JumpDate}" />
+
+                <Button Content="Jump to date" Padding="10,3" DockPanel.Dock="Left"
+                        Command="{Binding JumpToDateCommand}" />
+            </DockPanel>
+        </Border>
+
+        <!-- Footer -->
+        <Border DockPanel.Dock="Bottom" Background="#FFE7E2D9" BorderBrush="#FFCFC8BC"
+                BorderThickness="0,1,0,0" Padding="8,5">
+            <DockPanel LastChildFill="True">
+                <Button Content="◀ Previous" Padding="10,3" Margin="0,0,8,0"
+                        DockPanel.Dock="Left" Command="{Binding PreviousCommand}" />
+
+                <Button Content="Next ▶" Padding="10,3" Margin="0,0,16,0"
+                        DockPanel.Dock="Left" Command="{Binding NextCommand}" />
+
+                <TextBlock Text="{Binding WorkspaceText}" DockPanel.Dock="Right" FontSize="11"
+                           Foreground="#FF5A5A5A" VerticalAlignment="Center"
+                           TextTrimming="CharacterEllipsis" Margin="16,0,0,0" />
+
+                <TextBlock Text="{Binding RangeText}" VerticalAlignment="Center" FontSize="11"
+                           Foreground="#FF3C3C3C" />
+            </DockPanel>
+        </Border>
+
+        <!-- Status -->
+        <Border DockPanel.Dock="Bottom" Padding="8,4" Background="#FFF0EDE7">
+            <DockPanel LastChildFill="True">
+                <TextBlock Text="Working…" DockPanel.Dock="Right" FontSize="11"
+                           Foreground="#FF5A5A5A"
+                           Visibility="{Binding IsBusy,
+                               Converter={StaticResource BoolToVisibility}}" />
+
+                <TextBlock Text="{Binding StatusText}" FontSize="11" Foreground="#FF3C3C3C"
+                           TextTrimming="CharacterEllipsis" />
+            </DockPanel>
+        </Border>
+
+        <!-- Conversation.
+
+             The ItemsControl carries its own ScrollViewer with CanContentScroll set, so its
+             VirtualizingStackPanel actually virtualises. Putting the list inside an outer
+             ScrollViewer would give it infinite height and silently realise every item. -->
+        <DockPanel>
+            <TextBlock Text="{Binding ConversationTitle}" FontSize="13" FontWeight="SemiBold"
+                       Margin="12,8" DockPanel.Dock="Top" TextTrimming="CharacterEllipsis" />
+
+            <ItemsControl ItemsSource="{Binding Messages}"
+                          VirtualizingPanel.IsVirtualizing="True"
+                          VirtualizingPanel.VirtualizationMode="Recycling"
+                          ScrollViewer.CanContentScroll="True"
+                          ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                <ItemsControl.Template>
+                    <ControlTemplate TargetType="ItemsControl">
+                        <ScrollViewer CanContentScroll="True" Padding="4"
+                                      HorizontalScrollBarVisibility="Disabled"
+                                      VerticalScrollBarVisibility="Auto">
+                            <ItemsPresenter />
+                        </ScrollViewer>
+                    </ControlTemplate>
+                </ItemsControl.Template>
+
+                <ItemsControl.ItemsPanel>
+                    <ItemsPanelTemplate>
+                        <VirtualizingStackPanel />
+                    </ItemsPanelTemplate>
+                </ItemsControl.ItemsPanel>
+            </ItemsControl>
+        </DockPanel>
+    </DockPanel>
 </Window>

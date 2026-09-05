@@ -1,0 +1,543 @@
+using System.Collections.ObjectModel;
+using System.Globalization;
+using System.Windows.Media;
+using Chatcheology.Data.Viewer;
+using Chatcheology.Desktop.Services;
+
+namespace Chatcheology.Desktop.ViewModels
+{
+    /// <summary>
+    /// The viewer: one open workspace, one conversation, one bounded page at a time.
+    /// </summary>
+    /// <remarks>
+    /// <para><strong>Read-only, by construction.</strong> Every workspace is opened through
+    /// <see cref="WorkspaceSession"/>, whose connection SQLite itself will not let anything write
+    /// to. There is no confirm, replace, revoke or review action here; those belong to the phase
+    /// that adds them deliberately, through the services that already exist for them.</para>
+    /// <para><strong>Nothing about the operator is remembered.</strong> The local-participant
+    /// selection lives in this object and nowhere else — not in the workspace, not in a settings
+    /// file, not in the registry — and goes when the workspace is closed.</para>
+    /// </remarks>
+    public sealed class MainViewModel : ObservableObject
+    {
+        private readonly Func<string?> _chooseWorkspace;
+
+        private WorkspaceSession? _session;
+        private CancellationTokenSource? _navigation;
+
+        private ConversationSummary? _selectedConversation;
+        private ConversationParticipantSummary? _localParticipant;
+        private ConversationPage? _page;
+        private DateTime? _jumpDate;
+        private string _statusText = "Open a Chatcheology workspace to begin.";
+        private string _workspaceText = "No workspace open";
+        private string _rangeText = string.Empty;
+        private string _conversationTitle = string.Empty;
+        private bool _isBusy;
+
+        /// <summary>
+        /// Creates the viewer.
+        /// </summary>
+        /// <param name="chooseWorkspace">
+        /// Asks the operator for a workspace file, returning null if they decline. Supplied by the
+        /// window, because a file dialog is a window's business rather than a view-model's.
+        /// </param>
+        public MainViewModel(Func<string?> chooseWorkspace)
+        {
+            _chooseWorkspace = chooseWorkspace
+                ?? throw new ArgumentNullException(nameof(chooseWorkspace));
+
+            OpenWorkspaceCommand = new AsyncRelayCommand(OpenWorkspaceAsync);
+
+            PreviousCommand = new AsyncRelayCommand(
+                () => NavigateAsync(PageDirection.Before, _page?.FirstSequenceNumber ?? 1),
+                () => _page?.HasEarlier == true);
+
+            NextCommand = new AsyncRelayCommand(
+                () => NavigateAsync(PageDirection.From, (_page?.LastSequenceNumber ?? 0) + 1),
+                () => _page?.HasLater == true);
+
+            JumpToDateCommand = new AsyncRelayCommand(
+                JumpToDateAsync,
+                () => _session is not null && _jumpDate is not null);
+        }
+
+        // -----------------------------------------------------------------------------------
+        // Bound state.
+        // -----------------------------------------------------------------------------------
+
+        /// <summary>The conversations the open workspace holds.</summary>
+        public ObservableCollection<ConversationSummary> Conversations { get; } = [];
+
+        /// <summary>The participants of the selected conversation.</summary>
+        public ObservableCollection<ConversationParticipantSummary> Participants { get; } = [];
+
+        /// <summary>The messages of the page currently on screen.</summary>
+        public ObservableCollection<MessageViewModel> Messages { get; } = [];
+
+        /// <summary>Opens a workspace file.</summary>
+        public AsyncRelayCommand OpenWorkspaceCommand { get; }
+
+        /// <summary>Moves back one page.</summary>
+        public AsyncRelayCommand PreviousCommand { get; }
+
+        /// <summary>Moves forward one page.</summary>
+        public AsyncRelayCommand NextCommand { get; }
+
+        /// <summary>Moves to the first message on or after the chosen date.</summary>
+        public AsyncRelayCommand JumpToDateCommand { get; }
+
+        /// <summary>The conversation being browsed.</summary>
+        public ConversationSummary? SelectedConversation
+        {
+            get => _selectedConversation;
+            set
+            {
+                if (!SetProperty(ref _selectedConversation, value))
+                {
+                    return;
+                }
+
+                ConversationTitle = value?.Title ?? string.Empty;
+
+                Participants.Clear();
+
+                foreach (var participant in value?.Participants ?? [])
+                {
+                    Participants.Add(participant);
+                }
+
+                LocalParticipant = null;
+
+                _ = NavigateAsync(PageDirection.First, 0);
+            }
+        }
+
+        /// <summary>
+        /// The participant the operator has said to show as themselves, for this session only.
+        /// </summary>
+        /// <remarks>
+        /// Null is the state the viewer opens in, and it is not a gap to be filled: the workspace
+        /// records no exporting participant, so until somebody says otherwise no message claims to
+        /// be anybody's. This selection is never written anywhere.
+        /// </remarks>
+        public ConversationParticipantSummary? LocalParticipant
+        {
+            get => _localParticipant;
+            set
+            {
+                if (SetProperty(ref _localParticipant, value))
+                {
+                    ApplyAlignment();
+                }
+            }
+        }
+
+        /// <summary>The date the jump control is set to.</summary>
+        public DateTime? JumpDate
+        {
+            get => _jumpDate;
+            set
+            {
+                if (SetProperty(ref _jumpDate, value))
+                {
+                    JumpToDateCommand.RaiseCanExecuteChanged();
+                }
+            }
+        }
+
+        /// <summary>The selected conversation's title.</summary>
+        public string ConversationTitle
+        {
+            get => _conversationTitle;
+            private set => SetProperty(ref _conversationTitle, value);
+        }
+
+        /// <summary>What just happened, or what to do next.</summary>
+        public string StatusText
+        {
+            get => _statusText;
+            private set => SetProperty(ref _statusText, value);
+        }
+
+        /// <summary>The open workspace's path, or a note that there is none.</summary>
+        public string WorkspaceText
+        {
+            get => _workspaceText;
+            private set => SetProperty(ref _workspaceText, value);
+        }
+
+        /// <summary>Which part of the conversation is on screen.</summary>
+        public string RangeText
+        {
+            get => _rangeText;
+            private set => SetProperty(ref _rangeText, value);
+        }
+
+        /// <summary>Whether a read is in flight.</summary>
+        public bool IsBusy
+        {
+            get => _isBusy;
+            private set => SetProperty(ref _isBusy, value);
+        }
+
+        // -----------------------------------------------------------------------------------
+        // Opening.
+        // -----------------------------------------------------------------------------------
+
+        /// <remarks>
+        /// A refused workspace leaves the previous one open and untouched. Nothing is created and
+        /// nothing is migrated: a viewer pointed at an older workspace says so rather than
+        /// quietly changing it into one it can read.
+        /// </remarks>
+        private async Task OpenWorkspaceAsync()
+        {
+            var path = _chooseWorkspace();
+
+            if (string.IsNullOrWhiteSpace(path))
+            {
+                return;
+            }
+
+            WorkspaceSession session;
+
+            try
+            {
+                session = await Task.Run(() => WorkspaceSession.Open(path)).ConfigureAwait(true);
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                StatusText = exception.Message;
+
+                return;
+            }
+
+            CloseSession();
+
+            _session = session;
+            WorkspaceText = session.DatabasePath;
+
+            try
+            {
+                var conversations = await session
+                    .ReadConversationsAsync(CancellationToken.None)
+                    .ConfigureAwait(true);
+
+                Conversations.Clear();
+
+                foreach (var conversation in conversations)
+                {
+                    Conversations.Add(conversation);
+                }
+
+                JumpToDateCommand.RaiseCanExecuteChanged();
+
+                if (Conversations.Count == 0)
+                {
+                    StatusText = "That workspace holds no conversation.";
+
+                    return;
+                }
+
+                StatusText = Conversations.Count == 1
+                    ? "Workspace opened read-only."
+                    : $"Workspace opened read-only. {Text(Conversations.Count)} conversations.";
+
+                SelectedConversation = Conversations[0];
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                StatusText = exception.Message;
+            }
+        }
+
+        /// <summary>
+        /// Says something in the status line, for a failure the window noticed rather than a read.
+        /// </summary>
+        public void ReportStatus(string message) => StatusText = message;
+
+        /// <summary>Closes the open workspace, if there is one.</summary>
+        public void CloseSession()
+        {
+            _navigation?.Cancel();
+            _navigation = null;
+
+            _session?.Dispose();
+            _session = null;
+
+            Messages.Clear();
+            Participants.Clear();
+            Conversations.Clear();
+
+            _page = null;
+            _selectedConversation = null;
+            _localParticipant = null;
+
+            RangeText = string.Empty;
+            ConversationTitle = string.Empty;
+            WorkspaceText = "No workspace open";
+
+            RaiseNavigationCanExecuteChanged();
+        }
+
+        // -----------------------------------------------------------------------------------
+        // Navigating.
+        // -----------------------------------------------------------------------------------
+
+        private async Task JumpToDateAsync()
+        {
+            if (_session is null || SelectedConversation is null || JumpDate is not { } requested)
+            {
+                return;
+            }
+
+            var date = DateOnly.FromDateTime(requested);
+
+            try
+            {
+                var start = await _session
+                    .FindFirstSequenceNumberOnOrAfterAsync(
+                        SelectedConversation.ConversationID, date, CancellationToken.None)
+                    .ConfigureAwait(true);
+
+                if (start is { } sequenceNumber)
+                {
+                    await NavigateAsync(PageDirection.From, sequenceNumber).ConfigureAwait(true);
+
+                    return;
+                }
+
+                // Not a failure: the conversation simply ends before that date. The last page is
+                // where the operator was asking to go, so that is where they are taken.
+                await NavigateAsync(PageDirection.Last, 0).ConfigureAwait(true);
+
+                StatusText =
+                    $"No message falls on or after {date.ToString("d MMMM yyyy", Culture)}. " +
+                    $"Showing the end of the conversation.";
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                StatusText = exception.Message;
+            }
+        }
+
+        /// <remarks>
+        /// Each navigation cancels the one before it. Cancellation exists to discard a result
+        /// nobody is waiting for any more; a page read is short, and nothing here depends on
+        /// stopping a statement part way through.
+        /// </remarks>
+        private async Task NavigateAsync(PageDirection direction, int sequenceNumber)
+        {
+            if (_session is null || SelectedConversation is null)
+            {
+                return;
+            }
+
+            _navigation?.Cancel();
+            _navigation?.Dispose();
+
+            var navigation = new CancellationTokenSource();
+            _navigation = navigation;
+
+            IsBusy = true;
+
+            try
+            {
+                var loaded = await _session
+                    .LoadPageAsync(
+                        SelectedConversation.ConversationID,
+                        direction,
+                        sequenceNumber,
+                        ConversationReader.DefaultPageSize,
+                        navigation.Token)
+                    .ConfigureAwait(true);
+
+                var brushes = BuildBrushes(SelectedConversation);
+
+                var built = await Task
+                    .Run(() => Build(loaded, brushes), navigation.Token)
+                    .ConfigureAwait(true);
+
+                if (navigation.IsCancellationRequested)
+                {
+                    return;
+                }
+
+                _page = loaded.Page;
+
+                Messages.Clear();
+
+                foreach (var message in built)
+                {
+                    Messages.Add(message);
+                }
+
+                ApplyAlignment();
+
+                RangeText = DescribeRange(loaded.Page, SelectedConversation);
+                StatusText = DescribePage(loaded);
+            }
+            catch (OperationCanceledException)
+            {
+                // Superseded by a later navigation. The newer one owns the UI.
+            }
+            catch (Exception exception)
+            {
+                StatusText = exception.Message;
+            }
+            finally
+            {
+                if (ReferenceEquals(_navigation, navigation))
+                {
+                    IsBusy = false;
+                    RaiseNavigationCanExecuteChanged();
+                }
+            }
+        }
+
+        // -----------------------------------------------------------------------------------
+        // Building the page.
+        // -----------------------------------------------------------------------------------
+
+        /// <remarks>
+        /// Runs off the dispatcher. Every image it decodes is frozen, which is what makes a
+        /// bitmap built here safe to display on the thread that will draw it.
+        /// </remarks>
+        private static List<MessageViewModel> Build(
+            LoadedPage loaded, IReadOnlyDictionary<long, Brush> brushes)
+        {
+            var built = new List<MessageViewModel>(loaded.Page.Messages.Count);
+
+            DateOnly? previousDate = null;
+
+            foreach (var message in loaded.Page.Messages)
+            {
+                var date = DateOnly.FromDateTime(message.MessageDateTimeLocal);
+
+                var separator = previousDate is null || previousDate != date ? date : (DateOnly?)null;
+                previousDate = date;
+
+                var attachments = new List<AttachmentViewModel>(message.Attachments.Count);
+
+                foreach (var attachment in message.Attachments)
+                {
+                    loaded.States.TryGetValue(attachment.AttachmentID, out var state);
+
+                    var media = state?.ResolvedAsset is { } asset
+                        && loaded.Media.TryGetValue(asset.MediaAssetID, out var availability)
+                        ? availability
+                        : null;
+
+                    attachments.Add(new AttachmentViewModel(attachment, state, media));
+                }
+
+                built.Add(
+                    new MessageViewModel(
+                        message,
+                        separator,
+                        BrushFor(brushes, message.SenderParticipantID),
+                        attachments));
+            }
+
+            return built;
+        }
+
+        /// <remarks>
+        /// A colour per participant, by their position in the conversation's own roster. Stable
+        /// across pages, and it claims nothing: it distinguishes senders without saying which of
+        /// them is the person reading.
+        /// </remarks>
+        private static IReadOnlyDictionary<long, Brush> BuildBrushes(ConversationSummary conversation)
+        {
+            var brushes = new Dictionary<long, Brush>();
+
+            for (var index = 0; index < conversation.Participants.Count; index++)
+            {
+                var brush = new SolidColorBrush(SenderColours[index % SenderColours.Length]);
+                brush.Freeze();
+
+                brushes[conversation.Participants[index].ParticipantID] = brush;
+            }
+
+            return brushes;
+        }
+
+        private static Brush BrushFor(
+            IReadOnlyDictionary<long, Brush> brushes, long? participantID) =>
+            participantID is { } identifier && brushes.TryGetValue(identifier, out var brush)
+                ? brush
+                : SystemBrush;
+
+        private void ApplyAlignment()
+        {
+            var local = LocalParticipant?.ParticipantID;
+
+            foreach (var message in Messages)
+            {
+                message.IsFromLocalParticipant =
+                    local is not null && message.SenderParticipantID == local;
+            }
+        }
+
+        private void RaiseNavigationCanExecuteChanged()
+        {
+            PreviousCommand.RaiseCanExecuteChanged();
+            NextCommand.RaiseCanExecuteChanged();
+            JumpToDateCommand.RaiseCanExecuteChanged();
+        }
+
+        private static string DescribeRange(ConversationPage page, ConversationSummary conversation)
+        {
+            if (page.FirstSequenceNumber is not { } first || page.LastSequenceNumber is not { } last)
+            {
+                return "No messages";
+            }
+
+            return
+                $"Messages {Text(first)}–{Text(last)} of " +
+                $"{Text(conversation.MessageCount)}";
+        }
+
+        private static string DescribePage(LoadedPage loaded)
+        {
+            if (loaded.States.Count == 0)
+            {
+                return "Page loaded.";
+            }
+
+            var unresolved = loaded.States.Values.Count(
+                state => state.ResolvedAsset is null);
+
+            return
+                $"Page loaded. {Count(loaded.States.Count, "attachment")}, " +
+                $"{Text(unresolved)} unresolved.";
+        }
+
+        private static string Count(int value, string noun) =>
+            value == 1 ? $"1 {noun}" : $"{Text(value)} {noun}s";
+
+        private static string Text(long value) => value.ToString(Culture);
+
+        private static CultureInfo Culture => CultureInfo.CurrentCulture;
+
+        /// <summary>Colours for telling senders apart, in roster order.</summary>
+        private static readonly Color[] SenderColours =
+        [
+            Color.FromRgb(0x2E, 0x5E, 0x8A),
+            Color.FromRgb(0x1F, 0x6B, 0x4F),
+            Color.FromRgb(0x7A, 0x3E, 0x6B),
+            Color.FromRgb(0x8A, 0x5A, 0x1F),
+            Color.FromRgb(0x3E, 0x4C, 0x7A),
+        ];
+
+        private static readonly Brush SystemBrush = CreateSystemBrush();
+
+        private static Brush CreateSystemBrush()
+        {
+            var brush = new SolidColorBrush(Color.FromRgb(0x5A, 0x5A, 0x5A));
+            brush.Freeze();
+
+            return brush;
+        }
+    }
+}

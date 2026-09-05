@@ -10,6 +10,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Chatcheology.Core\Chatcheology.Core.csproj" />
+    <ProjectReference Include="..\Chatcheology.Data\Chatcheology.Data.csproj" />
   </ItemGroup>
 
 </Project>

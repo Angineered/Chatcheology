@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using Chatcheology.Core.Models;
 using Microsoft.Data.Sqlite;
 
@@ -25,12 +25,6 @@ namespace Chatcheology.Data.Workspace
     /// </remarks>
     public sealed class WorkspaceImporter
     {
-        /// <summary>The stored text for <see cref="MessageType.User"/>.</summary>
-        private const string UserMessageTypeText = "User";
-
-        /// <summary>The stored text for <see cref="MessageType.System"/>.</summary>
-        private const string SystemMessageTypeText = "System";
-
         /// <summary>
         /// Imports <paramref name="request"/> into the workspace database at
         /// <paramref name="databasePath"/> as a single new conversation.
@@ -458,7 +452,7 @@ namespace Chatcheology.Data.Workspace
                     ? participantIDsBySender[message.Sender!]
                     : DBNull.Value;
 
-                messageType.Value = FormatMessageType(message.MessageType);
+                messageType.Value = MessageTypeText.Format(message.MessageType);
                 messageContent.Value = message.MessageContent;
                 rawContent.Value = message.RawContent;
                 sourceLineStart.Value = message.SourceLineStart;
@@ -502,25 +496,6 @@ namespace Chatcheology.Data.Workspace
         private static string FormatUtc(DateTime dateTimeUtc) =>
             dateTimeUtc.ToString(
                 WorkspaceDatabase.UtcTimestampFormat, CultureInfo.InvariantCulture);
-
-        /// <summary>
-        /// Maps <see cref="MessageType"/> to the text the database stores.
-        /// </summary>
-        /// <remarks>
-        /// Mapped explicitly rather than by <see cref="Enum.ToString()"/>, so the stored values
-        /// depend on neither the enum's numeric ordering nor its member names. Renaming a member
-        /// then becomes a compile-time decision about the database rather than a silent change to
-        /// data already written.
-        /// </remarks>
-        private static string FormatMessageType(MessageType messageType) => messageType switch
-        {
-            MessageType.User => UserMessageTypeText,
-            MessageType.System => SystemMessageTypeText,
-            _ => throw new ArgumentOutOfRangeException(
-                nameof(messageType),
-                messageType,
-                "There is no stored representation for this message type."),
-        };
 
         /// <summary>
         /// Converts an optional value to what the parameter should carry, so that a null stays null
