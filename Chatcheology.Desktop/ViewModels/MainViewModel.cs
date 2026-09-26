@@ -22,8 +22,20 @@ namespace Chatcheology.Desktop.ViewModels
     {
         private readonly Func<string?> _chooseWorkspace;
 
+        private readonly DecisionCoordinator _decisions = new();
+
         private WorkspaceSession? _session;
         private CancellationTokenSource? _navigation;
+
+        /// <summary>
+        /// The read currently in flight, so it can be awaited before the session is disposed.
+        /// </summary>
+        /// <remarks>
+        /// Cancelling is not enough. <see cref="WorkspaceSession.Dispose"/> disposes the gate that
+        /// serialises reads, and a read already past its cancellation check would be holding it. A
+        /// decision waits for this task to finish before anything is closed.
+        /// </remarks>
+        private Task _outstandingRead = Task.CompletedTask;
 
         private ConversationSummary? _selectedConversation;
         private ConversationParticipantSummary? _localParticipant;
@@ -46,6 +58,10 @@ namespace Chatcheology.Desktop.ViewModels
         {
             _chooseWorkspace = chooseWorkspace
                 ?? throw new ArgumentNullException(nameof(chooseWorkspace));
+
+            Review = new AttachmentReviewViewModel(
+                () => _session?.DatabasePath ?? string.Empty,
+                ExecuteDecisionAsync);
 
             OpenWorkspaceCommand = new AsyncRelayCommand(OpenWorkspaceAsync);
 
@@ -74,6 +90,9 @@ namespace Chatcheology.Desktop.ViewModels
 
         /// <summary>The messages of the page currently on screen.</summary>
         public ObservableCollection<MessageViewModel> Messages { get; } = [];
+
+        /// <summary>The review panel, open or closed.</summary>
+        public AttachmentReviewViewModel Review { get; }
 
         /// <summary>Opens a workspace file.</summary>
         public AsyncRelayCommand OpenWorkspaceCommand { get; }
@@ -265,6 +284,8 @@ namespace Chatcheology.Desktop.ViewModels
             _session?.Dispose();
             _session = null;
 
+            Review.Close();
+
             Messages.Clear();
             Participants.Clear();
             Conversations.Clear();
@@ -326,7 +347,20 @@ namespace Chatcheology.Desktop.ViewModels
         /// nobody is waiting for any more; a page read is short, and nothing here depends on
         /// stopping a statement part way through.
         /// </remarks>
-        private async Task NavigateAsync(PageDirection direction, int sequenceNumber)
+        /// <remarks>
+        /// Retains the running read so a decision can wait for it. Every path that reads the
+        /// workspace goes through here or through <see cref="OpenReviewAsync"/>, and both record
+        /// what they started.
+        /// </remarks>
+        private Task NavigateAsync(PageDirection direction, int sequenceNumber)
+        {
+            var task = NavigateCoreAsync(direction, sequenceNumber);
+            _outstandingRead = task;
+
+            return task;
+        }
+
+        private async Task NavigateCoreAsync(PageDirection direction, int sequenceNumber)
         {
             if (_session is null || SelectedConversation is null)
             {
@@ -392,6 +426,199 @@ namespace Chatcheology.Desktop.ViewModels
                     IsBusy = false;
                     RaiseNavigationCanExecuteChanged();
                 }
+            }
+        }
+
+        // -----------------------------------------------------------------------------------
+        // Reviewing and deciding.
+        // -----------------------------------------------------------------------------------
+
+        /// <summary>Opens the review panel on one attachment, without disturbing the page.</summary>
+        /// <remarks>
+        /// A read like any other. It records nothing and changes nothing: opening the panel on an
+        /// attachment is looking at it.
+        /// </remarks>
+        public Task OpenReviewAsync(long attachmentID)
+        {
+            var task = OpenReviewCoreAsync(attachmentID);
+            _outstandingRead = task;
+
+            return task;
+        }
+
+        private async Task OpenReviewCoreAsync(long attachmentID)
+        {
+            if (_session is null)
+            {
+                return;
+            }
+
+            try
+            {
+                var review = await _session
+                    .LoadReviewAsync(attachmentID, CancellationToken.None)
+                    .ConfigureAwait(true);
+
+                Review.Show(review);
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                StatusText = exception.Message;
+            }
+        }
+
+        /// <summary>Closes the review panel, leaving the conversation where it is.</summary>
+        public void CloseReview() => Review.Close();
+
+        /// <summary>
+        /// Waits until no read can still be in flight.
+        /// </summary>
+        /// <remarks>
+        /// Cancel, then <em>await</em>. The await is the part that matters: a read already inside
+        /// the session holds the gate that <see cref="WorkspaceSession.Dispose"/> would dispose, and
+        /// cancelling does not reach it there. A read that ends in cancellation or failure has still
+        /// ended, which is all this needs to know.
+        /// </remarks>
+        private async Task QuiesceAsync()
+        {
+            _navigation?.Cancel();
+
+            try
+            {
+                await _outstandingRead.ConfigureAwait(true);
+            }
+            catch
+            {
+                // Finished either way. Whatever it was, it is no longer holding anything.
+            }
+
+            _outstandingRead = Task.CompletedTask;
+        }
+
+        /// <summary>
+        /// Runs one Phase 7 decision, then rebuilds everything from what is now on disk.
+        /// </summary>
+        /// <returns>
+        /// The refusal Phase 7 raised, or <see langword="null"/> when it recorded the decision.
+        /// </returns>
+        /// <remarks>
+        /// <para>Nothing is mutated into the state the code expects. The position is remembered as
+        /// identifiers, the session is closed, one decision is attempted, the session is reopened,
+        /// and the panel and the conversation are rebuilt from a fresh read. What the operator sees
+        /// afterwards came out of the workspace.</para>
+        /// <para>The identifiers matter: reopening produces new DTO instances, so a conversation or
+        /// participant restored by object identity would silently fail to match and the selection
+        /// would blank. The session-only "Show as" choice survives a decision for the same
+        /// reason.</para>
+        /// <para>A refusal is reported and never retried. It usually means the workspace moved on,
+        /// and the answer to that is to look again.</para>
+        /// </remarks>
+        private async Task<Exception?> ExecuteDecisionAsync(Action write)
+        {
+            if (_session is null)
+            {
+                return new InvalidOperationException("No workspace is open.");
+            }
+
+            await QuiesceAsync().ConfigureAwait(true);
+
+            var conversationID = SelectedConversation?.ConversationID;
+            var anchor = _page?.FirstSequenceNumber;
+            var attachmentID = Review.AttachmentID;
+            var participantID = LocalParticipant?.ParticipantID;
+
+            IsBusy = true;
+
+            try
+            {
+                var outcome = await _decisions
+                    .ExecuteAsync(_session, write, CancellationToken.None)
+                    .ConfigureAwait(true);
+
+                _session = outcome.Session;
+
+                await RestoreAsync(conversationID, anchor, attachmentID, participantID)
+                    .ConfigureAwait(true);
+
+                StatusText = outcome.Succeeded
+                    ? "Decision recorded."
+                    : "The decision was not recorded.";
+
+                return outcome.Failure;
+            }
+            catch (Exception exception)
+            {
+                // The workspace could not be reopened. There is no session to carry on with, so the
+                // viewer closes down to a state it can describe rather than one it is guessing at.
+                _session = null;
+                CloseSession();
+
+                StatusText =
+                    $"The workspace could not be reopened after the decision: {exception.Message}";
+
+                return exception;
+            }
+            finally
+            {
+                IsBusy = false;
+            }
+        }
+
+        /// <remarks>
+        /// Every lookup is by identifier. The instances they match against were created by the read
+        /// that just happened.
+        /// </remarks>
+        private async Task RestoreAsync(
+            long? conversationID, int? anchor, long? attachmentID, long? participantID)
+        {
+            var conversations = await _session!
+                .ReadConversationsAsync(CancellationToken.None)
+                .ConfigureAwait(true);
+
+            Conversations.Clear();
+
+            foreach (var conversation in conversations)
+            {
+                Conversations.Add(conversation);
+            }
+
+            var selected = conversationID is { } identifier
+                ? Conversations.FirstOrDefault(c => c.ConversationID == identifier)
+                : Conversations.FirstOrDefault();
+
+            // Assigned to the field rather than through the property, because the setter starts a
+            // fresh navigation and clears the local-participant choice — both of which this restore
+            // is in the middle of doing deliberately.
+            _selectedConversation = selected;
+            OnPropertyChanged(nameof(SelectedConversation));
+
+            ConversationTitle = selected?.Title ?? string.Empty;
+
+            Participants.Clear();
+
+            foreach (var participant in selected?.Participants ?? [])
+            {
+                Participants.Add(participant);
+            }
+
+            _localParticipant = participantID is { } chosen
+                ? Participants.FirstOrDefault(p => p.ParticipantID == chosen)
+                : null;
+
+            OnPropertyChanged(nameof(LocalParticipant));
+
+            if (selected is null)
+            {
+                return;
+            }
+
+            await NavigateAsync(
+                anchor is not null ? PageDirection.From : PageDirection.First,
+                anchor ?? 0).ConfigureAwait(true);
+
+            if (attachmentID is { } attachment)
+            {
+                await OpenReviewAsync(attachment).ConfigureAwait(true);
             }
         }
 

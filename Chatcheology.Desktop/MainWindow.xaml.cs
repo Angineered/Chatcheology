@@ -1,4 +1,5 @@
 ﻿using System.Windows;
+using System.Windows.Input;
 using Chatcheology.Desktop.Controls;
 using Chatcheology.Desktop.ViewModels;
 using Microsoft.Win32;
@@ -50,6 +51,36 @@ namespace Chatcheology.Desktop
             if (e is LinkedText.LinkFailedEventArgs failure)
             {
                 _viewModel.ReportStatus(failure.Message);
+            }
+        }
+
+        /// <remarks>
+        /// Opening the review panel is a read. It records nothing, and clicking a card is the one
+        /// gesture that starts it — no decision follows from a click anywhere in the conversation.
+        /// </remarks>
+        private async void AttachmentCardClick(object sender, MouseButtonEventArgs e)
+        {
+            if (sender is FrameworkElement { DataContext: AttachmentViewModel attachment })
+            {
+                e.Handled = true;
+
+                await _viewModel.OpenReviewAsync(attachment.AttachmentID);
+            }
+        }
+
+        private void CloseReviewClick(object sender, RoutedEventArgs e) =>
+            _viewModel.CloseReview();
+
+        /// <remarks>
+        /// Candidate media goes through the same read-only path the conversation's own media uses.
+        /// Opening a candidate's file is looking at it; nothing is recorded by having looked.
+        /// </remarks>
+        private void OpenCandidateMediaClick(object sender, RoutedEventArgs e)
+        {
+            if (sender is FrameworkElement { DataContext: CandidateViewModel candidate }
+                && candidate.OpenExternally() is { } failure)
+            {
+                _viewModel.ReportStatus(failure);
             }
         }
 

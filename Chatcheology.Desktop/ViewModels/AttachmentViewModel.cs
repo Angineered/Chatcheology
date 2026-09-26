@@ -35,6 +35,7 @@ namespace Chatcheology.Desktop.ViewModels
             Phase7ReconstructionState? state,
             MediaAvailability? media)
         {
+            AttachmentID = attachment.AttachmentID;
             Ordinal = attachment.Ordinal;
 
             if (state is null)
@@ -59,6 +60,7 @@ namespace Chatcheology.Desktop.ViewModels
 
             var asset = state.ResolvedAsset!;
 
+            MediaAssetID = asset.MediaAssetID;
             AssetText = DescribeAsset(asset);
 
             if (media?.Available is { } location)
@@ -96,8 +98,17 @@ namespace Chatcheology.Desktop.ViewModels
                   $"machine can reach right now.";
         }
 
+        /// <summary>
+        /// The attachment. The identity the review panel is opened with, and the one every Phase 7
+        /// request about this attachment carries.
+        /// </summary>
+        public long AttachmentID { get; }
+
         /// <summary>The attachment's position within its message.</summary>
         public int Ordinal { get; }
+
+        /// <summary>The resolved asset, or <see langword="null"/> when there is none.</summary>
+        public long? MediaAssetID { get; private init; }
 
         /// <summary>The one-line state.</summary>
         public string HeadlineText { get; } = string.Empty;

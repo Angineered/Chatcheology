@@ -52,6 +52,17 @@ namespace Chatcheology.Desktop.Services
     public sealed record MediaAvailability(int RecordedCopyCount, MediaAssetLocation? Available);
 
     /// <summary>
+    /// One attachment's review state, with what of its candidates' media is reachable.
+    /// </summary>
+    /// <remarks>
+    /// Candidate availability is probed by the same root-first path the conversation's own media
+    /// uses, so a detached recovery drive costs one probe per source rather than one per candidate.
+    /// </remarks>
+    public sealed record LoadedReview(
+        AttachmentReviewState State,
+        IReadOnlyDictionary<long, MediaAvailability> Media);
+
+    /// <summary>
     /// One open workspace, read-only, and everything read from it.
     /// </summary>
     /// <remarks>
@@ -77,6 +88,7 @@ namespace Chatcheology.Desktop.Services
         private readonly ConversationReader _conversations = new();
         private readonly ConversationReconstructionReader _reconstruction = new();
         private readonly MediaAssetLocationReader _locations = new();
+        private readonly AttachmentReviewReader _review = new();
 
         private WorkspaceSession(SqliteConnection connection, string databasePath)
         {
@@ -185,7 +197,43 @@ namespace Chatcheology.Desktop.Services
 
                     cancellationToken.ThrowIfCancellationRequested();
 
-                    return new LoadedPage(page, states, ReadMedia(connection, states));
+                    var assetIDs = states.Values
+                        .Where(state => state.ResolvedAsset is not null)
+                        .Select(state => state.ResolvedAsset!.MediaAssetID)
+                        .Distinct()
+                        .ToList();
+
+                    return new LoadedPage(page, states, ReadMedia(connection, assetIDs));
+                },
+                cancellationToken);
+
+        /// <summary>
+        /// One attachment's review state, and what of its candidates' media is reachable.
+        /// </summary>
+        /// <remarks>
+        /// The same read path and the same gate as every other read. It writes nothing: the review
+        /// panel reads what Phase 7 already recorded, and every decision leaves through a Phase 7
+        /// service on a connection this session does not own.
+        /// </remarks>
+        internal Task<LoadedReview> LoadReviewAsync(
+            long attachmentID, CancellationToken cancellationToken) =>
+            ReadAsync(
+                connection =>
+                {
+                    var state = _review.Read(connection, attachmentID);
+
+                    cancellationToken.ThrowIfCancellationRequested();
+
+                    var assetIDs = state.Candidates
+                        .Select(candidate => candidate.MediaAssetID)
+                        .Concat(
+                            state.Reconstruction.ResolvedAsset is { } resolved
+                                ? [resolved.MediaAssetID]
+                                : Array.Empty<long>())
+                        .Distinct()
+                        .ToList();
+
+                    return new LoadedReview(state, ReadMedia(connection, assetIDs));
                 },
                 cancellationToken);
 
@@ -214,8 +262,13 @@ namespace Chatcheology.Desktop.Services
             };
 
         /// <summary>
-        /// Which of the page's resolved assets have a copy this machine can currently reach.
+        /// Which of the supplied assets have a copy this machine can currently reach.
         /// </summary>
+        /// <remarks>
+        /// One implementation for both the conversation's resolved media and the review panel's
+        /// candidate media. A second copy of this probing would be a second place for the
+        /// root-first short-circuit to be forgotten.
+        /// </remarks>
         /// <remarks>
         /// <para>Each distinct media source root is probed once, before any individual file. A
         /// recovery root commonly lives on an external volume, and when that volume is not
@@ -226,15 +279,8 @@ namespace Chatcheology.Desktop.Services
         /// resolved, and it must never be allowed to look as though it did.</para>
         /// </remarks>
         private IReadOnlyDictionary<long, MediaAvailability> ReadMedia(
-            SqliteConnection connection,
-            IReadOnlyDictionary<long, Phase7ReconstructionState> states)
+            SqliteConnection connection, IReadOnlyList<long> assetIDs)
         {
-            var assetIDs = states.Values
-                .Where(state => state.ResolvedAsset is not null)
-                .Select(state => state.ResolvedAsset!.MediaAssetID)
-                .Distinct()
-                .ToList();
-
             if (assetIDs.Count == 0)
             {
                 return new Dictionary<long, MediaAvailability>();

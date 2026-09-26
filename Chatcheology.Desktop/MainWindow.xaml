@@ -40,7 +40,9 @@
                     </Style>
                 </Border.Style>
 
-                <StackPanel>
+                <StackPanel Background="Transparent"
+                            MouseLeftButtonUp="AttachmentCardClick"
+                            ToolTip="Open the review panel for this attachment">
                     <TextBlock Text="{Binding HeadlineText}" FontWeight="SemiBold"
                                TextWrapping="Wrap" />
 
@@ -71,6 +73,87 @@
 
                     <TextBlock Text="{Binding OpenError}" Margin="0,4,0,0" FontSize="11"
                                Foreground="#FF8A2727" TextWrapping="Wrap" />
+                </StackPanel>
+            </Border>
+        </DataTemplate>
+
+        <!-- One candidate. Every current candidate appears, including one already disproven and
+             one whose media this machine cannot reach: a list that quietly shrank would let "one
+             left" start to look like an answer. Nothing here is worded as a recommendation. -->
+        <DataTemplate x:Key="CandidateTemplate" DataType="{x:Type vm:CandidateViewModel}">
+            <Border Margin="0,0,0,6" Padding="8" CornerRadius="4" BorderThickness="1"
+                    BorderBrush="#FFC7CDD4" Background="#FFFBFCFD">
+                <Border.Style>
+                    <Style TargetType="Border">
+                        <Setter Property="Opacity" Value="1" />
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding IsIndependentlyDisproven}" Value="True">
+                                <Setter Property="Opacity" Value="0.55" />
+                                <Setter Property="Background" Value="#FFF0F0F0" />
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </Border.Style>
+
+                <StackPanel>
+                    <TextBlock Text="Independently disproven" FontWeight="SemiBold" FontSize="11"
+                               Foreground="#FF7A5A2E" Margin="0,0,0,3"
+                               Visibility="{Binding IsIndependentlyDisproven,
+                                   Converter={StaticResource BoolToVisibility}}" />
+
+                    <TextBlock Text="{Binding AssetText}" FontWeight="SemiBold"
+                               TextWrapping="Wrap" />
+
+                    <TextBlock Text="{Binding TierText}" Margin="0,2,0,0" FontSize="11"
+                               Foreground="#FF5A5A5A" TextWrapping="Wrap" />
+
+                    <TextBlock Text="{Binding SupportText}" FontSize="11"
+                               Foreground="#FF5A5A5A" TextWrapping="Wrap" />
+
+                    <Border Margin="0,6,0,0" Padding="4" CornerRadius="3"
+                            BorderBrush="#FFD8CFA8" BorderThickness="1" Background="#FFFDFBF0"
+                            HorizontalAlignment="Left"
+                            Visibility="{Binding HasThumbnail,
+                                Converter={StaticResource BoolToVisibility}}">
+                        <StackPanel>
+                            <TextBlock Text="Candidate media — not reconstructed media"
+                                       FontSize="10" Foreground="#FF7A6A2E" Margin="0,0,0,3" />
+                            <Image Source="{Binding Thumbnail}" MaxWidth="260" MaxHeight="260"
+                                   HorizontalAlignment="Left" Stretch="Uniform" />
+                        </StackPanel>
+                    </Border>
+
+                    <TextBlock Text="{Binding MediaStateText}" Margin="0,4,0,0" FontSize="11"
+                               Foreground="#FF7A7A7A" TextWrapping="Wrap" />
+
+                    <TextBlock Text="{Binding FileName}" Margin="0,4,0,0" FontSize="11"
+                               Foreground="#FF5A5A5A" TextWrapping="Wrap"
+                               Visibility="{Binding HasAvailableCopy,
+                                   Converter={StaticResource BoolToVisibility}}" />
+
+                    <Button Content="Open candidate media" Margin="0,4,0,0" Padding="8,2"
+                            HorizontalAlignment="Left" Click="OpenCandidateMediaClick"
+                            Visibility="{Binding CanOpenExternally,
+                                Converter={StaticResource BoolToVisibility}}" />
+                </StackPanel>
+            </Border>
+        </DataTemplate>
+
+        <!-- One resolution-history entry, in Phase 7 event order. -->
+        <DataTemplate x:Key="HistoryTemplate" DataType="{x:Type vm:ResolutionEventViewModel}">
+            <Border Margin="0,0,0,4" Padding="6" CornerRadius="3"
+                    BorderBrush="#FFDAD5CC" BorderThickness="1" Background="White">
+                <StackPanel>
+                    <DockPanel LastChildFill="False">
+                        <TextBlock Text="{Binding HeadlineText}" FontWeight="SemiBold"
+                                   DockPanel.Dock="Left" />
+                        <TextBlock Text="{Binding OccurredText}" FontSize="11"
+                                   Foreground="#FF7A7A7A" DockPanel.Dock="Right" />
+                    </DockPanel>
+                    <TextBlock Text="{Binding DetailText}" Margin="0,2,0,0" FontSize="11"
+                               TextWrapping="Wrap" />
+                    <TextBlock Text="{Binding TechnicalText}" Margin="0,2,0,0" FontSize="10"
+                               Foreground="#FF9A9A9A" TextWrapping="Wrap" />
                 </StackPanel>
             </Border>
         </DataTemplate>
@@ -182,6 +265,143 @@
 
                 <TextBlock Text="{Binding StatusText}" FontSize="11" Foreground="#FF3C3C3C"
                            TextTrimming="CharacterEllipsis" />
+            </DockPanel>
+        </Border>
+
+        <!-- Review panel.
+
+             Docked right, before the conversation's fill child, so the message list keeps its own
+             templated ScrollViewer and its virtualisation untouched and simply narrows. The
+             candidate list carries the same arrangement for the same reason. -->
+        <Border DockPanel.Dock="Right" Width="380" Background="#FFF7F6F3"
+                BorderBrush="#FFCFC8BC" BorderThickness="1,0,0,0" Padding="10"
+                Visibility="{Binding Review.IsOpen, Converter={StaticResource BoolToVisibility}}">
+            <DockPanel>
+                <DockPanel DockPanel.Dock="Top" LastChildFill="False" Margin="0,0,0,8">
+                    <TextBlock Text="Review media" FontWeight="Bold" FontSize="13"
+                               DockPanel.Dock="Left" VerticalAlignment="Center" />
+                    <Button Content="Close" Padding="8,2" DockPanel.Dock="Right"
+                            Click="CloseReviewClick" />
+                </DockPanel>
+
+                <TextBlock DockPanel.Dock="Top" Text="{Binding Review.HeadlineText}"
+                           FontWeight="SemiBold" TextWrapping="Wrap" />
+
+                <TextBlock DockPanel.Dock="Top" Text="{Binding Review.EvidenceText}"
+                           Margin="0,2,0,8" FontSize="11" Foreground="#FF5A5A5A"
+                           TextWrapping="Wrap" />
+
+                <!-- Armed decision: the consequence is stated before the action that writes it
+                     exists. Nothing writes on selection, on opening media, or on navigation. -->
+                <Border DockPanel.Dock="Bottom" Margin="0,8,0,0" Padding="8" CornerRadius="4"
+                        BorderBrush="#FFC9A227" BorderThickness="1" Background="#FFFBF3D8"
+                        Visibility="{Binding Review.HasPendingDecision,
+                            Converter={StaticResource BoolToVisibility}}">
+                    <StackPanel>
+                        <TextBlock Text="{Binding Review.PendingWarningText}" TextWrapping="Wrap"
+                                   FontSize="11" />
+
+                        <StackPanel Margin="0,6,0,0"
+                                    Visibility="{Binding Review.NeedsBasis,
+                                        Converter={StaticResource BoolToVisibility}}">
+                            <TextBlock Text="Independent basis type" FontSize="11" />
+                            <ComboBox ItemsSource="{Binding Review.BasisTypes}"
+                                      SelectedItem="{Binding Review.BasisType}" Margin="0,2,0,4" />
+                            <TextBlock Text="What independently establishes this identity?"
+                                       FontSize="11" />
+                            <TextBox Text="{Binding Review.BasisDescription,
+                                         UpdateSourceTrigger=PropertyChanged}"
+                                     AcceptsReturn="True" TextWrapping="Wrap" Height="56"
+                                     Margin="0,2,0,0" />
+                        </StackPanel>
+
+                        <StackPanel Margin="0,6,0,0"
+                                    Visibility="{Binding Review.NeedsDisproofReason,
+                                        Converter={StaticResource BoolToVisibility}}">
+                            <TextBlock Text="Why is this candidate ruled out?" FontSize="11" />
+                            <TextBox Text="{Binding Review.DisproofReason,
+                                         UpdateSourceTrigger=PropertyChanged}"
+                                     AcceptsReturn="True" TextWrapping="Wrap" Height="48"
+                                     Margin="0,2,0,0" />
+                        </StackPanel>
+
+                        <StackPanel Margin="0,6,0,0"
+                                    Visibility="{Binding Review.NeedsRevocationReason,
+                                        Converter={StaticResource BoolToVisibility}}">
+                            <TextBlock Text="Why is this resolution being revoked?" FontSize="11" />
+                            <TextBox Text="{Binding Review.RevocationReason,
+                                         UpdateSourceTrigger=PropertyChanged}"
+                                     AcceptsReturn="True" TextWrapping="Wrap" Height="48"
+                                     Margin="0,2,0,0" />
+                        </StackPanel>
+
+                        <StackPanel Margin="0,6,0,0"
+                                    Visibility="{Binding Review.NeedsReviewNotes,
+                                        Converter={StaticResource BoolToVisibility}}">
+                            <TextBlock Text="Notes (optional)" FontSize="11" />
+                            <TextBox Text="{Binding Review.ReviewNotes,
+                                         UpdateSourceTrigger=PropertyChanged}"
+                                     AcceptsReturn="True" TextWrapping="Wrap" Height="48"
+                                     Margin="0,2,0,0" />
+                        </StackPanel>
+
+                        <DockPanel Margin="0,8,0,0" LastChildFill="False">
+                            <Button Content="Record decision" Padding="10,3" DockPanel.Dock="Left"
+                                    Command="{Binding Review.CommitCommand}" />
+                            <Button Content="Cancel" Padding="10,3" Margin="8,0,0,0"
+                                    DockPanel.Dock="Left"
+                                    Command="{Binding Review.CancelPendingCommand}" />
+                        </DockPanel>
+                    </StackPanel>
+                </Border>
+
+                <!-- Actions. Each arms a decision; none of them writes. -->
+                <StackPanel DockPanel.Dock="Bottom" Margin="0,8,0,0">
+                    <TextBlock Text="{Binding Review.StatusText}" FontSize="11"
+                               Foreground="#FF3C3C3C" TextWrapping="Wrap" Margin="0,0,0,6" />
+
+                    <Button Content="Reviewed — insufficient evidence" Padding="8,3"
+                            Margin="0,0,0,4" HorizontalAlignment="Stretch"
+                            Command="{Binding Review.BeginReviewCommand}" />
+                    <Button Content="Mark candidate independently disproven…" Padding="8,3"
+                            Margin="0,0,0,4" HorizontalAlignment="Stretch"
+                            Command="{Binding Review.BeginDisproveCommand}" />
+                    <Button Content="Confirm as this media…" Padding="8,3" Margin="0,0,0,4"
+                            HorizontalAlignment="Stretch"
+                            Command="{Binding Review.BeginConfirmCommand}" />
+                    <Button Content="Replace resolution…" Padding="8,3" Margin="0,0,0,4"
+                            HorizontalAlignment="Stretch"
+                            Command="{Binding Review.BeginReplaceCommand}" />
+                    <Button Content="Revoke resolution…" Padding="8,3"
+                            HorizontalAlignment="Stretch"
+                            Command="{Binding Review.BeginRevokeCommand}" />
+                </StackPanel>
+
+                <!-- Candidates and history share the panel's remaining height. -->
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="*" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+
+                    <ListBox Grid.Row="0" ItemsSource="{Binding Review.Candidates}"
+                             SelectedItem="{Binding Review.SelectedCandidate}"
+                             ItemTemplate="{StaticResource CandidateTemplate}"
+                             HorizontalContentAlignment="Stretch"
+                             BorderThickness="0" Background="Transparent"
+                             ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                             VirtualizingPanel.IsVirtualizing="True"
+                             VirtualizingPanel.VirtualizationMode="Recycling" />
+
+                    <StackPanel Grid.Row="1" Margin="0,8,0,0"
+                                Visibility="{Binding Review.HasHistory,
+                                    Converter={StaticResource BoolToVisibility}}">
+                        <TextBlock Text="Resolution history" FontWeight="SemiBold" FontSize="11"
+                                   Margin="0,0,0,4" />
+                        <ItemsControl ItemsSource="{Binding Review.History}"
+                                      ItemTemplate="{StaticResource HistoryTemplate}" />
+                    </StackPanel>
+                </Grid>
             </DockPanel>
         </Border>
 
