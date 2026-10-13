@@ -384,14 +384,19 @@
                         <RowDefinition Height="Auto" />
                     </Grid.RowDefinitions>
 
-                    <ListBox Grid.Row="0" ItemsSource="{Binding Review.Candidates}"
+                    <!-- Pixel scrolling for the same reason as the conversation (CH-7): a
+                         candidate card with its preview can be taller than the space this list
+                         is left with, and item scrolling would never show the rest of it. -->
+                    <ListBox x:Name="CandidateList" Grid.Row="0"
+                             ItemsSource="{Binding Review.Candidates}"
                              SelectedItem="{Binding Review.SelectedCandidate}"
                              ItemTemplate="{StaticResource CandidateTemplate}"
                              HorizontalContentAlignment="Stretch"
                              BorderThickness="0" Background="Transparent"
                              ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                              VirtualizingPanel.IsVirtualizing="True"
-                             VirtualizingPanel.VirtualizationMode="Recycling" />
+                             VirtualizingPanel.VirtualizationMode="Recycling"
+                             VirtualizingPanel.ScrollUnit="Pixel" />
 
                     <StackPanel Grid.Row="1" Margin="0,8,0,0"
                                 Visibility="{Binding Review.HasHistory,
@@ -409,14 +414,22 @@
 
              The ItemsControl carries its own ScrollViewer with CanContentScroll set, so its
              VirtualizingStackPanel actually virtualises. Putting the list inside an outer
-             ScrollViewer would give it infinite height and silently realise every item. -->
+             ScrollViewer would give it infinite height and silently realise every item.
+
+             ScrollUnit is Pixel, and must stay so (CH-7). The default, Item, makes every scroll
+             offset the top of some message: the wheel moves three whole messages a notch, and a
+             line moves one. With bubbles as tall as photo messages, that skips past photos that
+             were never wholly on screen, and the part of a message taller than the window below
+             its first screenful can never be shown at all. Pixel scrolling keeps the panel's
+             container virtualisation; only the unit of the offset changes. -->
         <DockPanel>
             <TextBlock Text="{Binding ConversationTitle}" FontSize="13" FontWeight="SemiBold"
                        Margin="12,8" DockPanel.Dock="Top" TextTrimming="CharacterEllipsis" />
 
-            <ItemsControl ItemsSource="{Binding Messages}"
+            <ItemsControl x:Name="MessageList" ItemsSource="{Binding Messages}"
                           VirtualizingPanel.IsVirtualizing="True"
                           VirtualizingPanel.VirtualizationMode="Recycling"
+                          VirtualizingPanel.ScrollUnit="Pixel"
                           ScrollViewer.CanContentScroll="True"
                           ScrollViewer.HorizontalScrollBarVisibility="Disabled">
                 <ItemsControl.Template>
