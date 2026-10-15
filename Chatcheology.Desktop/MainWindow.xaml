@@ -421,7 +421,11 @@
              line moves one. With bubbles as tall as photo messages, that skips past photos that
              were never wholly on screen, and the part of a message taller than the window below
              its first screenful can never be shown at all. Pixel scrolling keeps the panel's
-             container virtualisation; only the unit of the offset changes. -->
+             container virtualisation; only the unit of the offset changes.
+
+             Moving to another page or date starts the new page at its top (CH-12); the window
+             does that when the view-model raises MovedToPage. The review panel opening and
+             closing does not move the list. -->
         <DockPanel>
             <TextBlock Text="{Binding ConversationTitle}" FontSize="13" FontWeight="SemiBold"
                        Margin="12,8" DockPanel.Dock="Top" TextTrimming="CharacterEllipsis" />
@@ -434,7 +438,7 @@
                           ScrollViewer.HorizontalScrollBarVisibility="Disabled">
                 <ItemsControl.Template>
                     <ControlTemplate TargetType="ItemsControl">
-                        <ScrollViewer CanContentScroll="True" Padding="4"
+                        <ScrollViewer x:Name="MessageScroller" CanContentScroll="True" Padding="4"
                                       HorizontalScrollBarVisibility="Disabled"
                                       VerticalScrollBarVisibility="Auto">
                             <ItemsPresenter />

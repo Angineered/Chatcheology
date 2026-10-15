@@ -94,6 +94,20 @@ namespace Chatcheology.Desktop.ViewModels
         /// <summary>The review panel, open or closed.</summary>
         public AttachmentReviewViewModel Review { get; }
 
+        /// <summary>
+        /// Raised when the operator has moved to a different page — another conversation, the
+        /// previous or next page, or a chosen date — and its messages are now in
+        /// <see cref="Messages"/>.
+        /// </summary>
+        /// <remarks>
+        /// The view starts such a page from its top (CH-12): the list's scroll offset belongs to
+        /// the page it was measured on, and kept across a move it would land the operator somewhere
+        /// in the new page other than the start they asked for. Not raised when the same page is
+        /// rebuilt after a decision, nor by opening or closing the review panel, so the operator's
+        /// place within the page survives both.
+        /// </remarks>
+        public event EventHandler? MovedToPage;
+
         /// <summary>Opens a workspace file.</summary>
         public AsyncRelayCommand OpenWorkspaceCommand { get; }
 
@@ -352,15 +366,20 @@ namespace Chatcheology.Desktop.ViewModels
         /// workspace goes through here or through <see cref="OpenReviewAsync"/>, and both record
         /// what they started.
         /// </remarks>
-        private Task NavigateAsync(PageDirection direction, int sequenceNumber)
+        /// <param name="isMove">
+        /// False only when the page on screen is being rebuilt in place, so the view keeps the
+        /// operator's scroll position; see <see cref="MovedToPage"/>.
+        /// </param>
+        private Task NavigateAsync(PageDirection direction, int sequenceNumber, bool isMove = true)
         {
-            var task = NavigateCoreAsync(direction, sequenceNumber);
+            var task = NavigateCoreAsync(direction, sequenceNumber, isMove);
             _outstandingRead = task;
 
             return task;
         }
 
-        private async Task NavigateCoreAsync(PageDirection direction, int sequenceNumber)
+        private async Task NavigateCoreAsync(
+            PageDirection direction, int sequenceNumber, bool isMove)
         {
             if (_session is null || SelectedConversation is null)
             {
@@ -407,6 +426,11 @@ namespace Chatcheology.Desktop.ViewModels
                 }
 
                 ApplyAlignment();
+
+                if (isMove)
+                {
+                    MovedToPage?.Invoke(this, EventArgs.Empty);
+                }
 
                 RangeText = DescribeRange(loaded.Page, SelectedConversation);
                 StatusText = DescribePage(loaded);
@@ -612,9 +636,11 @@ namespace Chatcheology.Desktop.ViewModels
                 return;
             }
 
+            // The same page, rebuilt from a fresh read: the operator stays where they were in it.
             await NavigateAsync(
                 anchor is not null ? PageDirection.From : PageDirection.First,
-                anchor ?? 0).ConfigureAwait(true);
+                anchor ?? 0,
+                isMove: false).ConfigureAwait(true);
 
             if (attachmentID is { } attachment)
             {

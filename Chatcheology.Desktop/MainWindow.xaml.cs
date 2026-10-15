@@ -1,4 +1,5 @@
 ﻿using System.Windows;
+using System.Windows.Controls;
 using System.Windows.Input;
 using Chatcheology.Desktop.Controls;
 using Chatcheology.Desktop.ViewModels;
@@ -18,11 +19,22 @@ namespace Chatcheology.Desktop
         private readonly MainViewModel _viewModel;
 
         public MainWindow()
+            : this(null)
+        {
+        }
+
+        /// <param name="chooseWorkspace">
+        /// Stands in for the file dialog. Only the tests supply one, so they can open a synthetic
+        /// workspace in the real window; the application always asks the operator.
+        /// </param>
+        internal MainWindow(Func<string?>? chooseWorkspace)
         {
             InitializeComponent();
 
-            _viewModel = new MainViewModel(ChooseWorkspace);
+            _viewModel = new MainViewModel(chooseWorkspace ?? ChooseWorkspace);
             DataContext = _viewModel;
+
+            _viewModel.MovedToPage += OnMovedToPage;
 
             // One handler for every message on the page: the event bubbles from whichever text
             // block held the link that would not open.
@@ -44,6 +56,19 @@ namespace Chatcheology.Desktop
             };
 
             return dialog.ShowDialog(this) == true ? dialog.FileName : null;
+        }
+
+        /// <remarks>
+        /// A page the operator has moved to starts at its top (CH-12). The list keeps one scroll
+        /// viewer for every page it shows, so without this the offset reached on the old page would
+        /// carry over and land somewhere in the middle of the new one.
+        /// </remarks>
+        private void OnMovedToPage(object? sender, EventArgs e)
+        {
+            if (MessageList.Template?.FindName("MessageScroller", MessageList) is ScrollViewer scroller)
+            {
+                scroller.ScrollToHome();
+            }
         }
 
         private void OnLinkFailed(object sender, RoutedEventArgs e)
