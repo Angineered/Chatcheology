@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Windows.Media.Imaging;
 using Chatcheology.Data.Media;
+using Chatcheology.Data.MsgstoreFacts;
 using Chatcheology.Data.Phase7;
 using Chatcheology.Data.Viewer;
 using Chatcheology.Desktop.Services;
@@ -30,13 +31,29 @@ namespace Chatcheology.Desktop.ViewModels
 
         private string? _openError;
 
+        private bool _showLowQualityCopies;
+
+        /// <param name="fact">
+        /// The attachment's msgstore fact, or <see langword="null"/> when none is recorded.
+        /// Presentation only: it never changes the Phase 7 state this card shows.
+        /// </param>
+        /// <param name="lowQualityCopyCount">
+        /// How many attachments the workspace records as low-quality copies of this one.
+        /// </param>
         internal AttachmentViewModel(
             ConversationAttachment attachment,
             Phase7ReconstructionState? state,
-            MediaAvailability? media)
+            MediaAvailability? media,
+            AttachmentMsgstoreFact? fact = null,
+            int lowQualityCopyCount = 0)
         {
             AttachmentID = attachment.AttachmentID;
             Ordinal = attachment.Ordinal;
+
+            IsForwarded = fact?.IsForwarded == true;
+            ForwardScore = fact?.ForwardScore;
+            IsLowQualityCopy = fact?.LowQualityCopyOfAttachmentID is not null;
+            LowQualityCopyCount = lowQualityCopyCount;
 
             if (state is null)
             {
@@ -163,6 +180,54 @@ namespace Chatcheology.Desktop.ViewModels
 
         /// <summary>Whether an Open media action applies.</summary>
         public bool CanOpenExternally { get; }
+
+        /// <summary>Whether WhatsApp's msgstore marks this attachment's message as forwarded.</summary>
+        public bool IsForwarded { get; }
+
+        /// <summary>WhatsApp's forward score as recorded, or <see langword="null"/>.</summary>
+        public int? ForwardScore { get; }
+
+        /// <summary>
+        /// Whether the msgstore records this attachment as WhatsApp's low-quality copy of another.
+        /// </summary>
+        public bool IsLowQualityCopy { get; }
+
+        /// <summary>How many attachments are recorded as low-quality copies of this one.</summary>
+        public int LowQualityCopyCount { get; }
+
+        /// <summary>
+        /// Whether the operator has asked to see low-quality copies, for this session only.
+        /// </summary>
+        public bool ShowLowQualityCopies
+        {
+            get => _showLowQualityCopies;
+            internal set
+            {
+                if (SetProperty(ref _showLowQualityCopies, value))
+                {
+                    OnPropertyChanged(nameof(IsShown));
+                    OnPropertyChanged(nameof(HasLowQualityCopyLabel));
+                    OnPropertyChanged(nameof(HasLowQualityCopyNote));
+                }
+            }
+        }
+
+        /// <summary>
+        /// Whether the card is on screen. Only a low-quality copy is ever hidden, and only while
+        /// the operator has not asked to see them. Hiding changes nothing about its Phase 7 state.
+        /// </summary>
+        public bool IsShown => !IsLowQualityCopy || _showLowQualityCopies;
+
+        /// <summary>Whether the "Low-quality copy" label applies: a copy that is being shown.</summary>
+        public bool HasLowQualityCopyLabel => IsLowQualityCopy && _showLowQualityCopies;
+
+        /// <summary>Whether this full copy carries the note that its low-quality copy is hidden.</summary>
+        public bool HasLowQualityCopyNote => LowQualityCopyCount > 0 && !_showLowQualityCopies;
+
+        /// <summary>The note on a full copy whose low-quality copies are hidden.</summary>
+        public string LowQualityCopyNoteText => LowQualityCopyCount == 1
+            ? "+ WhatsApp low-quality copy (hidden)"
+            : $"+ {Text(LowQualityCopyCount)} WhatsApp low-quality copies (hidden)";
 
         /// <summary>Why the last Open media attempt did not work, or <see langword="null"/>.</summary>
         public string? OpenError

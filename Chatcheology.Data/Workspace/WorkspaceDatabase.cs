@@ -15,7 +15,7 @@ namespace Chatcheology.Data.Workspace
     /// The schema version lives in SQLite's own <c>PRAGMA user_version</c> header field rather than
     /// in a table of our own, so a workspace file describes itself without needing to be queried
     /// through application code. There is no migration engine: version 0 is created as the current
-    /// schema outright, versions 1 and 2 are each migrated by one explicit step, version
+    /// schema outright, versions 1, 2 and 3 are each migrated by one explicit step, version
     /// <see cref="SchemaVersion"/> is accepted, and anything else is rejected.
     /// </para>
     /// <para>
@@ -34,7 +34,7 @@ namespace Chatcheology.Data.Workspace
         /// <summary>
         /// The workspace schema version this build creates and accepts.
         /// </summary>
-        public const int SchemaVersion = 3;
+        public const int SchemaVersion = 4;
 
         /// <summary>
         /// The <c>user_version</c> of a SQLite database that has never had a workspace schema
@@ -48,10 +48,55 @@ namespace Chatcheology.Data.Workspace
         internal const int VersionOneSchemaVersion = 1;
 
         /// <summary>
-        /// The schema version immediately before the current one, and the version every workspace
-        /// written by the previous build carries.
+        /// The schema version the Phase 6 builds wrote, before the Phase 7 tables existed.
         /// </summary>
         internal const int VersionTwoSchemaVersion = 2;
+
+        /// <summary>
+        /// The schema version immediately before the current one: the Phase 7 schema, and the
+        /// version every workspace written by the previous build carries.
+        /// </summary>
+        internal const int VersionThreeSchemaVersion = 3;
+
+        /// <summary>
+        /// The tables version 3 adds, in creation order: the Phase 7 evidence and decision tables.
+        /// </summary>
+        /// <remarks>
+        /// With <see cref="VersionTwoTableNames"/>, the exact table set the version-3-to-4 gate
+        /// requires before it changes anything.
+        /// </remarks>
+        internal static readonly string[] VersionThreeTableNames =
+        [
+            "Phase7Run",
+            "AttachmentEvidenceSnapshot",
+            "AttachmentCandidate",
+            "AttachmentCandidateOccurrenceEvidence",
+            "AttachmentAdjacentDateContext",
+            "AttachmentReviewEvent",
+            "AttachmentCandidateDispositionEvent",
+            "AttachmentResolutionEvent",
+        ];
+
+        /// <summary>
+        /// The indexes version 3 declares by name, and the only named indexes a version-3 workspace
+        /// has.
+        /// </summary>
+        internal static readonly string[] VersionThreeIndexNames =
+        [
+            "IX_AttachmentReviewEvent_AttachmentID",
+            "IX_AttachmentCandidateDispositionEvent_AttachmentCandidateID",
+            "IX_AttachmentResolutionEvent_AttachmentID",
+        ];
+
+        /// <summary>The table version 4 adds, and the only one.</summary>
+        internal const string MsgstoreFactTableName = "AttachmentMsgstoreFact";
+
+        /// <summary>The indexes version 4 declares by name, and the only ones.</summary>
+        internal static readonly string[] VersionFourIndexNames =
+        [
+            "IX_AttachmentMsgstoreFact_LowQualityCopyOfAttachmentID",
+            "IX_AttachmentMsgstoreFact_SourceBatch",
+        ];
 
         /// <summary>
         /// Every application table a version-2 workspace has, and the only ones it has.
@@ -774,6 +819,56 @@ namespace Chatcheology.Data.Workspace
         ];
 
         /// <summary>
+        /// The table and indexes version 4 adds, one statement per element, in creation order.
+        /// </summary>
+        /// <remarks>
+        /// Purely additive, like version 3: no existing table, column, constraint or index is altered,
+        /// and the only relationship to the existing schema is two child foreign keys into
+        /// <c>Attachment</c>. The table starts empty; nothing is backfilled.
+        /// <para>
+        /// The rows are facts copied from WhatsApp's own message store by a batch the operator runs,
+        /// not matching decisions and not Phase 7 records. They carry no confidence and no inference,
+        /// and a batch is removed by deleting its <c>SourceBatch</c> rows.
+        /// </para>
+        /// </remarks>
+        private static readonly string[] VersionFourSchemaStatements =
+        [
+            // One row per attachment that pairs to a msgstore record. IsForwarded and ForwardScore
+            // are WhatsApp's own values. LowQualityCopyOfAttachmentID, when present, names the full
+            // copy this attachment is WhatsApp's low-quality copy of; it can never name itself.
+            // That a target is not itself a low-quality copy is a fact about other rows, so it is
+            // enforced by the writer rather than here.
+            """
+            CREATE TABLE AttachmentMsgstoreFact (
+                AttachmentID                 INTEGER PRIMARY KEY,
+                IsForwarded                  INTEGER NOT NULL,
+                ForwardScore                 INTEGER NULL,
+                LowQualityCopyOfAttachmentID INTEGER NULL,
+                SourceBatch                  TEXT NOT NULL,
+                RecordedDateTimeUtc          TEXT NOT NULL,
+
+                CHECK (IsForwarded IN (0, 1)),
+                CHECK (LowQualityCopyOfAttachmentID IS NULL
+                    OR LowQualityCopyOfAttachmentID <> AttachmentID),
+                CHECK (length(SourceBatch) > 0),
+
+                FOREIGN KEY (AttachmentID) REFERENCES Attachment (AttachmentID),
+                FOREIGN KEY (LowQualityCopyOfAttachmentID) REFERENCES Attachment (AttachmentID)
+            );
+            """,
+
+            """
+            CREATE INDEX IX_AttachmentMsgstoreFact_LowQualityCopyOfAttachmentID
+                ON AttachmentMsgstoreFact (LowQualityCopyOfAttachmentID);
+            """,
+
+            """
+            CREATE INDEX IX_AttachmentMsgstoreFact_SourceBatch
+                ON AttachmentMsgstoreFact (SourceBatch);
+            """,
+        ];
+
+        /// <summary>
         /// Creates one unresolved attachment for every already-persisted message whose content is
         /// exactly the media placeholder.
         /// </summary>
@@ -1005,19 +1100,23 @@ namespace Chatcheology.Data.Workspace
                     break;
 
                 case VersionOneSchemaVersion:
-                    MigrateVersionOneToVersionThree(connection);
+                    MigrateVersionOneToCurrent(connection);
                     break;
 
                 case VersionTwoSchemaVersion:
-                    MigrateVersionTwoToVersionThree(connection);
+                    MigrateVersionTwoToCurrent(connection);
+                    break;
+
+                case VersionThreeSchemaVersion:
+                    MigrateVersionThreeToVersionFour(connection);
                     break;
 
                 default:
                     throw new InvalidOperationException(
                         $"The workspace database reports schema version {existingVersion}, which " +
                         $"this build does not support. This build creates and accepts version " +
-                        $"{SchemaVersion} and can migrate versions {VersionOneSchemaVersion} and " +
-                        $"{VersionTwoSchemaVersion}.");
+                        $"{SchemaVersion} and can migrate versions {VersionOneSchemaVersion}, " +
+                        $"{VersionTwoSchemaVersion} and {VersionThreeSchemaVersion}.");
             }
         }
 
@@ -1035,6 +1134,7 @@ namespace Chatcheology.Data.Workspace
                 ApplyStatements(command, VersionOneSchemaStatements);
                 ApplyStatements(command, VersionTwoSchemaStatements);
                 ApplyStatements(command, VersionThreeSchemaStatements);
+                ApplyStatements(command, VersionFourSchemaStatements);
 
                 SetSchemaVersion(command);
             }
@@ -1048,9 +1148,9 @@ namespace Chatcheology.Data.Workspace
         /// <remarks>
         /// The version-1 tables, columns and rows are left exactly as they are. Nothing is rewritten
         /// and nothing is dropped: the migration adds the version-2 tables, derives attachments from
-        /// messages that are already persisted, and adds the version-3 tables.
+        /// messages that are already persisted, and adds the version-3 and version-4 tables.
         /// <para>
-        /// One transaction covering both version steps, rather than two migrations run back to back.
+        /// One transaction covering every version step, rather than migrations run back to back.
         /// A version-1 workspace has always reached the current version in one atomic jump, and that
         /// contract does not change because "current" now means one version further on.
         /// </para>
@@ -1060,7 +1160,7 @@ namespace Chatcheology.Data.Workspace
         /// which the constraints would have to be relaxed.
         /// </para>
         /// </remarks>
-        private static void MigrateVersionOneToVersionThree(SqliteConnection connection)
+        private static void MigrateVersionOneToCurrent(SqliteConnection connection)
         {
             using var transaction = connection.BeginTransaction();
 
@@ -1080,6 +1180,7 @@ namespace Chatcheology.Data.Workspace
                 command.Parameters.Clear();
 
                 ApplyStatements(command, VersionThreeSchemaStatements);
+                ApplyStatements(command, VersionFourSchemaStatements);
 
                 SetSchemaVersion(command);
             }
@@ -1092,7 +1193,8 @@ namespace Chatcheology.Data.Workspace
         /// </summary>
         /// <remarks>
         /// Purely additive. The version-2 tables, columns, constraints and rows are left exactly as
-        /// they are; the migration only creates the Phase 7 tables and their indexes. There is no
+        /// they are; the migration only creates the Phase 7 tables, the version-4 msgstore fact table
+        /// and their indexes, in one transaction. There is no
         /// backfill, because no Phase 7 row can be derived from anything the workspace already holds
         /// without asserting a matching decision that has not been justified.
         /// <para>
@@ -1100,7 +1202,7 @@ namespace Chatcheology.Data.Workspace
         /// to migrate is never written to at all rather than written to and rolled back.
         /// </para>
         /// </remarks>
-        private static void MigrateVersionTwoToVersionThree(SqliteConnection connection)
+        private static void MigrateVersionTwoToCurrent(SqliteConnection connection)
         {
             RequireExactVersionTwoTableSet(connection);
 
@@ -1111,11 +1213,125 @@ namespace Chatcheology.Data.Workspace
                 command.Transaction = transaction;
 
                 ApplyStatements(command, VersionThreeSchemaStatements);
+                ApplyStatements(command, VersionFourSchemaStatements);
 
                 SetSchemaVersion(command);
             }
 
             transaction.Commit();
+        }
+
+        /// <summary>
+        /// Migrates a version-3 workspace to version 4 in one transaction.
+        /// </summary>
+        /// <remarks>
+        /// Purely additive. Every version-1, version-2 and Phase 7 table, column, constraint, index
+        /// and row is left exactly as it is; the migration only creates
+        /// <c>AttachmentMsgstoreFact</c> and its two indexes. There is no backfill.
+        /// <para>
+        /// The shape gate runs first, outside the transaction, so a workspace this build refuses to
+        /// migrate is never written to at all.
+        /// </para>
+        /// </remarks>
+        private static void MigrateVersionThreeToVersionFour(SqliteConnection connection)
+        {
+            RequireExactVersionThreeShape(connection);
+
+            using var transaction = connection.BeginTransaction();
+
+            using (var command = connection.CreateCommand())
+            {
+                command.Transaction = transaction;
+
+                ApplyStatements(command, VersionFourSchemaStatements);
+
+                SetSchemaVersion(command);
+            }
+
+            transaction.Commit();
+        }
+
+        /// <summary>
+        /// Refuses to migrate anything but a workspace holding exactly the version-3 application
+        /// tables and exactly the version-3 named indexes.
+        /// </summary>
+        /// <remarks>
+        /// The same reasoning as <see cref="RequireExactVersionTwoTableSet"/>: an unexpected or a
+        /// missing object means this is not the workspace the version-4 statements were written
+        /// against, and neither case is worth guessing about. Archive-agnostic: it checks shape,
+        /// never contents.
+        /// </remarks>
+        /// <exception cref="InvalidOperationException">
+        /// The database does not have the version-3 shape. Nothing has been written and the
+        /// workspace is unchanged.
+        /// </exception>
+        private static void RequireExactVersionThreeShape(SqliteConnection connection)
+        {
+            var expectedTables = new SortedSet<string>(
+                VersionTwoTableNames.Concat(VersionThreeTableNames), StringComparer.Ordinal);
+
+            var expectedIndexes = new SortedSet<string>(VersionThreeIndexNames, StringComparer.Ordinal);
+
+            var actualTables = ReadApplicationTableNames(connection);
+            var actualIndexes = ReadNamedIndexNames(connection);
+
+            var missing = expectedTables.Except(actualTables, StringComparer.Ordinal)
+                .Concat(expectedIndexes.Except(actualIndexes, StringComparer.Ordinal))
+                .ToList();
+
+            var unexpected = actualTables.Except(expectedTables, StringComparer.Ordinal)
+                .Concat(actualIndexes.Except(expectedIndexes, StringComparer.Ordinal))
+                .ToList();
+
+            if (unexpected.Count == 0 && missing.Count == 0)
+            {
+                return;
+            }
+
+            var detail = string.Join(
+                " ",
+                new[]
+                {
+                    missing.Count > 0 ? $"Missing: {string.Join(", ", missing)}." : null,
+                    unexpected.Count > 0 ? $"Unexpected: {string.Join(", ", unexpected)}." : null,
+                }.OfType<string>());
+
+            throw new InvalidOperationException(
+                $"The workspace database reports schema version {VersionThreeSchemaVersion} but " +
+                $"does not hold exactly the {expectedTables.Count} tables and " +
+                $"{expectedIndexes.Count} named indexes a version-{VersionThreeSchemaVersion} " +
+                $"workspace has, so this build will not migrate it to version {SchemaVersion}. " +
+                $"{detail} Nothing has been written, no version-{SchemaVersion} table has been " +
+                $"created, and the workspace is still version {VersionThreeSchemaVersion}.");
+        }
+
+        /// <summary>
+        /// Reads the names of the indexes the schema declares by name, excluding the automatic ones
+        /// SQLite derives from primary-key and unique constraints.
+        /// </summary>
+        internal static SortedSet<string> ReadNamedIndexNames(SqliteConnection connection)
+        {
+            ArgumentNullException.ThrowIfNull(connection);
+
+            using var command = connection.CreateCommand();
+            command.CommandText =
+                """
+                SELECT name
+                FROM sqlite_master
+                WHERE type = 'index' AND sql IS NOT NULL
+                ORDER BY name;
+                """;
+
+            var names = new SortedSet<string>(StringComparer.Ordinal);
+
+            using var reader = command.ExecuteReader();
+
+            while (reader.Read())
+            {
+                names.Add(reader.GetString(0));
+            }
+
+            return names;
         }
 
         /// <summary>

@@ -5,9 +5,16 @@ using static Chatcheology.Data.Tests.Workspace.WorkspaceTestData;
 namespace Chatcheology.Data.Tests.Workspace
 {
     /// <summary>
-    /// Tests the migration to schema version 3 against genuine version-1 and version-2 databases,
-    /// and the gate that decides whether a version-2 workspace may be migrated at all.
+    /// Tests the migration of genuine version-1 and version-2 databases through the version-3
+    /// (Phase 7) tables to the current schema, and the gate that decides whether a version-2
+    /// workspace may be migrated at all.
     /// </summary>
+    /// <remarks>
+    /// Since version 4, a version-1 or version-2 workspace reaches version 4 in the same single
+    /// transaction, so these tests assert the current version and also count the one version-4
+    /// table and its two indexes. Version 3 to 4 has its own tests in
+    /// <see cref="WorkspaceVersionFourMigrationTests"/>.
+    /// </remarks>
     /// <remarks>
     /// The starting point is always a synthetic fixture that builds the older schema itself. Migrating
     /// a database the current build created would prove nothing about migrating one a previous build
@@ -36,12 +43,22 @@ namespace Chatcheology.Data.Tests.Workspace
             "IX_AttachmentResolutionEvent_AttachmentID",
         ];
 
+        /// <summary>The one table version 4 adds.</summary>
+        private const string MsgstoreFactTable = "AttachmentMsgstoreFact";
+
+        /// <summary>The two indexes version 4 declares explicitly.</summary>
+        private static readonly string[] MsgstoreFactIndexes =
+        [
+            "IX_AttachmentMsgstoreFact_LowQualityCopyOfAttachmentID",
+            "IX_AttachmentMsgstoreFact_SourceBatch",
+        ];
+
         // ---------------------------------------------------------------------------------------
         // Version 2 to version 3.
         // ---------------------------------------------------------------------------------------
 
         [Fact]
-        public void Migrate_VersionTwoDatabase_BecomesVersionThree()
+        public void Migrate_VersionTwoDatabase_BecomesVersionFour()
         {
             using var workspace = new TemporaryWorkspaceDatabase();
 
@@ -58,16 +75,16 @@ namespace Chatcheology.Data.Tests.Workspace
 
             using var connection = WorkspaceDatabase.OpenConnection(workspace.DatabasePath);
 
-            Assert.Equal(3, WorkspaceDatabase.ReadSchemaVersion(connection));
+            Assert.Equal(4, WorkspaceDatabase.ReadSchemaVersion(connection));
 
-            foreach (var tableName in Phase7Tables)
+            foreach (var tableName in Phase7Tables.Append(MsgstoreFactTable))
             {
                 Assert.True(TableExists(connection, tableName), tableName);
             }
         }
 
         [Fact]
-        public void Migrate_VersionTwoDatabase_CreatesExactlyEighteenApplicationTables()
+        public void Migrate_VersionTwoDatabase_CreatesExactlyNineteenApplicationTables()
         {
             using var workspace = new TemporaryWorkspaceDatabase();
 
@@ -77,14 +94,18 @@ namespace Chatcheology.Data.Tests.Workspace
 
             using var connection = WorkspaceDatabase.OpenConnection(workspace.DatabasePath);
 
-            var expected = SyntheticVersionTwoWorkspace.Tables.Concat(Phase7Tables).Order().ToList();
+            var expected = SyntheticVersionTwoWorkspace.Tables
+                .Concat(Phase7Tables)
+                .Append(MsgstoreFactTable)
+                .Order()
+                .ToList();
 
-            Assert.Equal(18, expected.Count);
+            Assert.Equal(19, expected.Count);
             Assert.Equal(expected, ReadApplicationTableNames(connection));
         }
 
         [Fact]
-        public void Migrate_VersionTwoDatabase_CreatesTheThreeExplicitIndexes()
+        public void Migrate_VersionTwoDatabase_CreatesTheFiveExplicitIndexes()
         {
             using var workspace = new TemporaryWorkspaceDatabase();
 
@@ -96,14 +117,15 @@ namespace Chatcheology.Data.Tests.Workspace
 
             var declared = ReadExplicitIndexNames(connection);
 
-            foreach (var indexName in Phase7Indexes)
+            foreach (var indexName in Phase7Indexes.Concat(MsgstoreFactIndexes))
             {
                 Assert.Contains(indexName, declared);
             }
 
-            // Only three explicit indexes anywhere in the schema. Versions 1 and 2 declared none, so
-            // an extra one here would be speculative indexing that crept in.
-            Assert.Equal(3, declared.Count);
+            // Only five explicit indexes anywhere in the schema: three from version 3 and two from
+            // version 4. Versions 1 and 2 declared none, so an extra one here would be speculative
+            // indexing that crept in.
+            Assert.Equal(5, declared.Count);
 
             // And the automatic ones, which are a consequence of the UNIQUE constraints rather than a
             // choice: one each for the four snapshot/candidate/occurrence/context uniqueness rules and
@@ -123,8 +145,9 @@ namespace Chatcheology.Data.Tests.Workspace
 
             using var connection = WorkspaceDatabase.OpenConnection(workspace.DatabasePath);
 
-            // Nothing about the migration computes evidence, ranks a candidate or resolves anything.
-            foreach (var tableName in Phase7Tables)
+            // Nothing about the migration computes evidence, ranks a candidate or resolves anything,
+            // and nothing backfills a msgstore fact.
+            foreach (var tableName in Phase7Tables.Append(MsgstoreFactTable))
             {
                 Assert.Equal(0, CountRows(connection, tableName));
             }
@@ -186,7 +209,7 @@ namespace Chatcheology.Data.Tests.Workspace
         // ---------------------------------------------------------------------------------------
 
         [Fact]
-        public void Migrate_VersionOneDatabase_ReachesVersionThreeInOneStep()
+        public void Migrate_VersionOneDatabase_ReachesVersionFourInOneStep()
         {
             using var workspace = new TemporaryWorkspaceDatabase();
 
@@ -196,9 +219,11 @@ namespace Chatcheology.Data.Tests.Workspace
 
             using var connection = WorkspaceDatabase.OpenConnection(workspace.DatabasePath);
 
-            Assert.Equal(3, WorkspaceDatabase.ReadSchemaVersion(connection));
+            Assert.Equal(4, WorkspaceDatabase.ReadSchemaVersion(connection));
 
-            foreach (var tableName in SyntheticVersionTwoWorkspace.Tables.Concat(Phase7Tables))
+            foreach (var tableName in SyntheticVersionTwoWorkspace.Tables
+                .Concat(Phase7Tables)
+                .Append(MsgstoreFactTable))
             {
                 Assert.True(TableExists(connection, tableName), tableName);
             }
@@ -206,7 +231,7 @@ namespace Chatcheology.Data.Tests.Workspace
             // The version-2 backfill still ran on the way through.
             Assert.Equal(1, CountRows(connection, "Attachment"));
 
-            foreach (var tableName in Phase7Tables)
+            foreach (var tableName in Phase7Tables.Append(MsgstoreFactTable))
             {
                 Assert.Equal(0, CountRows(connection, tableName));
             }
@@ -217,7 +242,7 @@ namespace Chatcheology.Data.Tests.Workspace
         // ---------------------------------------------------------------------------------------
 
         [Fact]
-        public void Initialise_NewDatabase_CreatesVersionThreeOutright()
+        public void Initialise_NewDatabase_CreatesVersionFourOutright()
         {
             using var workspace = new TemporaryWorkspaceDatabase();
 
@@ -225,8 +250,8 @@ namespace Chatcheology.Data.Tests.Workspace
 
             using var connection = WorkspaceDatabase.OpenConnection(workspace.DatabasePath);
 
-            Assert.Equal(3, WorkspaceDatabase.ReadSchemaVersion(connection));
-            Assert.Equal(18, ReadApplicationTableNames(connection).Count);
+            Assert.Equal(4, WorkspaceDatabase.ReadSchemaVersion(connection));
+            Assert.Equal(19, ReadApplicationTableNames(connection).Count);
         }
 
         /// <remarks>
@@ -235,7 +260,7 @@ namespace Chatcheology.Data.Tests.Workspace
         /// index or constraint, two of the three would be schemas no test had ever exercised.
         /// </remarks>
         [Fact]
-        public void Migrate_FromEitherVersion_ProducesTheSameSchemaAsCreatingVersionThreeFresh()
+        public void Migrate_FromEitherVersion_ProducesTheSameSchemaAsCreatingFresh()
         {
             using var fresh = new TemporaryWorkspaceDatabase();
             using var fromVersionOne = new TemporaryWorkspaceDatabase();
@@ -259,7 +284,7 @@ namespace Chatcheology.Data.Tests.Workspace
         }
 
         [Fact]
-        public void Initialise_OnVersionThree_ChangesNothing()
+        public void Initialise_OnTheCurrentVersion_ChangesNothing()
         {
             using var workspace = new TemporaryWorkspaceDatabase();
 
@@ -282,7 +307,7 @@ namespace Chatcheology.Data.Tests.Workspace
 
             using var connection = WorkspaceDatabase.OpenConnection(workspace.DatabasePath);
 
-            Assert.Equal(3, WorkspaceDatabase.ReadSchemaVersion(connection));
+            Assert.Equal(4, WorkspaceDatabase.ReadSchemaVersion(connection));
             Assert.Equal(schemaAfterFirst, ReadSchemaObjects(connection));
 
             WorkspaceCheckpoint.RequireIdenticalTables(
@@ -308,7 +333,7 @@ namespace Chatcheology.Data.Tests.Workspace
 
             using var connection = WorkspaceDatabase.OpenConnection(workspace.DatabasePath);
 
-            Assert.Equal(3, WorkspaceDatabase.ReadSchemaVersion(connection));
+            Assert.Equal(4, WorkspaceDatabase.ReadSchemaVersion(connection));
         }
 
         [Fact]

@@ -183,7 +183,7 @@ namespace Chatcheology.Data.Tests.Media
             Analyse(workspace);
 
             Assert.Equal(before, DescribeWorkspaceState(workspace));
-            Assert.Equal(3, workspace.ScalarLongReadOnly("PRAGMA user_version;"));
+            Assert.Equal(WorkspaceDatabase.SchemaVersion, workspace.ScalarLongReadOnly("PRAGMA user_version;"));
         }
 
         /// <remarks>

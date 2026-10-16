@@ -26,7 +26,10 @@
              missing": muted, with a dashed outline (a Border cannot dash, so a Rectangle overlays
              it), so it stands apart from slots nobody has looked at yet. -->
         <DataTemplate x:Key="AttachmentTemplate" DataType="{x:Type vm:AttachmentViewModel}">
-            <Grid Margin="0,6,0,0">
+            <!-- A WhatsApp low-quality copy (CH-10) is collapsed unless the toolbar toggle shows
+                 copies. Collapsing is presentation only; its Phase 7 state is untouched. -->
+            <Grid Margin="0,6,0,0"
+                  Visibility="{Binding IsShown, Converter={StaticResource BoolToVisibility}}">
             <Border Padding="8" CornerRadius="4" BorderThickness="1">
                 <Border.Style>
                     <Style TargetType="Border">
@@ -52,6 +55,11 @@
                 <StackPanel Background="Transparent"
                             MouseLeftButtonUp="AttachmentCardClick"
                             ToolTip="Open the review panel for this attachment">
+                    <TextBlock Text="Low-quality copy" FontSize="10" Foreground="#FF7A6A2E"
+                               Margin="0,0,0,2"
+                               Visibility="{Binding HasLowQualityCopyLabel,
+                                   Converter={StaticResource BoolToVisibility}}" />
+
                     <TextBlock Text="{Binding HeadlineText}" FontWeight="SemiBold"
                                TextWrapping="Wrap" />
 
@@ -82,6 +90,11 @@
 
                     <TextBlock Text="{Binding OpenError}" Margin="0,4,0,0" FontSize="11"
                                Foreground="#FF8A2727" TextWrapping="Wrap" />
+
+                    <TextBlock Text="{Binding LowQualityCopyNoteText}" Margin="0,4,0,0"
+                               FontSize="10" Foreground="#FF7A7A7A" TextWrapping="Wrap"
+                               Visibility="{Binding HasLowQualityCopyNote,
+                                   Converter={StaticResource BoolToVisibility}}" />
                 </StackPanel>
             </Border>
 
@@ -187,7 +200,8 @@
 
                 <Border MaxWidth="620" Margin="8,2" Padding="10,7" CornerRadius="6"
                         Background="White" BorderBrush="#FFDAD5CC" BorderThickness="1"
-                        HorizontalAlignment="{Binding BubbleAlignment}">
+                        HorizontalAlignment="{Binding BubbleAlignment}"
+                        Visibility="{Binding IsShown, Converter={StaticResource BoolToVisibility}}">
                     <StackPanel>
                         <DockPanel LastChildFill="False">
                             <TextBlock Text="{Binding SenderText}" FontWeight="SemiBold"
@@ -197,6 +211,12 @@
                             <TextBlock Text="{Binding TimeText}" Margin="16,0,0,0" FontSize="11"
                                        Foreground="#FF7A7A7A" DockPanel.Dock="Right" />
                         </DockPanel>
+
+                        <!-- WhatsApp's own forwarded wording, from the msgstore (CH-8). -->
+                        <TextBlock Text="{Binding ForwardedText}" Margin="0,2,0,0" FontSize="11"
+                                   FontStyle="Italic" Foreground="#FF7A7A7A"
+                                   Visibility="{Binding HasForwardedLabel,
+                                       Converter={StaticResource BoolToVisibility}}" />
 
                         <!-- Inlines rather than Text, so web and email addresses are followable.
                              Displaying one contacts nothing; a link is only followed on a click. -->
@@ -248,6 +268,14 @@
 
                 <Button Content="Jump to date" Padding="10,3" DockPanel.Dock="Left"
                         Command="{Binding JumpToDateCommand}" />
+
+                <!-- Offered only when the workspace records a low-quality copy (CH-10). -->
+                <CheckBox x:Name="ShowLowQualityCopiesToggle" Content="Show low-quality copies"
+                          Margin="16,0,0,0" VerticalAlignment="Center" DockPanel.Dock="Left"
+                          IsChecked="{Binding ShowLowQualityCopies}"
+                          ToolTip="Session only. Nothing is written to the workspace."
+                          Visibility="{Binding HasLowQualityCopies,
+                              Converter={StaticResource BoolToVisibility}}" />
             </DockPanel>
         </Border>
 

@@ -1,4 +1,5 @@
 using System.IO;
+using Chatcheology.Data.MsgstoreFacts;
 using Chatcheology.Data.Phase7;
 using Chatcheology.Data.Viewer;
 using Chatcheology.Data.Workspace;
@@ -28,13 +29,15 @@ namespace Chatcheology.Desktop.Services
     /// One page of a conversation with everything the viewer needs to draw it.
     /// </summary>
     /// <remarks>
-    /// Assembled from three independent readers and one round of file-system probing, all of it
-    /// away from the dispatcher, so what reaches the UI thread is finished.
+    /// Assembled from independent readers and one round of file-system probing, all of it away
+    /// from the dispatcher, so what reaches the UI thread is finished. <see cref="Facts"/> is the
+    /// page's msgstore facts (CH-8, CH-10): presentation only, never a Phase 7 state.
     /// </remarks>
     public sealed record LoadedPage(
         ConversationPage Page,
         IReadOnlyDictionary<long, Phase7ReconstructionState> States,
-        IReadOnlyDictionary<long, MediaAvailability> Media);
+        IReadOnlyDictionary<long, MediaAvailability> Media,
+        MsgstoreFactSet Facts);
 
     /// <summary>
     /// What the viewer found when it looked for an asset's recorded copies.
@@ -89,6 +92,7 @@ namespace Chatcheology.Desktop.Services
         private readonly ConversationReconstructionReader _reconstruction = new();
         private readonly MediaAssetLocationReader _locations = new();
         private readonly AttachmentReviewReader _review = new();
+        private readonly MsgstoreFactReader _facts = new();
 
         private WorkspaceSession(SqliteConnection connection, string databasePath)
         {
@@ -203,9 +207,24 @@ namespace Chatcheology.Desktop.Services
                         .Distinct()
                         .ToList();
 
-                    return new LoadedPage(page, states, ReadMedia(connection, assetIDs));
+                    var media = ReadMedia(connection, assetIDs);
+
+                    cancellationToken.ThrowIfCancellationRequested();
+
+                    var facts = attachmentIDs.Count == 0
+                        ? MsgstoreFactSet.Empty
+                        : _facts.Read(connection, attachmentIDs);
+
+                    return new LoadedPage(page, states, media, facts);
                 },
                 cancellationToken);
+
+        /// <summary>
+        /// Whether the workspace records any low-quality copy, which is what decides whether the
+        /// viewer offers to show them at all.
+        /// </summary>
+        internal Task<bool> HasAnyLowQualityCopyAsync(CancellationToken cancellationToken) =>
+            ReadAsync(connection => _facts.HasAnyLowQualityCopy(connection), cancellationToken);
 
         /// <summary>
         /// One attachment's review state, and what of its candidates' media is reachable.

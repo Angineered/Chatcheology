@@ -58,6 +58,48 @@ namespace Chatcheology.Desktop.ViewModels
             // Scanned here, on the background thread that builds the page, rather than in a
             // converter that would run during layout for every message on screen.
             TextSpans = MessageTextScanner.Scan(MessageText);
+
+            // WhatsApp's own label and threshold (CH-8). Only a msgstore forwarded mark produces
+            // a label; a score alone, without the mark, says nothing here.
+            var forwarded = attachments.Where(attachment => attachment.IsForwarded).ToList();
+
+            ForwardedText = forwarded.Count == 0
+                ? string.Empty
+                : forwarded.Any(attachment => attachment.ForwardScore >= ForwardedManyTimesScore)
+                    ? "Forwarded many times"
+                    : "Forwarded";
+        }
+
+        /// <summary>
+        /// The forward score from which WhatsApp labels a message "Forwarded many times".
+        /// </summary>
+        internal const int ForwardedManyTimesScore = 5;
+
+        /// <summary>"Forwarded", "Forwarded many times", or empty.</summary>
+        public string ForwardedText { get; }
+
+        /// <summary>Whether a forwarded label applies.</summary>
+        public bool HasForwardedLabel => ForwardedText.Length > 0;
+
+        /// <summary>
+        /// Whether the bubble is on screen. A message that carries no text of its own and whose
+        /// every attachment is a hidden low-quality copy has nothing left to show, so the bubble
+        /// goes with them; its date separator stays.
+        /// </summary>
+        public bool IsShown =>
+            HasMessageText
+            || Attachments.Count == 0
+            || Attachments.Any(attachment => attachment.IsShown);
+
+        /// <summary>Shows or hides low-quality copies on this message, for this session only.</summary>
+        internal void SetShowLowQualityCopies(bool show)
+        {
+            foreach (var attachment in Attachments)
+            {
+                attachment.ShowLowQualityCopies = show;
+            }
+
+            OnPropertyChanged(nameof(IsShown));
         }
 
         /// <summary>Its position in the authoritative conversation order.</summary>

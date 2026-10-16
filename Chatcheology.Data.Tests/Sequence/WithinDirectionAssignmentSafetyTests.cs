@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Security.Cryptography;
 using Chatcheology.Data.Sequence;
 using Chatcheology.Data.Tests.Matching;
+using Chatcheology.Data.Workspace;
 using Microsoft.Data.Sqlite;
 
 namespace Chatcheology.Data.Tests.Sequence
@@ -40,7 +41,7 @@ namespace Chatcheology.Data.Tests.Sequence
             fixture.AnalyseAssignments();
 
             Assert.Equal(before, DescribeWorkspaceState(fixture));
-            Assert.Equal(3, fixture.Workspace.ScalarLongReadOnly("PRAGMA user_version;"));
+            Assert.Equal(WorkspaceDatabase.SchemaVersion, fixture.Workspace.ScalarLongReadOnly("PRAGMA user_version;"));
 
             Assert.Equal(
                 2,

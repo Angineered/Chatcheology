@@ -46,6 +46,8 @@ namespace Chatcheology.Desktop.ViewModels
         private string _rangeText = string.Empty;
         private string _conversationTitle = string.Empty;
         private bool _isBusy;
+        private bool _hasLowQualityCopies;
+        private bool _showLowQualityCopies;
 
         /// <summary>
         /// Creates the viewer.
@@ -207,6 +209,38 @@ namespace Chatcheology.Desktop.ViewModels
             private set => SetProperty(ref _rangeText, value);
         }
 
+        /// <summary>
+        /// Whether the open workspace records any low-quality copy (CH-10). The toolbar toggle is
+        /// offered only then, so a workspace with no msgstore facts looks exactly as before.
+        /// </summary>
+        public bool HasLowQualityCopies
+        {
+            get => _hasLowQualityCopies;
+            private set => SetProperty(ref _hasLowQualityCopies, value);
+        }
+
+        /// <summary>
+        /// Whether low-quality copies are shown, for this session only. Off by default: WhatsApp
+        /// does not show them either. Toggling is presentation and never a move, so the operator's
+        /// place on the page is kept.
+        /// </summary>
+        public bool ShowLowQualityCopies
+        {
+            get => _showLowQualityCopies;
+            set
+            {
+                if (!SetProperty(ref _showLowQualityCopies, value))
+                {
+                    return;
+                }
+
+                foreach (var message in Messages)
+                {
+                    message.SetShowLowQualityCopies(value);
+                }
+            }
+        }
+
         /// <summary>Whether a read is in flight.</summary>
         public bool IsBusy
         {
@@ -254,6 +288,10 @@ namespace Chatcheology.Desktop.ViewModels
             {
                 var conversations = await session
                     .ReadConversationsAsync(CancellationToken.None)
+                    .ConfigureAwait(true);
+
+                HasLowQualityCopies = await session
+                    .HasAnyLowQualityCopyAsync(CancellationToken.None)
                     .ConfigureAwait(true);
 
                 Conversations.Clear();
@@ -307,6 +345,10 @@ namespace Chatcheology.Desktop.ViewModels
             _page = null;
             _selectedConversation = null;
             _localParticipant = null;
+
+            HasLowQualityCopies = false;
+            _showLowQualityCopies = false;
+            OnPropertyChanged(nameof(ShowLowQualityCopies));
 
             RangeText = string.Empty;
             ConversationTitle = string.Empty;
@@ -406,9 +448,10 @@ namespace Chatcheology.Desktop.ViewModels
                     .ConfigureAwait(true);
 
                 var brushes = BuildBrushes(SelectedConversation);
+                var showLowQualityCopies = ShowLowQualityCopies;
 
                 var built = await Task
-                    .Run(() => Build(loaded, brushes), navigation.Token)
+                    .Run(() => Build(loaded, brushes, showLowQualityCopies), navigation.Token)
                     .ConfigureAwait(true);
 
                 if (navigation.IsCancellationRequested)
@@ -422,6 +465,8 @@ namespace Chatcheology.Desktop.ViewModels
 
                 foreach (var message in built)
                 {
+                    // The toggle may have moved while the page was being built.
+                    message.SetShowLowQualityCopies(ShowLowQualityCopies);
                     Messages.Add(message);
                 }
 
@@ -657,7 +702,7 @@ namespace Chatcheology.Desktop.ViewModels
         /// bitmap built here safe to display on the thread that will draw it.
         /// </remarks>
         private static List<MessageViewModel> Build(
-            LoadedPage loaded, IReadOnlyDictionary<long, Brush> brushes)
+            LoadedPage loaded, IReadOnlyDictionary<long, Brush> brushes, bool showLowQualityCopies)
         {
             var built = new List<MessageViewModel>(loaded.Page.Messages.Count);
 
@@ -681,7 +726,18 @@ namespace Chatcheology.Desktop.ViewModels
                         ? availability
                         : null;
 
-                    attachments.Add(new AttachmentViewModel(attachment, state, media));
+                    loaded.Facts.Facts.TryGetValue(attachment.AttachmentID, out var fact);
+
+                    var copies = loaded.Facts.LowQualityCopiesByFullCopy.TryGetValue(
+                        attachment.AttachmentID, out var copyIDs)
+                        ? copyIDs.Count
+                        : 0;
+
+                    attachments.Add(
+                        new AttachmentViewModel(attachment, state, media, fact, copies)
+                        {
+                            ShowLowQualityCopies = showLowQualityCopies,
+                        });
                 }
 
                 built.Add(

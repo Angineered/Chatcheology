@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using Chatcheology.Data.Media;
+using Chatcheology.Data.Workspace;
 using Microsoft.Data.Sqlite;
 
 namespace Chatcheology.Data.Tests.Media
@@ -263,7 +264,7 @@ namespace Chatcheology.Data.Tests.Media
             WaSequenceScopeTestRunner.Analyse(workspace, (sourceID, 1));
 
             Assert.Equal(before, DescribeWorkspaceState(workspace));
-            Assert.Equal(3, workspace.ScalarLongReadOnly("PRAGMA user_version;"));
+            Assert.Equal(WorkspaceDatabase.SchemaVersion, workspace.ScalarLongReadOnly("PRAGMA user_version;"));
         }
 
         /// <remarks>
