@@ -52,6 +52,20 @@ namespace Chatcheology.Desktop.ViewModels
             if (state.Status == Phase7ResolutionStatus.Unresolved)
             {
                 IsUnresolved = true;
+
+                if (state.PlaceholderReason ==
+                    Phase7UnresolvedPlaceholderReason.ReviewedInsufficientEvidence)
+                {
+                    // Someone looked, and Phase 7 records that the evidence was insufficient. Still
+                    // unresolved, and still open to a later Confirm; only the wording and the style
+                    // say "we looked" rather than "nobody has looked yet".
+                    IsReviewedMissing = true;
+                    HeadlineText = "Media missing";
+                    DetailText = "Reviewed: no file was recovered for this attachment.";
+
+                    return;
+                }
+
                 HeadlineText = "Media not yet matched";
                 DetailText = UnresolvedDetail(state);
 
@@ -130,6 +144,13 @@ namespace Chatcheology.Desktop.ViewModels
 
         /// <summary>Whether Phase 7 reports no asset for this attachment.</summary>
         public bool IsUnresolved { get; }
+
+        /// <summary>
+        /// Whether Phase 7 reports the attachment unresolved because a review recorded the
+        /// evidence as insufficient: the file was looked for and not recovered. Always implies
+        /// <see cref="IsUnresolved"/>.
+        /// </summary>
+        public bool IsReviewedMissing { get; }
 
         /// <summary>Whether a resolved asset has a copy this machine can reach.</summary>
         public bool IsResolvedAndAvailable { get; }
