@@ -128,7 +128,7 @@ namespace Chatcheology.Desktop.Tests
 
             Assert.True(full.IsShown);
             Assert.True(full.HasLowQualityCopyNote);
-            Assert.Equal("+ WhatsApp low-quality copy (hidden)", full.LowQualityCopyNoteText);
+            Assert.Equal("WhatsApp also kept a smaller duplicate (hidden)", full.LowQualityCopyNoteText);
 
             full.ShowLowQualityCopies = true;
 
@@ -137,7 +137,7 @@ namespace Chatcheology.Desktop.Tests
 
             var twice = Card(3, fact: null, lowQualityCopies: 2);
 
-            Assert.Equal("+ 2 WhatsApp low-quality copies (hidden)", twice.LowQualityCopyNoteText);
+            Assert.Equal("WhatsApp also kept 2 smaller duplicates (hidden)", twice.LowQualityCopyNoteText);
         }
 
         // -------------------------------------------------------------------------------------

@@ -226,8 +226,8 @@ namespace Chatcheology.Desktop.ViewModels
 
         /// <summary>The note on a full copy whose low-quality copies are hidden.</summary>
         public string LowQualityCopyNoteText => LowQualityCopyCount == 1
-            ? "+ WhatsApp low-quality copy (hidden)"
-            : $"+ {Text(LowQualityCopyCount)} WhatsApp low-quality copies (hidden)";
+            ? "WhatsApp also kept a smaller duplicate (hidden)"
+            : $"WhatsApp also kept {Text(LowQualityCopyCount)} smaller duplicates (hidden)";
 
         /// <summary>Why the last Open media attempt did not work, or <see langword="null"/>.</summary>
         public string? OpenError
