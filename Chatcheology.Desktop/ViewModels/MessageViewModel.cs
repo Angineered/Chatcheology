@@ -3,6 +3,7 @@ using System.Windows;
 using System.Windows.Media;
 using Chatcheology.Core.Models;
 using Chatcheology.Core.Text;
+using Chatcheology.Data.MsgstoreFacts;
 using Chatcheology.Data.Viewer;
 
 namespace Chatcheology.Desktop.ViewModels
@@ -27,7 +28,8 @@ namespace Chatcheology.Desktop.ViewModels
             ConversationMessage message,
             DateOnly? dateSeparator,
             Brush senderBrush,
-            IReadOnlyList<AttachmentViewModel> attachments)
+            IReadOnlyList<AttachmentViewModel> attachments,
+            MessageMsgstoreFact? fact = null)
         {
             SequenceNumber = message.SequenceNumber;
             SenderParticipantID = message.SenderParticipantID;
@@ -60,12 +62,21 @@ namespace Chatcheology.Desktop.ViewModels
             TextSpans = MessageTextScanner.Scan(MessageText);
 
             // WhatsApp's own label and threshold (CH-8). Only a msgstore forwarded mark produces
-            // a label; a score alone, without the mark, says nothing here.
-            var forwarded = attachments.Where(attachment => attachment.IsForwarded).ToList();
+            // a label; a score alone, without the mark, says nothing here. The mark comes from the
+            // message's attachments or, for a text message, from the message's own fact (CH-22).
+            var forwardScores = attachments
+                .Where(attachment => attachment.IsForwarded)
+                .Select(attachment => attachment.ForwardScore)
+                .ToList();
 
-            ForwardedText = forwarded.Count == 0
+            if (fact?.IsForwarded == true)
+            {
+                forwardScores.Add(fact.ForwardScore);
+            }
+
+            ForwardedText = forwardScores.Count == 0
                 ? string.Empty
-                : forwarded.Any(attachment => attachment.ForwardScore >= ForwardedManyTimesScore)
+                : forwardScores.Any(score => score >= ForwardedManyTimesScore)
                     ? "Forwarded many times"
                     : "Forwarded";
         }

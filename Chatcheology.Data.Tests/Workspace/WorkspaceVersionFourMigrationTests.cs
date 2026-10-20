@@ -6,12 +6,16 @@ using static Chatcheology.Data.Tests.Workspace.WorkspaceTestData;
 namespace Chatcheology.Data.Tests.Workspace
 {
     /// <summary>
-    /// Tests the version-3-to-4 migration (CH-8, CH-10): additive, one transaction, and refused for
-    /// anything that is not exactly a version-3 workspace.
+    /// Tests the version-3 migration (CH-8, CH-10): additive, one transaction, and refused for
+    /// anything that is not exactly a version-3 workspace. Since version 5 (CH-22) a version-3
+    /// workspace reaches version 5 in the same single transaction, so the version-5 table and index
+    /// are among the added objects; version 4 to 5 has its own tests in
+    /// <see cref="WorkspaceVersionFiveMigrationTests"/>.
     /// </summary>
     /// <remarks>
     /// The version-3 starting point is the synthetic version-2 fixture migrated to the current
-    /// schema with the version-4 objects then dropped and <c>user_version</c> set back to 3. The
+    /// schema with the version-4 and version-5 objects then dropped and <c>user_version</c> set back
+    /// to 3. The
     /// remaining objects are the ones the unchanged version-3 statements created, which is exactly
     /// what a version-3 build left behind. A Phase 7 run row is added so the Phase 7 tables are not
     /// empty when the migration is checked for leaving them alone. Synthetic data only.
@@ -20,11 +24,15 @@ namespace Chatcheology.Data.Tests.Workspace
     {
         private const string FactTable = "AttachmentMsgstoreFact";
 
+        private const string MessageFactTable = "MessageMsgstoreFact";
+
         private static readonly string[] FactIndexes =
         [
             "IX_AttachmentMsgstoreFact_LowQualityCopyOfAttachmentID",
             "IX_AttachmentMsgstoreFact_SourceBatch",
         ];
+
+        private const string MessageFactIndex = "IX_MessageMsgstoreFact_SourceBatch";
 
         private static readonly string[] VersionThreeTables =
             SyntheticVersionTwoWorkspace.Tables
@@ -32,7 +40,7 @@ namespace Chatcheology.Data.Tests.Workspace
                 .ToArray();
 
         [Fact]
-        public void Migrate_VersionThreeDatabase_BecomesVersionFourWithAnEmptyFactTable()
+        public void Migrate_VersionThreeDatabase_BecomesVersionFiveWithEmptyFactTables()
         {
             using var workspace = new TemporaryWorkspaceDatabase();
 
@@ -42,13 +50,17 @@ namespace Chatcheology.Data.Tests.Workspace
 
             using var connection = WorkspaceDatabase.OpenConnection(workspace.DatabasePath);
 
-            Assert.Equal(4, WorkspaceDatabase.ReadSchemaVersion(connection));
-            Assert.True(TableExists(connection, FactTable));
-            Assert.Equal(0, CountRows(connection, FactTable));
+            Assert.Equal(5, WorkspaceDatabase.ReadSchemaVersion(connection));
+
+            foreach (var table in new[] { FactTable, MessageFactTable })
+            {
+                Assert.True(TableExists(connection, table), table);
+                Assert.Equal(0, CountRows(connection, table));
+            }
 
             var indexes = WorkspaceDatabase.ReadNamedIndexNames(connection);
 
-            foreach (var index in FactIndexes)
+            foreach (var index in FactIndexes.Append(MessageFactIndex))
             {
                 Assert.Contains(index, indexes);
             }
@@ -56,7 +68,7 @@ namespace Chatcheology.Data.Tests.Workspace
 
         /// <remarks>
         /// Every schema object a version-3 workspace has is still there with its exact definition,
-        /// and the only new objects are the fact table and its two indexes. Every row of every
+        /// and the only new objects are the two fact tables and their three indexes. Every row of every
         /// version-3 table is unchanged, Phase 7 tables included.
         /// </remarks>
         [Fact]
@@ -88,7 +100,10 @@ namespace Chatcheology.Data.Tests.Workspace
 
             var added = after.Except(before).Select(entry => entry.Split('|')[1]).Order().ToList();
 
-            Assert.Equal(FactIndexes.Append(FactTable).Order().ToList(), added);
+            Assert.Equal(
+                FactIndexes.Append(MessageFactIndex).Append(FactTable).Append(MessageFactTable)
+                    .Order().ToList(),
+                added);
 
             WorkspaceCheckpoint.RequireIdenticalTables(connection, checkpointPath, VersionThreeTables);
 
@@ -113,7 +128,7 @@ namespace Chatcheology.Data.Tests.Workspace
         }
 
         [Fact]
-        public void Migrate_VersionOneAndVersionTwo_StillReachVersionFour()
+        public void Migrate_VersionOneAndVersionTwo_StillReachVersionFive()
         {
             using var fromVersionOne = new TemporaryWorkspaceDatabase();
             using var fromVersionTwo = new TemporaryWorkspaceDatabase();
@@ -128,9 +143,13 @@ namespace Chatcheology.Data.Tests.Workspace
             {
                 using var connection = WorkspaceDatabase.OpenConnection(path);
 
-                Assert.Equal(4, WorkspaceDatabase.ReadSchemaVersion(connection));
-                Assert.True(TableExists(connection, FactTable));
-                Assert.Equal(0, CountRows(connection, FactTable));
+                Assert.Equal(5, WorkspaceDatabase.ReadSchemaVersion(connection));
+
+                foreach (var table in new[] { FactTable, MessageFactTable })
+                {
+                    Assert.True(TableExists(connection, table), table);
+                    Assert.Equal(0, CountRows(connection, table));
+                }
             }
         }
 
@@ -202,6 +221,7 @@ namespace Chatcheology.Data.Tests.Workspace
 
             Assert.Equal(3, WorkspaceDatabase.ReadSchemaVersion(connection));
             Assert.False(TableExists(connection, FactTable));
+            Assert.False(TableExists(connection, MessageFactTable));
             Assert.DoesNotContain(FactIndexes[0], WorkspaceDatabase.ReadNamedIndexNames(connection));
 
             WorkspaceCheckpoint.RequireIdenticalTables(connection, checkpointPath, VersionThreeTables);
@@ -239,7 +259,8 @@ namespace Chatcheology.Data.Tests.Workspace
 
         /// <summary>
         /// Builds a version-3 workspace: the synthetic version-2 fixture through the unchanged
-        /// version-3 statements, without the version-4 objects, plus one Phase 7 run row.
+        /// version-3 statements, without the version-4 and version-5 objects, plus one Phase 7 run
+        /// row.
         /// </summary>
         internal static void CreateVersionThree(string databasePath)
         {
@@ -247,6 +268,9 @@ namespace Chatcheology.Data.Tests.Workspace
             WorkspaceDatabase.Initialise(databasePath);
 
             using var connection = SyntheticVersionTwoWorkspace.OpenPlainConnection(databasePath);
+
+            Execute(connection, "DROP INDEX IX_MessageMsgstoreFact_SourceBatch;");
+            Execute(connection, "DROP TABLE MessageMsgstoreFact;");
 
             Execute(connection, "DROP INDEX IX_AttachmentMsgstoreFact_SourceBatch;");
             Execute(connection, "DROP INDEX IX_AttachmentMsgstoreFact_LowQualityCopyOfAttachmentID;");
