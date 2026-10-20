@@ -31,13 +31,15 @@ namespace Chatcheology.Desktop.Services
     /// <remarks>
     /// Assembled from independent readers and one round of file-system probing, all of it away
     /// from the dispatcher, so what reaches the UI thread is finished. <see cref="Facts"/> is the
-    /// page's msgstore facts (CH-8, CH-10): presentation only, never a Phase 7 state.
+    /// page's attachment msgstore facts (CH-8, CH-10) and <see cref="MessageFacts"/> its text
+    /// messages' msgstore facts (CH-22): presentation only, never a Phase 7 state.
     /// </remarks>
     public sealed record LoadedPage(
         ConversationPage Page,
         IReadOnlyDictionary<long, Phase7ReconstructionState> States,
         IReadOnlyDictionary<long, MediaAvailability> Media,
-        MsgstoreFactSet Facts);
+        MsgstoreFactSet Facts,
+        IReadOnlyDictionary<long, MessageMsgstoreFact> MessageFacts);
 
     /// <summary>
     /// What the viewer found when it looked for an asset's recorded copies.
@@ -93,6 +95,7 @@ namespace Chatcheology.Desktop.Services
         private readonly MediaAssetLocationReader _locations = new();
         private readonly AttachmentReviewReader _review = new();
         private readonly MsgstoreFactReader _facts = new();
+        private readonly MessageMsgstoreFactReader _messageFacts = new();
 
         private WorkspaceSession(SqliteConnection connection, string databasePath)
         {
@@ -215,7 +218,11 @@ namespace Chatcheology.Desktop.Services
                         ? MsgstoreFactSet.Empty
                         : _facts.Read(connection, attachmentIDs);
 
-                    return new LoadedPage(page, states, media, facts);
+                    cancellationToken.ThrowIfCancellationRequested();
+
+                    var messageFacts = _messageFacts.ReadForPage(connection, page);
+
+                    return new LoadedPage(page, states, media, facts, messageFacts);
                 },
                 cancellationToken);
 

@@ -14,8 +14,9 @@ using Microsoft.Data.Sqlite;
 namespace Chatcheology.Desktop.Tests
 {
     /// <summary>
-    /// CH-8 and CH-10 in the viewer: the forwarded labels, hiding WhatsApp's low-quality copies,
-    /// the toggle that shows them, and a workspace with no facts looking exactly as before.
+    /// CH-8, CH-10 and CH-22 in the viewer: the forwarded labels on media and text messages, hiding
+    /// WhatsApp's low-quality copies, the toggle that shows them, and a workspace with no facts
+    /// looking exactly as before.
     /// </summary>
     /// <remarks>
     /// The first half builds view-models in memory from synthetic values; the second half runs the
@@ -141,6 +142,60 @@ namespace Chatcheology.Desktop.Tests
         }
 
         // -------------------------------------------------------------------------------------
+        // Text messages (CH-22), in memory.
+        // -------------------------------------------------------------------------------------
+
+        [Fact]
+        public void ATextMessageWithNoFact_HasNoLabel()
+        {
+            var message = TextMessage(fact: null);
+
+            Assert.False(message.HasForwardedLabel);
+            Assert.Equal(string.Empty, message.ForwardedText);
+            Assert.True(message.IsShown);
+        }
+
+        [Theory]
+        [InlineData(null)]
+        [InlineData(0)]
+        [InlineData(4)]
+        public void AForwardedTextMessage_IsLabelledForwarded(int? score)
+        {
+            var message = TextMessage(TextFact(forwarded: true, score));
+
+            Assert.True(message.HasForwardedLabel);
+            Assert.Equal("Forwarded", message.ForwardedText);
+        }
+
+        [Theory]
+        [InlineData(5)]
+        [InlineData(127)]
+        public void ATextMessageWithAForwardScoreOfFiveOrMore_IsLabelledForwardedManyTimes(int score)
+        {
+            var message = TextMessage(TextFact(forwarded: true, score));
+
+            Assert.Equal("Forwarded many times", message.ForwardedText);
+        }
+
+        [Theory]
+        [InlineData(null)]
+        [InlineData(9)]
+        public void ATextMessageKnownNotForwarded_HasNoLabel(int? score)
+        {
+            var message = TextMessage(TextFact(forwarded: false, score));
+
+            Assert.False(message.HasForwardedLabel);
+        }
+
+        [Fact]
+        public void AnAttachmentFact_StillLabelsItsMessageWithoutAMessageFact()
+        {
+            var message = Message(Card(1, Fact(1, forwarded: true, 6)));
+
+            Assert.Equal("Forwarded many times", message.ForwardedText);
+        }
+
+        // -------------------------------------------------------------------------------------
         // The real window over a synthetic workspace.
         // -------------------------------------------------------------------------------------
 
@@ -164,6 +219,18 @@ namespace Chatcheology.Desktop.Tests
                 Assert.Equal("Forwarded many times", many.ForwardedText);
                 Assert.False(plain.HasForwardedLabel);
                 Assert.True(plain.IsShown);
+
+                // Text messages carry their own facts (CH-22).
+                Assert.Equal(
+                    "Forwarded",
+                    TextAt(viewModel, SyntheticWorkspace.ForwardedTextSequence).ForwardedText);
+                Assert.Equal(
+                    "Forwarded many times",
+                    TextAt(viewModel, SyntheticWorkspace.ForwardedManyTextSequence).ForwardedText);
+                Assert.False(
+                    TextAt(viewModel, SyntheticWorkspace.NotForwardedTextSequence).HasForwardedLabel);
+                Assert.False(
+                    TextAt(viewModel, SyntheticWorkspace.UnknownTextSequence).HasForwardedLabel);
 
                 var moved = 0;
                 viewModel.MovedToPage += (_, _) => moved++;
@@ -211,6 +278,34 @@ namespace Chatcheology.Desktop.Tests
             });
 
         [Fact]
+        public void TheViewer_RefusesAVersionFourWorkspaceAndLeavesItUnchanged()
+        {
+            using var workspace = new SyntheticWorkspace(withFacts: false);
+
+            using (var connection = WorkspaceDatabase.OpenConnection(workspace.DatabasePath))
+            using (var command = connection.CreateCommand())
+            {
+                command.CommandText =
+                    """
+                    DROP INDEX IX_MessageMsgstoreFact_SourceBatch;
+                    DROP TABLE MessageMsgstoreFact;
+                    PRAGMA user_version = 4;
+                    """;
+                command.ExecuteNonQuery();
+            }
+
+            SqliteConnection.ClearAllPools();
+
+            var before = WorkspaceCheckpoint.ComputeFileSha256(workspace.DatabasePath);
+
+            var exception = Assert.Throws<InvalidOperationException>(
+                () => WorkspaceSession.Open(workspace.DatabasePath));
+
+            Assert.Contains("schema version 4", exception.Message, StringComparison.Ordinal);
+            Assert.Equal(before, WorkspaceCheckpoint.ComputeFileSha256(workspace.DatabasePath));
+        }
+
+        [Fact]
         public void TheViewer_RefusesAVersionThreeWorkspaceAndLeavesItUnchanged()
         {
             using var workspace = new SyntheticWorkspace(withFacts: false);
@@ -220,6 +315,8 @@ namespace Chatcheology.Desktop.Tests
             {
                 command.CommandText =
                     """
+                    DROP INDEX IX_MessageMsgstoreFact_SourceBatch;
+                    DROP TABLE MessageMsgstoreFact;
                     DROP INDEX IX_AttachmentMsgstoreFact_SourceBatch;
                     DROP INDEX IX_AttachmentMsgstoreFact_LowQualityCopyOfAttachmentID;
                     DROP TABLE AttachmentMsgstoreFact;
@@ -240,6 +337,38 @@ namespace Chatcheology.Desktop.Tests
         // -------------------------------------------------------------------------------------
         // Harness.
         // -------------------------------------------------------------------------------------
+
+        private static MessageViewModel TextAt(MainViewModel viewModel, int sequenceNumber) =>
+            viewModel.Messages.Single(message => message.SequenceNumber == sequenceNumber);
+
+        private static MessageViewModel TextMessage(MessageMsgstoreFact? fact) =>
+            new(
+                new ConversationMessage
+                {
+                    MessageID = 7,
+                    ConversationID = 1,
+                    SequenceNumber = 7,
+                    MessageDateTimeLocal = new DateTime(2026, 3, 2, 9, 7, 0),
+                    SenderParticipantID = 1,
+                    SenderDisplayName = "Ada",
+                    MessageType = MessageType.User,
+                    MessageContent = "An invented text",
+                    Attachments = [],
+                },
+                dateSeparator: null,
+                Brushes.Black,
+                [],
+                fact);
+
+        private static MessageMsgstoreFact TextFact(bool forwarded, int? score) =>
+            new()
+            {
+                MessageID = 7,
+                IsForwarded = forwarded,
+                ForwardScore = score,
+                SourceBatch = "synthetic-text",
+                RecordedDateTimeUtc = new DateTime(2026, 10, 19, 0, 0, 0, DateTimeKind.Utc),
+            };
 
         private static MessageViewModel MessageWith(MainViewModel viewModel, long attachmentID) =>
             viewModel.Messages.Single(
@@ -364,8 +493,9 @@ namespace Chatcheology.Desktop.Tests
             };
 
         /// <summary>
-        /// A synthetic workspace: two invented participants, six media-placeholder messages with one
-        /// unresolved attachment each and, optionally, one batch of invented msgstore facts.
+        /// A synthetic workspace: two invented participants, six media-placeholder messages (five
+        /// with one unresolved attachment each), four invented text messages and, optionally, one
+        /// batch of invented attachment msgstore facts and one of text-message facts.
         /// </summary>
         private sealed class SyntheticWorkspace : IDisposable
         {
@@ -374,6 +504,11 @@ namespace Chatcheology.Desktop.Tests
             internal const long CopyAttachmentID = 3;
             internal const long FullAttachmentID = 4;
             internal const long PlainAttachmentID = 5;
+
+            internal const int ForwardedTextSequence = 7;
+            internal const int ForwardedManyTextSequence = 8;
+            internal const int NotForwardedTextSequence = 9;
+            internal const int UnknownTextSequence = 10;
 
             private const string Stamp = "2026-04-01T00:00:00.0000000Z";
 
@@ -420,6 +555,15 @@ namespace Chatcheology.Desktop.Tests
 
                         INSERT INTO Attachment (MessageID, Ordinal, ResolutionStatus)
                         SELECT MessageID, 1, 'Unresolved' FROM Message WHERE SequenceNumber <= 5;
+
+                        WITH RECURSIVE n(i) AS (SELECT 7 UNION ALL SELECT i + 1 FROM n WHERE i < 10)
+                        INSERT INTO Message (
+                            ConversationID, ImportSourceID, SequenceNumber, MessageDateTimeLocal,
+                            SenderParticipantID, MessageType, MessageContent, RawContent,
+                            SourceLineStart, SourceLineEnd)
+                        SELECT 1, 1, i, '2026-03-02T09:' || printf('%02d', i) || ':00', 1 + (i % 2),
+                               'User', 'Invented text ' || i, 'raw', i, i
+                        FROM n;
                         """;
                     command.Parameters.AddWithValue("$placeholder", ParsedMessage.MediaPlaceholderContent);
 
@@ -437,7 +581,28 @@ namespace Chatcheology.Desktop.Tests
                             new MsgstoreFactRow(CopyAttachmentID, false, null, FullAttachmentID),
                         ],
                         new DateTime(2026, 10, 16, 0, 0, 0, DateTimeKind.Utc));
+
+                    MessageMsgstoreFactWriter.InsertBatch(
+                        DatabasePath,
+                        "synthetic-text-batch",
+                        [
+                            new MessageMsgstoreFactRow(MessageIDAt(ForwardedTextSequence), true, 1),
+                            new MessageMsgstoreFactRow(MessageIDAt(ForwardedManyTextSequence), true, 9),
+                            new MessageMsgstoreFactRow(MessageIDAt(NotForwardedTextSequence), false, 0),
+                        ],
+                        new DateTime(2026, 10, 19, 0, 0, 0, DateTimeKind.Utc));
                 }
+            }
+
+            private long MessageIDAt(int sequenceNumber)
+            {
+                using var connection = WorkspaceDatabase.OpenReadOnlyConnection(DatabasePath);
+                using var command = connection.CreateCommand();
+
+                command.CommandText = "SELECT MessageID FROM Message WHERE SequenceNumber = $sequence;";
+                command.Parameters.AddWithValue("$sequence", sequenceNumber);
+
+                return (long)command.ExecuteScalar()!;
             }
 
             internal string DatabasePath { get; }

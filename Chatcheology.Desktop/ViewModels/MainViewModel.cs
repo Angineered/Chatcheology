@@ -740,12 +740,15 @@ namespace Chatcheology.Desktop.ViewModels
                         });
                 }
 
+                loaded.MessageFacts.TryGetValue(message.MessageID, out var messageFact);
+
                 built.Add(
                     new MessageViewModel(
                         message,
                         separator,
                         BrushFor(brushes, message.SenderParticipantID),
-                        attachments));
+                        attachments,
+                        messageFact));
             }
 
             return built;

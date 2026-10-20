@@ -1,0 +1,3 @@
+# C# sources are always LF in the working tree, whatever core.autocrlf says.
+# Migration tests compare schema SQL text written in source (CH-21).
+*.cs text eol=lf
