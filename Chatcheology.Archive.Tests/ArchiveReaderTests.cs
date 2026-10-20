@@ -58,8 +58,8 @@ namespace Chatcheology.Archive.Tests
                 Assert.Equal(expected.Kind, actual.Kind);
                 Assert.Equal(expected.SenderParticipantID, actual.SenderParticipantID);
                 Assert.Equal(expected.Text, actual.Text);
-                Assert.Null(actual.IsForwarded);
-                Assert.Null(actual.ForwardScore);
+                Assert.Equal(expected.IsForwarded, actual.IsForwarded);
+                Assert.Equal(expected.ForwardScore, actual.ForwardScore);
                 Assert.Equal(expected.Attachments.Count, actual.Attachments.Count);
 
                 foreach (var (a, b) in expected.Attachments.Zip(actual.Attachments))

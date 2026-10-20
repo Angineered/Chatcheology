@@ -15,8 +15,9 @@ namespace Chatcheology.Data.ArchiveExport
     /// <para><strong>Public readers only.</strong> Messages and participants come from
     /// <see cref="ConversationReader"/>, attachment states from
     /// <see cref="Phase7ReconstructionReader"/>, each restored attachment's basis from
-    /// <see cref="Phase7ResolutionHistoryReader"/>, forwarded facts and low-quality links from
-    /// <see cref="MsgstoreFactReader"/>, and the recorded copies of each payload from
+    /// <see cref="Phase7ResolutionHistoryReader"/>, attachments' forwarded facts and low-quality links
+    /// from <see cref="MsgstoreFactReader"/>, messages' forwarded facts from
+    /// <see cref="MessageMsgstoreFactReader"/>, and the recorded copies of each payload from
     /// <see cref="MediaAssetLocationReader"/>. Nothing here forms a second opinion about any of
     /// them.</para>
     /// <para>Two small read-only queries of its own, because no reader exposes these on purpose:
@@ -47,6 +48,12 @@ namespace Chatcheology.Data.ArchiveExport
         internal required IReadOnlyDictionary<long, Phase7ResolutionHistoryEntry> Basis { get; init; }
 
         internal required MsgstoreFactSet Facts { get; init; }
+
+        /// <summary>
+        /// Each message's recorded msgstore fact (CH-22), for the messages that have one. A message
+        /// with no row has no known forwarded status.
+        /// </summary>
+        internal required IReadOnlyDictionary<long, MessageMsgstoreFact> MessageFacts { get; init; }
 
         /// <summary>The recorded export hash, lower-case hex, or empty when none was recorded.</summary>
         internal required string SourceExportSha256 { get; init; }
@@ -145,6 +152,9 @@ namespace Chatcheology.Data.ArchiveExport
 
                 var basis = ReadBasis(connection, resolved);
                 var facts = new MsgstoreFactReader().Read(connection, attachmentIDs);
+
+                var messageFacts = new MessageMsgstoreFactReader()
+                    .Read(connection, messages.Select(m => m.MessageID).ToList());
                 var (exportSha, timeZone) = ImportSource(connection, request.ConversationID);
 
                 return new ArchiveExportSource
@@ -157,6 +167,7 @@ namespace Chatcheology.Data.ArchiveExport
                     Locations = locations,
                     Basis = basis,
                     Facts = facts,
+                    MessageFacts = messageFacts,
                     SourceExportSha256 = exportSha,
                     TimeZoneID = timeZone,
                     MediaRoots = MediaRootPaths(connection),

@@ -181,6 +181,11 @@ namespace Chatcheology.Data.Tests.ArchiveExport
 
         internal void Review(long attachmentID, long runID) => _decisions.Review(attachmentID, runID);
 
+        /// <summary>Records text-message msgstore facts (CH-22) through the real writer.</summary>
+        internal void MessageFacts(params MessageMsgstoreFactRow[] rows) =>
+            MessageMsgstoreFactWriter.InsertBatch(
+                DatabasePath, "synthetic-message-batch", rows, new DateTime(2026, 10, 19, 8, 0, 0, DateTimeKind.Utc));
+
         internal void Facts(params MsgstoreFactRow[] rows) =>
             MsgstoreFactWriter.InsertBatch(
                 DatabasePath, "synthetic-batch", rows, new DateTime(2026, 10, 16, 8, 0, 0, DateTimeKind.Utc));

@@ -339,6 +339,8 @@ namespace Chatcheology.Data.ArchiveExport
                         });
                 }
 
+                source.MessageFacts.TryGetValue(message.MessageID, out var messageFact);
+
                 writer.WriteMessage(new ArchiveMessage
                 {
                     MessageID = message.MessageID,
@@ -348,9 +350,10 @@ namespace Chatcheology.Data.ArchiveExport
                     SenderParticipantID = message.SenderParticipantID,
                     Text = message.MessageContent,
 
-                    // Not known in format version 1 (CH-22 placeholder): null, never "not forwarded".
-                    IsForwarded = null,
-                    ForwardScore = null,
+                    // From the message's msgstore fact (CH-22). No row: null, "not known", never
+                    // "not forwarded".
+                    IsForwarded = messageFact?.IsForwarded,
+                    ForwardScore = messageFact?.ForwardScore,
 
                     Attachments = attachments,
                 });

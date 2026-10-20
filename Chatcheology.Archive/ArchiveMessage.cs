@@ -12,9 +12,10 @@ namespace Chatcheology.Archive
 
     /// <summary>One message of the archived conversation, with its attachments.</summary>
     /// <remarks>
-    /// <see cref="IsForwarded"/> and <see cref="ForwardScore"/> are <see langword="null"/> in
-    /// format version 1 whenever the producer has no safe way to know them. Null means "not known",
-    /// never "not forwarded"; a viewer shows a Forwarded label only on <see langword="true"/>.
+    /// <see cref="IsForwarded"/> is <see langword="true"/> or <see langword="false"/> when the
+    /// producer had a recorded fact for the message, and <see langword="null"/> when it had none.
+    /// Null means "not known", never "not forwarded"; a viewer shows a Forwarded label only on
+    /// <see langword="true"/>. <see cref="ForwardScore"/> is the recorded score, or null.
     /// </remarks>
     public sealed class ArchiveMessage
     {

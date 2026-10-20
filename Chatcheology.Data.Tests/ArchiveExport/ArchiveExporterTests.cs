@@ -39,15 +39,19 @@ namespace Chatcheology.Data.Tests.ArchiveExport
             long LowQualityCopy,
             (long AssetID, string Sha256, byte[] Bytes) SinglePayload,
             (long AssetID, string Sha256, byte[] Bytes) SharedPayload,
-            long RunID);
+            long RunID,
+            long ForwardedText,
+            long NotForwardedText,
+            long UnknownText);
 
         /// <summary>
         /// Three restored attachments (two sharing one payload), one reviewed missing, two unmatched,
-        /// a system message, a second day, msgstore facts and a low-quality link.
+        /// a system message, a second day, msgstore facts and a low-quality link, and three text
+        /// messages: one recorded as forwarded, one recorded as not forwarded, one with no fact.
         /// </summary>
         private Scenario Build()
         {
-            _fixture.AddText("Good morning");
+            var forwardedText = _fixture.AddText("Good morning");
             var single = _fixture.AddPhoto(Other);
             _fixture.AddText("Synthetic system notice", sender: null);
             var sharedFirst = _fixture.AddPhoto(Local);
@@ -55,7 +59,8 @@ namespace Chatcheology.Data.Tests.ArchiveExport
             var missing = _fixture.AddPhoto(Local);
             var unmatched = _fixture.AddPhoto(Other);
             var lowQualityCopy = _fixture.AddSecondAttachment(unmatched);
-            _fixture.AddText("Next day", Other, Day.AddDays(1));
+            var notForwardedText = _fixture.AddText("Next day", Other, Day.AddDays(1));
+            var unknownText = _fixture.AddText("No recorded fact", Local, Day.AddDays(1));
 
             var singlePayload = _fixture.AddPayload("alpha payload", ("photo-alpha.jpg", Copy.Good));
 
@@ -81,8 +86,13 @@ namespace Chatcheology.Data.Tests.ArchiveExport
                 new MsgstoreFactRow(missing, false, null, null),
                 new MsgstoreFactRow(lowQualityCopy, false, null, single));
 
+            _fixture.MessageFacts(
+                new MessageMsgstoreFactRow(forwardedText, true, 2),
+                new MessageMsgstoreFactRow(notForwardedText, false, null));
+
             return new Scenario(
-                single, sharedFirst, sharedSecond, missing, unmatched, lowQualityCopy, singlePayload, sharedPayload, run);
+                single, sharedFirst, sharedSecond, missing, unmatched, lowQualityCopy, singlePayload, sharedPayload, run,
+                forwardedText, notForwardedText, unknownText);
         }
 
         private ArchiveExportResult Export(string output, int resolved = 3, int missing = 1, int? pageSize = null)
@@ -123,6 +133,11 @@ namespace Chatcheology.Data.Tests.ArchiveExport
             var ids = expected.SelectMany(m => m.Attachments).Select(a => a.AttachmentID).ToList();
             var states = new Phase7ReconstructionReader().Read(workspace, ids).ToDictionary(s => s.AttachmentID);
 
+            var messageFacts = new MessageMsgstoreFactReader()
+                .Read(workspace, expected.Select(m => m.MessageID).ToList());
+
+            Assert.Equal(2, messageFacts.Count);
+
             using var reader = ArchiveReader.Open(output);
 
             Assert.Equal(summary.Title, reader.Info.ConversationTitle);
@@ -149,6 +164,11 @@ namespace Chatcheology.Data.Tests.ArchiveExport
                 Assert.Equal(
                     w.MessageType == MessageType.System ? ArchiveMessageKind.System : ArchiveMessageKind.User, a.Kind);
                 Assert.Equal(w.MessageContent, a.Text);
+
+                messageFacts.TryGetValue(w.MessageID, out var fact);
+                Assert.Equal(fact?.IsForwarded, a.IsForwarded);
+                Assert.Equal(fact?.ForwardScore, a.ForwardScore);
+
                 Assert.Equal(w.Attachments.Select(x => (x.AttachmentID, x.Ordinal)), a.Attachments.Select(x => (x.AttachmentID, x.Ordinal)));
 
                 foreach (var attachment in a.Attachments)
@@ -201,7 +221,7 @@ namespace Chatcheology.Data.Tests.ArchiveExport
         // ---------------------------------------------------------------------------------------
 
         [Fact]
-        public void ForwardedAndLowQualityLinks_AreCarriedForAttachments_AndMessageForwardedIsAlwaysNull()
+        public void ForwardedAndLowQualityLinks_AreCarriedForAttachments()
         {
             var scenario = Build();
             var output = _fixture.Output();
@@ -220,15 +240,32 @@ namespace Chatcheology.Data.Tests.ArchiveExport
             Assert.Null(attachments[scenario.SharedFirst].IsForwarded);
             Assert.Null(attachments[scenario.SharedFirst].LowQualityCopyOfAttachmentID);
 
-            Assert.All(
-                reader.ReadFirstPage(ArchiveReader.MaximumPageSize).Messages,
-                m =>
-                {
-                    Assert.Null(m.IsForwarded);
-                    Assert.Null(m.ForwardScore);
-                });
-
             Assert.Equal(0, result.LowQualityLinksOutsideConversation);
+        }
+
+        [Fact]
+        public void MessageForwarded_ComesFromTheMessageFact_AndNoFactStaysUnknown()
+        {
+            var scenario = Build();
+            var output = _fixture.Output();
+            Export(output);
+
+            using var reader = ArchiveReader.Open(output);
+            var messages = reader.ReadFirstPage(ArchiveReader.MaximumPageSize).Messages.ToDictionary(m => m.MessageID);
+
+            Assert.True(messages[scenario.ForwardedText].IsForwarded);
+            Assert.Equal(2, messages[scenario.ForwardedText].ForwardScore);
+
+            Assert.False(messages[scenario.NotForwardedText].IsForwarded);
+            Assert.Null(messages[scenario.NotForwardedText].ForwardScore);
+
+            // No row: not known, never "not forwarded". Media and system messages carry no fact either.
+            Assert.Null(messages[scenario.UnknownText].IsForwarded);
+            Assert.Null(messages[scenario.UnknownText].ForwardScore);
+            Assert.Equal(2, messages.Values.Count(m => m.IsForwarded is not null));
+
+            // Filling the columns does not change the format version.
+            Assert.Equal(1, reader.Info.FormatVersion);
         }
 
         [Fact]

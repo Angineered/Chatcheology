@@ -124,7 +124,7 @@ namespace Chatcheology.Archive.Tests
         /// <summary>The sample's messages, in sequence order. Sequence 4 is deliberately absent.</summary>
         internal static IReadOnlyList<ArchiveMessage> Messages =>
         [
-            Message(101, 1, "2026-03-02T09:00:00", Local, "Hello\nsecond line"),
+            Forwarded(Message(101, 1, "2026-03-02T09:00:00", Local, "Hello\nsecond line"), true, 5),
             Message(102, 2, "2026-03-02T09:05:00", Other, "<Media omitted>",
                 Attachment(10, 102, ArchiveAttachmentState.Restored, 1, AlphaSha, AlphaName, forwarded: true, score: 3),
                 Attachment(11, 102, ArchiveAttachmentState.Missing, 2, forwarded: false)),
@@ -134,9 +134,26 @@ namespace Chatcheology.Archive.Tests
             Message(105, 6, "2026-03-04T08:01:00", Other, "<Media omitted>",
                 Attachment(13, 105, ArchiveAttachmentState.Restored, 1, AlphaSha, AlphaName, forwarded: false,
                     lowQualityOf: 12)),
-            Message(106, 7, "2026-03-05T00:00:00", Other, "Late",
-                Attachment(14, 106, ArchiveAttachmentState.Unmatched)),
+            Forwarded(
+                Message(106, 7, "2026-03-05T00:00:00", Other, "Late",
+                    Attachment(14, 106, ArchiveAttachmentState.Unmatched)),
+                false,
+                null),
         ];
+
+        /// <summary>The same message with a known forwarded status.</summary>
+        internal static ArchiveMessage Forwarded(ArchiveMessage message, bool forwarded, int? score) => new()
+        {
+            MessageID = message.MessageID,
+            SequenceNumber = message.SequenceNumber,
+            DateTimeLocal = message.DateTimeLocal,
+            Kind = message.Kind,
+            SenderParticipantID = message.SenderParticipantID,
+            Text = message.Text,
+            IsForwarded = forwarded,
+            ForwardScore = score,
+            Attachments = message.Attachments,
+        };
 
         /// <summary>Writes <c>archive.db</c> only, into <paramref name="folder"/>.</summary>
         internal static ArchiveCounts WriteDatabase(string folder, int formatVersion = ArchiveFormat.FormatVersion)
