@@ -506,3 +506,8 @@ secrets.json
 .project-brain/
 .work/
 .docs/okf/
+
+# Android signing material: never committed (Chatcheology.Android\README.md)
+*.keystore
+*.jks
+signing*.props

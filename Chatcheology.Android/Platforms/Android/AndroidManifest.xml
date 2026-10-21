@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- No permissions are requested. Debug builds get INTERNET from the .NET Android tooling, for the
+     debugger only; a Release build has none. Nothing is backed up or carried to another device:
+     allowBackup is off, and both rule files exclude every domain.
+
+     The launcher activity is the only exported component. AndroidX's profile installer brings an
+     exported receiver (guarded by the DUMP permission) for baseline profiles of Java code; this app's
+     code is .NET, so the receiver does nothing useful here and is removed. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+          xmlns:tools="http://schemas.android.com/tools">
+	<application
+		android:allowBackup="false"
+		android:fullBackupContent="@xml/backup_rules"
+		android:dataExtractionRules="@xml/data_extraction_rules"
+		android:icon="@mipmap/appicon"
+		android:roundIcon="@mipmap/appicon_round"
+		android:supportsRtl="true">
+		<receiver android:name="androidx.profileinstaller.ProfileInstallReceiver" tools:node="remove" />
+	</application>
+</manifest>

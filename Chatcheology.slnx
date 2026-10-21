@@ -1,4 +1,5 @@
 <Solution>
+  <Project Path="Chatcheology.Android/Chatcheology.Android.csproj" />
   <Project Path="Chatcheology.Archive.Tests/Chatcheology.Archive.Tests.csproj" />
   <Project Path="Chatcheology.Archive/Chatcheology.Archive.csproj" />
   <Project Path="Chatcheology.Core.Tests/Chatcheology.Core.Tests.csproj" />
@@ -7,4 +8,6 @@
   <Project Path="Chatcheology.Data/Chatcheology.Data.csproj" />
   <Project Path="Chatcheology.Desktop.Tests/Chatcheology.Desktop.Tests.csproj" />
   <Project Path="Chatcheology.Desktop/Chatcheology.Desktop.csproj" />
+  <Project Path="Chatcheology.Mobile.Tests/Chatcheology.Mobile.Tests.csproj" />
+  <Project Path="Chatcheology.Mobile/Chatcheology.Mobile.csproj" />
 </Solution>

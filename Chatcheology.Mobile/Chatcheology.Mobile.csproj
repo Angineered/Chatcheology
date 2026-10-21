@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <!-- The Android viewer's presentation rules and archive handling, as a plain library so it is
+       unit-tested on Windows. Deliberately no MAUI or Android reference: Chatcheology.Android is a
+       thin shell over this project. -->
+  <ItemGroup>
+    <ProjectReference Include="..\Chatcheology.Archive\Chatcheology.Archive.csproj" />
+  </ItemGroup>
+
+</Project>

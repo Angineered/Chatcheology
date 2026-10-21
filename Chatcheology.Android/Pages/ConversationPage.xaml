@@ -1,0 +1,85 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<!-- The conversation in MAUI's CollectionView (the trial's first candidate). Rows are separators and
+     messages; a selector picks the template. Image heights come from the recorded size, so a row has
+     its final height before its image is decoded. -->
+<ContentPage xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+             xmlns:conv="clr-namespace:Chatcheology.Mobile.Conversation;assembly=Chatcheology.Mobile"
+             xmlns:pages="clr-namespace:Chatcheology.Android.Pages"
+             xmlns:controls="clr-namespace:Chatcheology.Android.Controls"
+             x:Class="Chatcheology.Android.Pages.ConversationPage"
+             BackgroundColor="{StaticResource ChatBackground}">
+
+    <ContentPage.Resources>
+        <DataTemplate x:Key="Separator" x:DataType="conv:DateSeparatorRow">
+            <Grid Padding="0,8">
+                <Border HorizontalOptions="Center" BackgroundColor="{StaticResource SeparatorBackground}"
+                        StrokeThickness="0" Padding="10,4" StrokeShape="RoundRectangle 8">
+                    <Label Text="{Binding Text}" FontSize="12" TextColor="{StaticResource MutedText}" />
+                </Border>
+            </Grid>
+        </DataTemplate>
+
+        <DataTemplate x:Key="Theirs" x:DataType="conv:MessageRow">
+            <Grid Padding="8,2,56,2">
+                <Border HorizontalOptions="Start" BackgroundColor="{StaticResource BubbleTheirs}"
+                        StrokeThickness="0" Padding="8,6" StrokeShape="RoundRectangle 8">
+                    <VerticalStackLayout Spacing="2">
+                        <Label Text="{Binding SenderText}" FontSize="13" FontAttributes="Bold"
+                               TextColor="{StaticResource SenderText}" />
+                        <VerticalStackLayout Spacing="4" BindableLayout.ItemsSource="{Binding Attachments}">
+                            <BindableLayout.ItemTemplate>
+                                <DataTemplate x:DataType="conv:AttachmentCard">
+                                    <controls:AttachmentCardView />
+                                </DataTemplate>
+                            </BindableLayout.ItemTemplate>
+                        </VerticalStackLayout>
+                        <Label Text="{Binding Text}" IsVisible="{Binding HasText}" FontSize="15" TextColor="Black" />
+                        <Label Text="{Binding TimeText}" FontSize="11" HorizontalOptions="End"
+                               TextColor="{StaticResource MutedText}" />
+                    </VerticalStackLayout>
+                </Border>
+            </Grid>
+        </DataTemplate>
+
+        <DataTemplate x:Key="Mine" x:DataType="conv:MessageRow">
+            <Grid Padding="56,2,8,2">
+                <Border HorizontalOptions="End" BackgroundColor="{StaticResource BubbleMine}"
+                        StrokeThickness="0" Padding="8,6" StrokeShape="RoundRectangle 8">
+                    <VerticalStackLayout Spacing="2">
+                        <VerticalStackLayout Spacing="4" BindableLayout.ItemsSource="{Binding Attachments}">
+                            <BindableLayout.ItemTemplate>
+                                <DataTemplate x:DataType="conv:AttachmentCard">
+                                    <controls:AttachmentCardView />
+                                </DataTemplate>
+                            </BindableLayout.ItemTemplate>
+                        </VerticalStackLayout>
+                        <Label Text="{Binding Text}" IsVisible="{Binding HasText}" FontSize="15" TextColor="Black" />
+                        <Label Text="{Binding TimeText}" FontSize="11" HorizontalOptions="End"
+                               TextColor="{StaticResource MutedText}" />
+                    </VerticalStackLayout>
+                </Border>
+            </Grid>
+        </DataTemplate>
+
+        <DataTemplate x:Key="System" x:DataType="conv:MessageRow">
+            <Grid Padding="32,4">
+                <Border HorizontalOptions="Center" BackgroundColor="{StaticResource BubbleSystem}"
+                        StrokeThickness="0" Padding="10,4" StrokeShape="RoundRectangle 8">
+                    <Label Text="{Binding Text}" FontSize="12" HorizontalTextAlignment="Center"
+                           TextColor="{StaticResource MutedText}" />
+                </Border>
+            </Grid>
+        </DataTemplate>
+
+        <pages:RowTemplateSelector x:Key="RowTemplates"
+                                   Separator="{StaticResource Separator}"
+                                   Theirs="{StaticResource Theirs}"
+                                   Mine="{StaticResource Mine}"
+                                   System="{StaticResource System}" />
+    </ContentPage.Resources>
+
+    <CollectionView x:Name="List"
+                    ItemTemplate="{StaticResource RowTemplates}"
+                    SelectionMode="None" />
+</ContentPage>

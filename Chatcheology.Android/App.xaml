@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<Application xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+             x:Class="Chatcheology.Android.App">
+    <Application.Resources>
+        <ResourceDictionary>
+            <!-- The conversation's colours, close to the chat app's own so the archive reads the way
+                 the chat did. The native list uses the same values (NativeConversationColors). -->
+            <Color x:Key="ChatBackground">#EFEAE2</Color>
+            <Color x:Key="BubbleMine">#D9FDD3</Color>
+            <Color x:Key="BubbleTheirs">#FFFFFF</Color>
+            <Color x:Key="BubbleSystem">#FFF5C4</Color>
+            <Color x:Key="SeparatorBackground">#E1F0F7</Color>
+            <Color x:Key="MutedText">#667781</Color>
+            <Color x:Key="SenderText">#2E6B5E</Color>
+            <Color x:Key="CardBackground">#F0F2F5</Color>
+            <Color x:Key="Primary">#2E6B5E</Color>
+        </ResourceDictionary>
+    </Application.Resources>
+</Application>
