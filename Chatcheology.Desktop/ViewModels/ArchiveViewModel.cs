@@ -811,7 +811,7 @@ namespace Chatcheology.Desktop.ViewModels
 
             Shown as “me”: {localParticipantName}
 
-            The export checks these counts again and writes nothing if the workspace has changed. Choose OK, then the folder the new archive folder goes into.
+            The export checks these counts again and writes nothing if the workspace has changed. Choose OK, then pick where to put the new archive folder.
             """;
 
         private static string StageText(ArchiveExportStage stage) => stage switch
