@@ -18,8 +18,9 @@ namespace Chatcheology.Archive
     /// points at a row that exists, and exactly the Restored attachments have a basis line; sequence
     /// numbers run 1..n without a gap, every sender is a participant, and exactly the recorded local
     /// participant is local.</para>
-    /// <para>A database that cannot be opened or read stops the checks that need it; those are
-    /// reported as not run, and the archive fails.</para>
+    /// <para>A database that cannot be opened or read, or a value in it of the wrong kind, stops the
+    /// checks that need it; those are reported as not run, and the archive fails. A file that cannot
+    /// be read is reported the same way, by a fixed phrase, never by its path.</para>
     /// <para><strong>Counts only.</strong> The result never carries message text, a name, a file name
     /// or a path; a problem is identified at most by its message's sequence number or its
     /// attachment's identifier.</para>
@@ -35,6 +36,7 @@ namespace Chatcheology.Archive
         public static ArchiveCheck CheckOf(ArchiveProblemKind kind) => kind switch
         {
             ArchiveProblemKind.ContentsListUnusable
+                or ArchiveProblemKind.FileUnreadable
                 or ArchiveProblemKind.ContentsFileChanged
                 or ArchiveProblemKind.ContentsFileMissing
                 or ArchiveProblemKind.ContentsFileNotListed => ArchiveCheck.Contents,
@@ -58,7 +60,8 @@ namespace Chatcheology.Archive
                 or ArchiveProblemKind.RestoredWithoutBasis
                 or ArchiveProblemKind.BasisOnUnrestored => ArchiveCheck.LinksAndBasis,
 
-            ArchiveProblemKind.SequenceGap
+            ArchiveProblemKind.SequenceNumberInvalid
+                or ArchiveProblemKind.SequenceGap
                 or ArchiveProblemKind.SenderNotParticipant
                 or ArchiveProblemKind.LocalParticipantWrong => ArchiveCheck.SequenceAndSenders,
 
@@ -69,13 +72,26 @@ namespace Chatcheology.Archive
         /// <exception cref="ArgumentException">There is no folder at the path.</exception>
         public static ArchiveValidationResult Validate(string archiveFolder)
         {
-            // Refuses a missing folder with a fixed message, before anything else is looked at.
-            var contents = ArchiveContents.Check(archiveFolder);
-            var folder = Path.TrimEndingDirectorySeparator(Path.GetFullPath(archiveFolder));
+            ArgumentException.ThrowIfNullOrWhiteSpace(archiveFolder);
 
             var record = new Recorder();
+            ArchiveContentsCheck contents;
 
-            CheckContents(contents, record);
+            try
+            {
+                // Refuses a missing folder with a fixed message, before anything else is looked at.
+                contents = ArchiveContents.Check(archiveFolder);
+                CheckContents(contents, record);
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                // Its own message may name a path; only the fact is reported.
+                contents = new ArchiveContentsCheck();
+                record.Add(ArchiveProblemKind.FileUnreadable);
+                record.Ran(ArchiveCheck.Contents);
+            }
+
+            var folder = Path.TrimEndingDirectorySeparator(Path.GetFullPath(archiveFolder));
 
             record.Examined(ArchiveCheck.Database, 1);
 
@@ -94,6 +110,10 @@ namespace Chatcheology.Archive
             {
                 record.Ran(ArchiveCheck.Database);
                 record.Add(ArchiveProblemKind.DatabaseUnreadable);
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                record.Add(ArchiveProblemKind.FileUnreadable);
             }
 
             return record.Result(contents);
@@ -143,10 +163,10 @@ namespace Chatcheology.Archive
                 return;
             }
 
+            // The reader has already refused any database version but this format's.
             var header = new[]
             {
                 manifest.FormatVersion == ArchiveFormat.FormatVersion,
-                manifest.FormatVersion == reader.Info.FormatVersion,
                 manifest.CreatedUtc.ToUniversalTime() == reader.Info.CreatedUtc,
             };
 
@@ -175,6 +195,25 @@ namespace Chatcheology.Archive
         /// </summary>
         private static void CheckRows(string folder, ArchiveReader reader, Recorder record)
         {
+            // Paging starts at sequence 1 and needs whole numbers, so a sequence number that is not a
+            // whole number from 1 up would hide its message from every row check, or break the paging.
+            // Counted first; the row checks are then not run.
+            var invalid = reader.ReadIdentifiers(
+                """
+                SELECT MessageID FROM Message
+                WHERE typeof(SequenceNumber) <> 'integer' OR SequenceNumber < 1 OR SequenceNumber > 2147483647
+                ORDER BY MessageID;
+                """);
+
+            if (invalid.Count > 0)
+            {
+                record.AddCount(ArchiveProblemKind.SequenceNumberInvalid, invalid.Count);
+                record.Examined(ArchiveCheck.SequenceAndSenders, (int)reader.ReadCount("SELECT COUNT(*) FROM Message;"));
+                record.Ran(ArchiveCheck.SequenceAndSenders);
+
+                return;
+            }
+
             var participants = reader.ReadParticipants();
             var participantIDs = participants.Select(p => p.ParticipantID).ToHashSet();
 
@@ -185,9 +224,7 @@ namespace Chatcheology.Archive
 
             int restored = 0, messages = 0, previous = 0;
 
-            var page = reader.ReadFirstPage(ArchiveReader.MaximumPageSize);
-
-            while (true)
+            foreach (var page in reader.ReadAllPages())
             {
                 foreach (var message in page.Messages)
                 {
@@ -234,13 +271,6 @@ namespace Chatcheology.Archive
                         CheckMedia(reader, page, message, attachment, usedMediaPaths, fileHashes, record);
                     }
                 }
-
-                if (!page.HasLater || page.LastSequenceNumber is not { } last)
-                {
-                    break;
-                }
-
-                page = reader.ReadPageFrom(last + 1, ArchiveReader.MaximumPageSize);
             }
 
             foreach (var (attachmentID, sequenceNumber, target) in links)
@@ -451,6 +481,9 @@ namespace Chatcheology.Archive
         /// <summary>A file in the folder is not listed.</summary>
         ContentsFileNotListed,
 
+        /// <summary>A file or folder of the archive could not be read (locked, or access denied).</summary>
+        FileUnreadable,
+
         /// <summary><c>archive.db</c> is missing, not this format's version, or could not be read.</summary>
         DatabaseUnreadable,
 
@@ -495,6 +528,9 @@ namespace Chatcheology.Archive
 
         /// <summary>A basis line belongs to an attachment that is not Restored, or to none.</summary>
         BasisOnUnrestored,
+
+        /// <summary>A message's sequence number is not a whole number from 1 to 2,147,483,647.</summary>
+        SequenceNumberInvalid,
 
         /// <summary>A message's sequence number is not one more than the one before it (the first is 1).</summary>
         SequenceGap,

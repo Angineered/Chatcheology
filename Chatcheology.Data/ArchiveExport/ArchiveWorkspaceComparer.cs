@@ -58,8 +58,18 @@ namespace Chatcheology.Data.ArchiveExport
             catch (ArchiveExportRefusedException exception)
             {
                 // The source's refusals are fixed phrases naming the request's options, never a path.
+                // They end by saying an export wrote nothing, which a comparison never could; that
+                // closing phrase is left off.
                 throw new ArchiveComparisonRefusedException(
-                    "The workspace could not be read: " + exception.Message, exception);
+                    "The workspace could not be compared: " + WithoutExportClosing(exception.Message), exception);
+            }
+            catch (SqliteException exception)
+            {
+                // Not a workspace (not an SQLite file, or damaged). Its own message may carry a path.
+                throw new ArchiveComparisonRefusedException(
+                    "The workspace could not be compared: the file at WorkspacePath could not be read as a " +
+                    "workspace database.",
+                    exception);
             }
 
             try
@@ -85,6 +95,11 @@ namespace Chatcheology.Data.ArchiveExport
                 SqliteConnection.ClearAllPools();
             }
         }
+
+        private const string ExportClosing = " Nothing was written.";
+
+        private static string WithoutExportClosing(string message) =>
+            message.EndsWith(ExportClosing, StringComparison.Ordinal) ? message[..^ExportClosing.Length] : message;
 
         private static ArchiveComparisonResult Compare(ArchiveExportSource source, long localParticipantID, ArchiveReader reader)
         {
@@ -116,9 +131,8 @@ namespace Chatcheology.Data.ArchiveExport
             var seenMessages = new HashSet<long>();
             var seenAttachments = new HashSet<long>();
 
-            var page = reader.ReadFirstPage(ArchiveReader.MaximumPageSize);
-
-            while (true)
+            // Refuses (ArchiveFormatException) an archive whose messages cannot all be read in order.
+            foreach (var page in reader.ReadAllPages())
             {
                 foreach (var actual in page.Messages)
                 {
@@ -152,13 +166,6 @@ namespace Chatcheology.Data.ArchiveExport
                 {
                     actualMedia[sha] = media;
                 }
-
-                if (!page.HasLater || page.LastSequenceNumber is not { } last)
-                {
-                    break;
-                }
-
-                page = reader.ReadPageFrom(last + 1, ArchiveReader.MaximumPageSize);
             }
 
             foreach (var expected in source.Messages.Where(m => !seenMessages.Contains(m.MessageID)))

@@ -2,6 +2,7 @@ using Chatcheology.Archive;
 using Chatcheology.Data.ArchiveExport;
 using Chatcheology.Data.MsgstoreFacts;
 using Chatcheology.Data.Tests.Phase7;
+using Microsoft.Data.Sqlite;
 using Chatcheology.Data.Tests.Matching;
 using static Chatcheology.Data.Tests.ArchiveExport.ArchiveExportFixture;
 
@@ -101,6 +102,23 @@ namespace Chatcheology.Data.Tests.ArchiveExport
                     INNER JOIN Attachment AS a ON a.MessageID = m.MessageID WHERE a.AttachmentID = {attachmentID};
                     """),
                 System.Globalization.CultureInfo.InvariantCulture);
+
+        /// <summary>Runs SQL on the archive's database, to damage it on purpose.</summary>
+        private static void TamperArchive(string archive, string sql)
+        {
+            using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+            {
+                DataSource = Path.Combine(archive, ArchiveFormat.DatabaseFileName),
+                Mode = SqliteOpenMode.ReadWrite,
+                Pooling = false,
+            }.ToString());
+
+            connection.Open();
+
+            using var command = connection.CreateCommand();
+            command.CommandText = sql;
+            command.ExecuteNonQuery();
+        }
 
         /// <summary>Exactly these kinds differ, with these counts; every other kind matches.</summary>
         private static void AssertOnly(ArchiveComparisonResult result, params (ArchiveMismatchKind Kind, int Count)[] expected)
@@ -308,9 +326,170 @@ namespace Chatcheology.Data.Tests.ArchiveExport
             Assert.Equal(0, result.MessagesCompared);
         }
 
+        [Fact]
+        public void AChangedSequenceNumber_IsASequenceDifference()
+        {
+            var scenario = BuildAndExport();
+
+            _fixture.Decisions.ExecuteDirect($"UPDATE Message SET SequenceNumber = 100 WHERE MessageID = {scenario.UnknownText};");
+
+            AssertOnly(Compare(scenario.Output), (ArchiveMismatchKind.MessageSequenceDiffers, 1));
+        }
+
+        [Fact]
+        public void AMessageTurnedIntoASystemLine_IsAKindAndSenderDifference()
+        {
+            var scenario = BuildAndExport();
+
+            _fixture.Decisions.ExecuteDirect(
+                $"UPDATE Message SET MessageType = 'System', SenderParticipantID = NULL WHERE MessageID = {scenario.UnknownText};");
+
+            AssertOnly(
+                Compare(scenario.Output),
+                (ArchiveMismatchKind.MessageKindDiffers, 1),
+                (ArchiveMismatchKind.MessageSenderDiffers, 1));
+        }
+
+        [Fact]
+        public void AChangedSender_IsASenderDifference()
+        {
+            var scenario = BuildAndExport();
+
+            _fixture.Decisions.ExecuteDirect($"UPDATE Message SET SenderParticipantID = {Other} WHERE MessageID = {scenario.UnknownText};");
+
+            AssertOnly(Compare(scenario.Output), (ArchiveMismatchKind.MessageSenderDiffers, 1));
+        }
+
+        [Fact]
+        public void AChangedOrdinal_IsAPlacementDifference()
+        {
+            var scenario = BuildAndExport();
+
+            _fixture.Decisions.ExecuteDirect($"UPDATE Attachment SET Ordinal = 5 WHERE AttachmentID = {scenario.LowQualityCopy};");
+
+            var result = Compare(scenario.Output);
+
+            AssertOnly(result, (ArchiveMismatchKind.AttachmentPlacementDiffers, 1));
+            Assert.Equal(
+                [new ArchiveMismatch(ArchiveMismatchKind.AttachmentPlacementDiffers, (int)SequenceOf(scenario.LowQualityCopy), scenario.LowQualityCopy)],
+                result.FirstMismatches);
+        }
+
+        [Fact]
+        public void AChangedTimeZone_IsAnInfoDifference()
+        {
+            var scenario = BuildAndExport();
+
+            _fixture.Decisions.ExecuteDirect("UPDATE ImportSource SET SourceTimeZoneID = 'Other/Zone';");
+
+            AssertOnly(Compare(scenario.Output), (ArchiveMismatchKind.ArchiveInfoDiffers, 1));
+        }
+
+        [Fact]
+        public void AMessageAddedLater_IsMissingFromTheArchive_WithItsAttachment()
+        {
+            var scenario = BuildAndExport();
+
+            _fixture.Decisions.ExecuteDirect(
+                $"""
+                INSERT INTO Message (
+                    ConversationID, ImportSourceID, SequenceNumber, MessageDateTimeLocal,
+                    SenderParticipantID, MessageType, MessageContent, RawContent,
+                    SourceLineStart, SourceLineEnd)
+                VALUES (
+                    {MatchingTestWorkspace.ConversationID}, 1, 50, '{Day.AddDays(2):yyyy'-'MM'-'dd}T10:00:00',
+                    {Local}, 'User', '<Media omitted>', 'raw', 50, 50);
+
+                INSERT INTO Attachment (MessageID, Ordinal, ResolutionStatus)
+                VALUES (last_insert_rowid(), 1, 'Unresolved');
+                """);
+
+            var result = Compare(scenario.Output);
+
+            AssertOnly(
+                result,
+                (ArchiveMismatchKind.MessageMissingFromArchive, 1),
+                (ArchiveMismatchKind.AttachmentMissingFromArchive, 1));
+
+            Assert.Contains(new ArchiveMismatch(ArchiveMismatchKind.MessageMissingFromArchive, 50, null), result.FirstMismatches);
+            Assert.Equal(9, result.MessagesCompared);
+        }
+
+        [Fact]
+        public void AChangedPayloadDescription_IsAMediaDetailsDifference()
+        {
+            var scenario = BuildAndExport();
+
+            _fixture.Decisions.ExecuteDirect($"UPDATE MediaAsset SET Width = 640 WHERE MediaAssetID = {scenario.SinglePayloadAsset};");
+
+            AssertOnly(Compare(scenario.Output), (ArchiveMismatchKind.MediaDetailsDiffer, 1));
+        }
+
         // ---------------------------------------------------------------------------------------
         // Refusals and privacy.
         // ---------------------------------------------------------------------------------------
+
+        [Theory]
+        [InlineData("'abc'")]
+        [InlineData("1.5")]
+        [InlineData("3000000000")]
+        [InlineData("0")]
+        [InlineData("-1")]
+        public void AnArchiveWithAnUnusableSequenceNumber_IsRefused_WithoutHanging(string value)
+        {
+            var scenario = BuildAndExport();
+
+            TamperArchive(
+                scenario.Output,
+                $"PRAGMA ignore_check_constraints = ON; UPDATE Message SET SequenceNumber = {value} WHERE MessageID = {scenario.UnknownText};");
+
+            // On another thread, so a comparison that never returns fails the test instead of hanging it.
+            var task = Task.Run(() => Compare(scenario.Output));
+            var finished = Task.WhenAny(task, Task.Delay(TimeSpan.FromSeconds(30))).GetAwaiter().GetResult() == task;
+
+            Assert.True(finished, "The comparison did not finish.");
+
+            var refusal = Assert.IsType<ArchiveComparisonRefusedException>(task.Exception?.InnerException);
+            Assert.DoesNotContain(_fixture.ExportsFolder, refusal.Message, StringComparison.OrdinalIgnoreCase);
+        }
+
+        [Fact]
+        public void AFileThatIsNotAWorkspace_IsRefused_WithoutNamingThePath()
+        {
+            var scenario = BuildAndExport();
+            var notAWorkspace = Path.Combine(_fixture.ExportsFolder, "not-a-workspace.db");
+            File.WriteAllText(notAWorkspace, "This is not an SQLite database, only synthetic text.");
+
+            var refusal = Assert.Throws<ArchiveComparisonRefusedException>(() =>
+                new ArchiveWorkspaceComparer().Compare(new ArchiveComparisonRequest
+                {
+                    WorkspacePath = notAWorkspace,
+                    ConversationID = MatchingTestWorkspace.ConversationID,
+                    LocalParticipantID = Local,
+                    ArchivePath = scenario.Output,
+                }));
+
+            Assert.DoesNotContain(_fixture.ExportsFolder, refusal.Message, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("not-a-workspace", refusal.Message, StringComparison.Ordinal);
+        }
+
+        [Fact]
+        public void ARefusal_NamesTheOption_AndDoesNotSpeakOfWritingAnExport()
+        {
+            var scenario = BuildAndExport();
+
+            var refusal = Assert.Throws<ArchiveComparisonRefusedException>(() =>
+                new ArchiveWorkspaceComparer().Compare(new ArchiveComparisonRequest
+                {
+                    WorkspacePath = _fixture.DatabasePath,
+                    ConversationID = MatchingTestWorkspace.ConversationID,
+                    LocalParticipantID = MatchingTestWorkspace.OutsiderParticipantID,
+                    ArchivePath = scenario.Output,
+                }));
+
+            Assert.Contains("LocalParticipantID", refusal.Message, StringComparison.Ordinal);
+            Assert.DoesNotContain("written", refusal.Message, StringComparison.Ordinal);
+        }
 
         [Fact]
         public void AMissingWorkspaceOrArchive_IsRefused_WithoutNamingThePath()

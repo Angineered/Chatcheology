@@ -18,6 +18,11 @@ namespace Chatcheology.Archive
     /// <para><strong>Order comes from <c>SequenceNumber</c>.</strong> Pages are keyset pages on that
     /// key, so a page costs the same anywhere in a long conversation. A day is found through the
     /// <c>DateTimeLocal</c> index.</para>
+    /// <para><strong>Every value is checked for its kind as it is read.</strong> SQLite lets any
+    /// column of a plain table hold any kind of value, so a damaged or hand-edited archive could put
+    /// text where a number belongs or a number too large for its field. Such a value is refused with
+    /// <see cref="ArchiveFormatException"/>, never converted, truncated or thrown as a cast or
+    /// overflow error.</para>
     /// <para>This reader opens archive files only; it does not check them against
     /// <see cref="ArchiveFormat.ContentsFileName"/>. <see cref="ArchiveContents.Check"/> does that.</para>
     /// </remarks>
@@ -134,9 +139,9 @@ namespace Chatcheology.Archive
             {
                 participants.Add(new ArchiveParticipant
                 {
-                    ParticipantID = reader.GetInt64(0),
-                    DisplayName = reader.GetString(1),
-                    IsLocal = reader.GetInt64(2) == 1,
+                    ParticipantID = Integer(reader, 0),
+                    DisplayName = Text(reader, 1),
+                    IsLocal = Integer(reader, 2) == 1,
                 });
             }
 
@@ -198,6 +203,55 @@ namespace Chatcheology.Archive
         }
 
         /// <summary>
+        /// The whole conversation, page by page in chat order, for a caller that must see every
+        /// message (a check, a comparison, a full export).
+        /// </summary>
+        /// <remarks>
+        /// Each page is read only when the previous one has been used. The pages must add up to the
+        /// table: sequence numbers must rise strictly from page to page, and exactly as many messages
+        /// must be read as the table holds, so a message with a sequence number below 1 is not
+        /// silently left out and a damaged order can never page forever.
+        /// </remarks>
+        /// <exception cref="ArchiveFormatException">The messages cannot all be read in order.</exception>
+        public IEnumerable<ArchivePage> ReadAllPages()
+        {
+            var total = ReadMessageCount();
+            var read = 0;
+            int? last = null;
+
+            var page = ReadFirstPage(MaximumPageSize);
+
+            while (true)
+            {
+                foreach (var message in page.Messages)
+                {
+                    if (message.SequenceNumber <= last || ++read > total)
+                    {
+                        throw new ArchiveFormatException(
+                            "The archive's messages are not in a strictly rising sequence order.");
+                    }
+
+                    last = message.SequenceNumber;
+                }
+
+                yield return page;
+
+                if (!page.HasLater || page.LastSequenceNumber is not { } end || end == int.MaxValue)
+                {
+                    break;
+                }
+
+                page = ReadPageFrom(end + 1, MaximumPageSize);
+            }
+
+            if (read != total)
+            {
+                throw new ArchiveFormatException(
+                    "Some of the archive's messages have a sequence number below 1 and cannot be read in order.");
+            }
+        }
+
+        /// <summary>
         /// Every message whose local wall-clock time falls on <paramref name="day"/>, in chat order.
         /// </summary>
         public ArchivePage ReadDay(DateOnly day)
@@ -228,7 +282,7 @@ namespace Chatcheology.Archive
 
             while (reader.Read())
             {
-                days.Add(DateOnly.FromDateTime(ArchiveFormat.ParseLocal(reader.GetString(0) + "T00:00:00")));
+                days.Add(DateOnly.FromDateTime(ArchiveFormat.ParseLocal(Text(reader, 0) + "T00:00:00")));
             }
 
             return days;
@@ -248,9 +302,12 @@ namespace Chatcheology.Archive
             command.CommandText = "SELECT MIN(SequenceNumber) FROM Message WHERE DateTimeLocal >= $from;";
             command.Parameters.AddWithValue("$from", DayStart(day));
 
-            var result = command.ExecuteScalar();
-
-            return result is null or DBNull ? null : Convert.ToInt32(result, CultureInfo.InvariantCulture);
+            return command.ExecuteScalar() switch
+            {
+                null or DBNull => null,
+                long value and >= int.MinValue and <= int.MaxValue => (int)value,
+                _ => throw new ArchiveFormatException(NotAWholeNumber),
+            };
         }
 
         /// <summary>
@@ -341,14 +398,14 @@ namespace Chatcheology.Archive
             while (reader.Read())
             {
                 rows.Add(new MessageRow(
-                    reader.GetInt64(0),
-                    reader.GetInt32(1),
-                    ArchiveFormat.ParseLocal(reader.GetString(2)),
-                    ParseKind(reader.GetString(3)),
-                    reader.IsDBNull(4) ? null : reader.GetInt64(4),
-                    reader.GetString(5),
-                    reader.IsDBNull(6) ? null : reader.GetInt64(6) == 1,
-                    reader.IsDBNull(7) ? null : reader.GetInt32(7)));
+                    Integer(reader, 0),
+                    Int32(reader, 1),
+                    ArchiveFormat.ParseLocal(Text(reader, 2)),
+                    ParseKind(Text(reader, 3)),
+                    NullableInteger(reader, 4),
+                    Text(reader, 5),
+                    NullableInteger(reader, 6) is { } forwarded ? forwarded == 1 : null,
+                    NullableInt32(reader, 7)));
             }
 
             return rows;
@@ -431,23 +488,23 @@ namespace Chatcheology.Archive
             {
                 var attachment = new ArchiveAttachment
                 {
-                    AttachmentID = reader.GetInt64(0),
-                    MessageID = reader.GetInt64(1),
-                    Ordinal = reader.GetInt32(2),
-                    State = ParseState(reader.GetString(3)),
-                    MediaSha256 = reader.IsDBNull(4) ? null : reader.GetString(4),
-                    OriginalFileName = reader.IsDBNull(5) ? null : reader.GetString(5),
-                    IsForwarded = reader.IsDBNull(6) ? null : reader.GetInt64(6) == 1,
-                    ForwardScore = reader.IsDBNull(7) ? null : reader.GetInt32(7),
-                    LowQualityCopyOfAttachmentID = reader.IsDBNull(8) ? null : reader.GetInt64(8),
+                    AttachmentID = Integer(reader, 0),
+                    MessageID = Integer(reader, 1),
+                    Ordinal = Int32(reader, 2),
+                    State = ParseState(Text(reader, 3)),
+                    MediaSha256 = NullableText(reader, 4),
+                    OriginalFileName = NullableText(reader, 5),
+                    IsForwarded = NullableInteger(reader, 6) is { } forwarded ? forwarded == 1 : null,
+                    ForwardScore = NullableInt32(reader, 7),
+                    LowQualityCopyOfAttachmentID = NullableInteger(reader, 8),
                     Basis = reader.IsDBNull(9)
                         ? null
                         : new ArchiveAttachmentBasis
                         {
-                            BasisType = reader.GetString(9),
-                            BasisText = reader.GetString(10),
-                            Actor = reader.IsDBNull(11) ? null : reader.GetString(11),
-                            ConfirmedUtc = ArchiveFormat.ParseUtc(reader.GetString(12)),
+                            BasisType = Text(reader, 9),
+                            BasisText = Text(reader, 10),
+                            Actor = NullableText(reader, 11),
+                            ConfirmedUtc = ArchiveFormat.ParseUtc(Text(reader, 12)),
                         },
                 };
 
@@ -495,12 +552,12 @@ namespace Chatcheology.Archive
             {
                 var item = new ArchiveMedia
                 {
-                    Sha256 = reader.GetString(0),
-                    MediaType = reader.GetString(1),
-                    SizeBytes = reader.GetInt64(2),
-                    DurationMS = reader.IsDBNull(3) ? null : reader.GetInt64(3),
-                    Width = reader.IsDBNull(4) ? null : reader.GetInt32(4),
-                    Height = reader.IsDBNull(5) ? null : reader.GetInt32(5),
+                    Sha256 = Text(reader, 0),
+                    MediaType = Text(reader, 1),
+                    SizeBytes = Integer(reader, 2),
+                    DurationMS = NullableInteger(reader, 3),
+                    Width = NullableInt32(reader, 4),
+                    Height = NullableInt32(reader, 5),
                 };
 
                 media[item.Sha256] = item;
@@ -521,7 +578,7 @@ namespace Chatcheology.Archive
 
                 while (reader.Read())
                 {
-                    values[reader.GetString(0)] = reader.GetString(1);
+                    values[Text(reader, 0)] = Text(reader, 1);
                 }
             }
 
@@ -572,6 +629,34 @@ namespace Chatcheology.Archive
         // -------------------------------------------------------------------------------------
         // Plumbing.
         // -------------------------------------------------------------------------------------
+
+        private const string NotAWholeNumber =
+            "A value in the archive that must be a whole number in range is not one.";
+
+        private const string NotText = "A value in the archive that must be text is not text.";
+
+        /// <summary>A stored whole number. Text, a fraction, a blob or a null is refused.</summary>
+        private static long Integer(SqliteDataReader reader, int ordinal) =>
+            reader.GetValue(ordinal) is long value ? value : throw new ArchiveFormatException(NotAWholeNumber);
+
+        private static long? NullableInteger(SqliteDataReader reader, int ordinal) =>
+            reader.IsDBNull(ordinal) ? null : Integer(reader, ordinal);
+
+        /// <summary>A stored whole number that must fit a 32-bit field.</summary>
+        private static int Int32(SqliteDataReader reader, int ordinal) =>
+            Integer(reader, ordinal) is var value and >= int.MinValue and <= int.MaxValue
+                ? (int)value
+                : throw new ArchiveFormatException(NotAWholeNumber);
+
+        private static int? NullableInt32(SqliteDataReader reader, int ordinal) =>
+            reader.IsDBNull(ordinal) ? null : Int32(reader, ordinal);
+
+        /// <summary>Stored text. A number, a blob or a null is refused.</summary>
+        private static string Text(SqliteDataReader reader, int ordinal) =>
+            reader.GetValue(ordinal) is string value ? value : throw new ArchiveFormatException(NotText);
+
+        private static string? NullableText(SqliteDataReader reader, int ordinal) =>
+            reader.IsDBNull(ordinal) ? null : Text(reader, ordinal);
 
         private static ArchiveMessageKind ParseKind(string text) => text switch
         {

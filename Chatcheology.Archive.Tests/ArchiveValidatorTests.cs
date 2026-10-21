@@ -65,11 +65,11 @@ namespace Chatcheology.Archive.Tests
 
             var examined = result.Checks.ToDictionary(c => c.Check, c => c.Examined);
 
-            // Four listed files; the database; three header and seven count fields; three Restored
-            // attachments and two media files; six attachments; six messages.
+            // Four listed files; the database; two header and seven count fields; three Restored
+            // attachments and two media files; five attachments; six messages.
             Assert.Equal(4, examined[ArchiveCheck.Contents]);
             Assert.Equal(1, examined[ArchiveCheck.Database]);
-            Assert.Equal(10, examined[ArchiveCheck.Manifest]);
+            Assert.Equal(9, examined[ArchiveCheck.Manifest]);
             Assert.Equal(5, examined[ArchiveCheck.Media]);
             Assert.Equal(5, examined[ArchiveCheck.LinksAndBasis]);
             Assert.Equal(6, examined[ArchiveCheck.SequenceAndSenders]);
@@ -320,6 +320,154 @@ namespace Chatcheology.Archive.Tests
             TamperAndRelist("UPDATE Participant SET IsLocal = 1 - IsLocal;");
 
             AssertOnly(ArchiveValidator.Validate(_folder.Path), (ArchiveProblemKind.LocalParticipantWrong, 1));
+        }
+
+        [Fact]
+        public void AnAttachmentWhoseMessageIsGone_FailsLinks()
+        {
+            TamperAndRelist("UPDATE Attachment SET MessageID = 999 WHERE AttachmentID = 14;");
+
+            var result = ArchiveValidator.Validate(_folder.Path);
+
+            AssertOnly(result, (ArchiveProblemKind.AttachmentWithoutMessage, 1));
+            Assert.Equal([new ArchiveProblem(ArchiveProblemKind.AttachmentWithoutMessage, null, 14)], result.FirstProblems);
+        }
+
+        [Fact]
+        public void AnUnmatchedAttachmentNamingMedia_FailsMedia()
+        {
+            // Past the schema's own CHECK.
+            TamperAndRelist(
+                "PRAGMA ignore_check_constraints = ON; " +
+                $"UPDATE Attachment SET MediaSha256 = '{ArchiveSample.AlphaSha}', OriginalFileName = 'x.jpg' WHERE AttachmentID = 14;");
+
+            AssertOnly(ArchiveValidator.Validate(_folder.Path), (ArchiveProblemKind.UnrestoredWithMedia, 1));
+        }
+
+        [Fact]
+        public void AnIndexThatNoLongerMatchesItsTable_FailsTheIntegrityCheckOnly()
+        {
+            // The day index's definition is changed under its stored entries, which then disagree with
+            // the rows. No check reads through that index.
+            TamperAndRelist(
+                "PRAGMA writable_schema = ON; UPDATE sqlite_master SET sql = " +
+                "'CREATE INDEX IX_Message_DateTimeLocal ON Message (Text)' WHERE name = 'IX_Message_DateTimeLocal';");
+
+            AssertOnly(ArchiveValidator.Validate(_folder.Path), (ArchiveProblemKind.DatabaseIntegrityFailed, 1));
+        }
+
+        [Fact]
+        public void AManifestOfAnotherFormatVersion_FailsManifest()
+        {
+            var path = Path.Combine(_folder.Path, ArchiveFormat.ManifestFileName);
+            var manifest = ArchiveManifest.Parse(File.ReadAllBytes(path));
+
+            File.WriteAllBytes(path, (manifest with { FormatVersion = ArchiveFormat.FormatVersion + 1 }).ToBytes());
+            Relist();
+
+            AssertOnly(ArchiveValidator.Validate(_folder.Path), (ArchiveProblemKind.ManifestHeaderDiffers, 1));
+        }
+
+        // ---------------------------------------------------------------------------------------
+        // Values of the wrong kind or size (review round).
+        // ---------------------------------------------------------------------------------------
+
+        /// <summary>Validates on another thread and fails the test, rather than hanging it, if it never returns.</summary>
+        private static ArchiveValidationResult ValidateWithin(string folder)
+        {
+            var task = Task.Run(() => ArchiveValidator.Validate(folder));
+
+            Assert.True(task.Wait(TimeSpan.FromSeconds(30)), "The validator did not finish.");
+
+            return task.Result;
+        }
+
+        private static void AssertRowChecksNotRun(ArchiveValidationResult result)
+        {
+            var checks = result.Checks.ToDictionary(c => c.Check);
+
+            Assert.False(result.Passed);
+            Assert.True(checks[ArchiveCheck.Contents].Passed);
+            Assert.False(checks[ArchiveCheck.Media].Ran);
+            Assert.False(checks[ArchiveCheck.LinksAndBasis].Ran);
+        }
+
+        [Theory]
+        [InlineData("'abc'")]
+        [InlineData("1.5")]
+        [InlineData("3000000000")]
+        [InlineData("0")]
+        [InlineData("-1")]
+        public void ASequenceNumberThatIsNotAWholeNumberFromOne_FailsSequence_WithoutHanging(string value)
+        {
+            TamperAndRelist(
+                $"PRAGMA ignore_check_constraints = ON; UPDATE Message SET SequenceNumber = {value} WHERE MessageID = 106;");
+
+            var result = ValidateWithin(_folder.Path);
+
+            AssertRowChecksNotRun(result);
+            Assert.Equal(1, result.ProblemCounts[ArchiveProblemKind.SequenceNumberInvalid]);
+            Assert.Equal(0, result.ProblemCounts[ArchiveProblemKind.DatabaseUnreadable]);
+            Assert.False(result.Checks.Single(c => c.Check == ArchiveCheck.SequenceAndSenders).Passed);
+        }
+
+        [Theory]
+        [InlineData("UPDATE Media SET Width = 3000000000;")]
+        [InlineData("UPDATE Attachment SET ForwardScore = 3000000000 WHERE AttachmentID = 10;")]
+        [InlineData("UPDATE Attachment SET Ordinal = 3000000000 WHERE AttachmentID = 10;")]
+        [InlineData("UPDATE Attachment SET ForwardScore = 'many' WHERE AttachmentID = 10;")]
+        [InlineData("UPDATE Message SET Text = X'01' WHERE MessageID = 101;")]
+        [InlineData("UPDATE Participant SET DisplayName = X'02' WHERE ParticipantID = 2;")]
+        [InlineData("UPDATE ArchiveInfo SET Key = NULL WHERE Key = 'TimeZoneID';")]
+        public void AValueOfTheWrongKindOrSize_FailsDatabase_InsteadOfThrowing(string sql)
+        {
+            TamperAndRelist(sql);
+
+            var result = ValidateWithin(_folder.Path);
+
+            AssertRowChecksNotRun(result);
+            Assert.Equal(1, result.ProblemCounts[ArchiveProblemKind.DatabaseUnreadable]);
+            Assert.False(result.Checks.Single(c => c.Check == ArchiveCheck.Database).Passed);
+        }
+
+        [Fact]
+        public void TheReader_RefusesAValueOfTheWrongKind_AndPagingThatCannotReadEveryMessage()
+        {
+            TamperAndRelist("PRAGMA ignore_check_constraints = ON; UPDATE Message SET SequenceNumber = 'abc' WHERE MessageID = 106;");
+
+            using (var reader = ArchiveReader.Open(_folder.Path))
+            {
+                Assert.Throws<ArchiveFormatException>(() => reader.ReadFirstPage(ArchiveReader.MaximumPageSize));
+                Assert.Throws<ArchiveFormatException>(() => reader.ReadAllPages().ToList());
+            }
+
+            TamperAndRelist("PRAGMA ignore_check_constraints = ON; UPDATE Message SET SequenceNumber = 0 WHERE MessageID = 106;");
+
+            using (var reader = ArchiveReader.Open(_folder.Path))
+            {
+                // Paging starts at 1, so the message at 0 is never on a page: the count gives it away.
+                Assert.Throws<ArchiveFormatException>(() => reader.ReadAllPages().ToList());
+            }
+        }
+
+        [Fact]
+        public void AFileThatCannotBeRead_IsAProblem_NotAnException()
+        {
+            var path = MediaPath(ArchiveSample.BetaSha, ArchiveSample.BetaName);
+
+            ArchiveValidationResult result;
+
+            using (new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.None))
+            {
+                result = ValidateWithin(_folder.Path);
+            }
+
+            Assert.False(result.Passed);
+            Assert.Equal(1, result.ProblemCounts[ArchiveProblemKind.FileUnreadable]);
+
+            // The database checks still ran; the locked file counts as missing for its attachment.
+            Assert.Equal(1, result.ProblemCounts[ArchiveProblemKind.MediaFileMissing]);
+            Assert.Empty(result.Contents.Problems);
         }
 
         // ---------------------------------------------------------------------------------------
