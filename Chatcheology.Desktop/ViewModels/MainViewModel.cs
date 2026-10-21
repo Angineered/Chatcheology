@@ -83,7 +83,17 @@ namespace Chatcheology.Desktop.ViewModels
                 archiveOperations,
                 archiveDialogs,
                 ArchiveContext,
-                message => StatusText = message);
+                message => StatusText = message,
+                () => IsBusy || Review.IsBusy);
+
+            // A decision in flight holds the archive commands off, and they are told when it ends.
+            Review.PropertyChanged += (_, e) =>
+            {
+                if (e.PropertyName == nameof(AttachmentReviewViewModel.IsBusy))
+                {
+                    Archive.RaiseCommandStates();
+                }
+            };
 
             // While an archive is exported or checked, no decision can change the workspace under it,
             // and no other workspace can be opened in its place.
@@ -278,11 +288,17 @@ namespace Chatcheology.Desktop.ViewModels
             }
         }
 
-        /// <summary>Whether a read is in flight.</summary>
+        /// <summary>Whether a read or a decision is in flight.</summary>
         public bool IsBusy
         {
             get => _isBusy;
-            private set => SetProperty(ref _isBusy, value);
+            private set
+            {
+                if (SetProperty(ref _isBusy, value))
+                {
+                    Archive.RaiseCommandStates();
+                }
+            }
         }
 
         // -----------------------------------------------------------------------------------
@@ -618,8 +634,10 @@ namespace Chatcheology.Desktop.ViewModels
         /// reason.</para>
         /// <para>A refusal is reported and never retried. It usually means the workspace moved on,
         /// and the answer to that is to look again.</para>
+        /// <para>Internal rather than private so the archive backstop can be tested directly: in the
+        /// application only the review panel calls it.</para>
         /// </remarks>
-        private async Task<Exception?> ExecuteDecisionAsync(Action write)
+        internal async Task<Exception?> ExecuteDecisionAsync(Action write)
         {
             if (_session is null)
             {

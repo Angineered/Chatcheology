@@ -97,12 +97,14 @@ namespace Chatcheology.Desktop.ViewModels
         private readonly ArchiveDialogs _dialogs;
         private readonly Func<ArchiveWorkspaceContext?> _context;
         private readonly Action<string> _reportStatus;
+        private readonly Func<bool> _decisionInFlight;
 
         private CancellationTokenSource? _cancellation;
         private string? _folderPath;
 
         private bool _isOpen;
         private bool _isRunning;
+        private bool _isWriting;
         private bool _canCancel;
         private string _headlineText = string.Empty;
         private string _progressText = string.Empty;
@@ -116,19 +118,26 @@ namespace Chatcheology.Desktop.ViewModels
         /// <param name="dialogs">The window's dialogs; a seam for tests.</param>
         /// <param name="context">What the viewer has open now, or null.</param>
         /// <param name="reportStatus">Says something in the window's status line.</param>
+        /// <param name="decisionInFlight">
+        /// Whether the shell has a decision or a read of its own in flight. Neither command starts
+        /// then; the shell calls <see cref="RaiseCommandStates"/> when it changes.
+        /// </param>
         internal ArchiveViewModel(
             IArchiveOperations operations,
             ArchiveDialogs dialogs,
             Func<ArchiveWorkspaceContext?> context,
-            Action<string> reportStatus)
+            Action<string> reportStatus,
+            Func<bool> decisionInFlight)
         {
             _operations = operations ?? throw new ArgumentNullException(nameof(operations));
             _dialogs = dialogs ?? throw new ArgumentNullException(nameof(dialogs));
             _context = context ?? throw new ArgumentNullException(nameof(context));
             _reportStatus = reportStatus ?? throw new ArgumentNullException(nameof(reportStatus));
+            _decisionInFlight = decisionInFlight ?? throw new ArgumentNullException(nameof(decisionInFlight));
 
-            ExportCommand = new AsyncRelayCommand(ExportAsync, () => !IsRunning && _context() is not null);
-            ValidateCommand = new AsyncRelayCommand(ValidateAsync, () => !IsRunning);
+            ExportCommand = new AsyncRelayCommand(
+                ExportAsync, () => !IsRunning && !_decisionInFlight() && _context() is not null);
+            ValidateCommand = new AsyncRelayCommand(ValidateAsync, () => !IsRunning && !_decisionInFlight());
             CancelCommand = new RelayCommand(Cancel, () => CanCancel);
             OpenFolderCommand = new RelayCommand(OpenFolder, () => CanOpenFolder);
             CloseCommand = new RelayCommand(Close, () => !IsRunning);
@@ -179,6 +188,16 @@ namespace Chatcheology.Desktop.ViewModels
                 }
             }
         }
+
+        /// <summary>
+        /// Whether the window may close now: true except while an export is writing its folder,
+        /// from the start of the write to the end of its clean-up after a stop or a cancel.
+        /// </summary>
+        /// <remarks>
+        /// Counting, the self-check and the comparison write nothing, so closing during them leaves
+        /// nothing behind. Closing while the exporter writes would leave its <c>.partial</c> folder.
+        /// </remarks>
+        public bool CanCloseNow => !_isWriting;
 
         /// <summary>Whether the panel shows an outcome rather than progress.</summary>
         public bool IsFinished => IsOpen && !IsRunning;
@@ -277,7 +296,7 @@ namespace Chatcheology.Desktop.ViewModels
         /// </remarks>
         private async Task ExportAsync()
         {
-            if (_context() is not { } context)
+            if (_decisionInFlight() || _context() is not { } context)
             {
                 return;
             }
@@ -291,6 +310,10 @@ namespace Chatcheology.Desktop.ViewModels
             }
 
             var cancellation = Begin("Counting what the archive will hold…", cancellable: true);
+
+            // Known once a folder is chosen, so a stop can tell whether the exporter's clean-up left
+            // its partial folder behind.
+            string? output = null;
 
             try
             {
@@ -319,7 +342,7 @@ namespace Chatcheology.Desktop.ViewModels
                 }
 
                 var folderName = FolderName(DateTime.Now);
-                var output = Path.Combine(parent, folderName);
+                output = Path.Combine(parent, folderName);
 
                 // The counts the operator was shown, and nothing else, are what the export must find.
                 var request = new ArchiveExportRequest
@@ -337,11 +360,25 @@ namespace Chatcheology.Desktop.ViewModels
 
                 var progress = new Progress<ArchiveExportProgress>(report => OnProgress(cancellation, report));
 
-                var result = await Task
-                    .Run(() => _operations.Export(request, progress, cancellation.Token), cancellation.Token)
-                    .ConfigureAwait(true);
+                ArchiveExportResult result;
 
-                // Past the rename the archive is complete. It is checked, never undone.
+                // From here until the exporter returns or has cleaned up after a stop, it is writing:
+                // the window must not close under it.
+                SetWriting(true);
+
+                try
+                {
+                    result = await Task
+                        .Run(() => _operations.Export(request, progress, cancellation.Token), cancellation.Token)
+                        .ConfigureAwait(true);
+                }
+                finally
+                {
+                    SetWriting(false);
+                }
+
+                // Past the rename the archive is complete. It is checked, never undone, and the check
+                // cannot be cancelled.
                 CanCancel = false;
                 _folderPath = output;
 
@@ -358,27 +395,79 @@ namespace Chatcheology.Desktop.ViewModels
             }
             catch (OperationCanceledException)
             {
-                Finish(ArchiveOutcome.Cancelled, "Export cancelled. No archive folder was written.");
+                if (PartialLeft(output))
+                {
+                    Finish(
+                        ArchiveOutcome.Cancelled,
+                        "Export cancelled. No archive was written, but an incomplete folder was left behind.",
+                        PartialLeftText);
+                }
+                else
+                {
+                    Finish(ArchiveOutcome.Cancelled, "Export cancelled. No archive folder was written.");
+                }
             }
             catch (ArchiveExportRefusedException exception)
             {
                 // The exporter's refusals are fixed phrases naming the request option, never a path.
+                // A refusal writes nothing, so there is no partial folder to look for.
                 Finish(ArchiveOutcome.Failed, "Export refused. Nothing was written.", exception.Message);
             }
             catch (ArchiveExportStoppedException exception)
             {
-                Finish(ArchiveOutcome.Failed, "Export stopped. No archive folder was written.", exception.Message);
+                Finish(ArchiveOutcome.Failed, "Export stopped. No archive folder was written.", StopLines(exception.Message, output));
             }
             catch (Exception exception)
             {
                 Finish(
                     ArchiveOutcome.Failed,
                     "The export could not complete.",
-                    Unexpected(exception));
+                    StopLines(Unexpected(exception), output));
             }
             finally
             {
                 End(cancellation);
+            }
+        }
+
+        /// <summary>What the operator is told when a stop or cancel left the partial folder behind.</summary>
+        public const string PartialLeftText =
+            "An incomplete folder ending in .partial was left in the folder you chose. It is not an " +
+            "archive; delete it.";
+
+        /// <summary>
+        /// Whether the exporter's partial folder is still there after a stop. Its removal is best
+        /// effort, so this is looked at rather than assumed.
+        /// </summary>
+        private static bool PartialLeft(string? output)
+        {
+            if (output is null)
+            {
+                return false;
+            }
+
+            try
+            {
+                var partial = output + ArchiveExporter.PartialSuffix;
+
+                return Directory.Exists(partial) || File.Exists(partial);
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                // Not able to look: say what may be there rather than that nothing is.
+                return true;
+            }
+        }
+
+        private static string[] StopLines(string reason, string? output) =>
+            PartialLeft(output) ? [reason, PartialLeftText] : [reason];
+
+        private void SetWriting(bool writing)
+        {
+            if (_isWriting != writing)
+            {
+                _isWriting = writing;
+                OnPropertyChanged(nameof(CanCloseNow));
             }
         }
 

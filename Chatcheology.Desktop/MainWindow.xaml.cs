@@ -123,20 +123,31 @@ namespace Chatcheology.Desktop
         }
 
         /// <remarks>
-        /// An export left running when the process ends would leave its partial folder behind, so
-        /// the window does not close under one: it asks the export to stop and stays open until the
-        /// operator closes it again.
+        /// An export ended while it is writing would leave its partial folder behind, so the window
+        /// does not close then (<see cref="ArchiveViewModel.CanCloseNow"/>): it asks the export to
+        /// stop, which removes what it wrote, and stays open until the operator closes it again.
+        /// Counting and checking write nothing, so they do not hold the window open.
         /// </remarks>
         protected override void OnClosing(CancelEventArgs e)
         {
-            if (_viewModel.Archive.IsRunning)
+            if (!_viewModel.Archive.CanCloseNow)
             {
                 e.Cancel = true;
 
-                _viewModel.Archive.CancelCommand.Execute(null);
-                _viewModel.ReportStatus(
-                    "An archive export or check is still running. It has been asked to stop where it " +
-                    "can; close the window again once it has finished.");
+                if (_viewModel.Archive.CanCancel)
+                {
+                    _viewModel.Archive.CancelCommand.Execute(null);
+
+                    _viewModel.ReportStatus(
+                        "The export is writing its folder. It has been asked to stop and remove what it " +
+                        "wrote; close the window again once it has.");
+                }
+                else
+                {
+                    _viewModel.ReportStatus(
+                        "The export is stopping and removing what it wrote; close the window again once " +
+                        "it has.");
+                }
             }
 
             base.OnClosing(e);

@@ -295,10 +295,12 @@
                 BorderThickness="0,0,0,1" Padding="10,8"
                 Visibility="{Binding Archive.IsOpen, Converter={StaticResource BoolToVisibility}}">
             <DockPanel>
+                <!-- Cancel is shown only while the export can still be stopped; the checks, and the
+                     moments after Cancel was pressed, offer no button that would do nothing. -->
                 <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Top">
                     <Button Content="Cancel export" Padding="10,3" Margin="8,0,0,0"
                             Command="{Binding Archive.CancelCommand}"
-                            Visibility="{Binding Archive.IsRunning,
+                            Visibility="{Binding Archive.CanCancel,
                                 Converter={StaticResource BoolToVisibility}}" />
                     <Button Content="Open folder" Padding="10,3" Margin="8,0,0,0"
                             Command="{Binding Archive.OpenFolderCommand}"

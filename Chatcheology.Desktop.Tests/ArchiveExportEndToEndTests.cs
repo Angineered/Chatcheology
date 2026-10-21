@@ -70,6 +70,35 @@ namespace Chatcheology.Desktop.Tests
             viewModel.CloseSession();
         }
 
+        /// <remarks>
+        /// An archive of another conversation is not compared, rather than failing on every message.
+        /// </remarks>
+        [Fact]
+        public async Task AnArchiveOfADifferentConversation_IsSelfCheckedButNotCompared()
+        {
+            var viewModel = await OpenedAsync(new ArchiveOperations());
+
+            viewModel.ExportArchiveCommand.Execute(null);
+            await FinishedAsync(viewModel);
+
+            viewModel.CloseSession();
+
+            var folder = Assert.Single(Directory.GetDirectories(_workspace.ExportsFolder));
+
+            var report = new ArchiveOperations().Check(
+                folder, new ArchiveComparisonTarget(_workspace.DatabasePath, 1, "Some other conversation"));
+
+            Assert.True(report.Validation?.Passed);
+            Assert.Null(report.Comparison);
+            Assert.Contains("different conversation", report.ComparisonNote, StringComparison.Ordinal);
+
+            // And with the right title, the same archive is compared and passes.
+            var matching = new ArchiveOperations().Check(
+                folder, new ArchiveComparisonTarget(_workspace.DatabasePath, 1, "Ada and Bo"));
+
+            Assert.True(matching.Comparison?.Passed);
+        }
+
         [Fact]
         public async Task ADamagedArchive_FailsValidation_WithKindsAndCountsOnly()
         {

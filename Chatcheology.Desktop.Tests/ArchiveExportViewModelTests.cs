@@ -481,6 +481,187 @@ namespace Chatcheology.Desktop.Tests
         }
 
         // ---------------------------------------------------------------------------------------
+        // Review round: closing, cancel, decisions in flight, leftovers.
+        // ---------------------------------------------------------------------------------------
+
+        [Fact]
+        public async Task WhileTheExportWrites_TheWindowMayNotClose_AndCancelIsOffered()
+        {
+            var viewModel = await OpenedAsync();
+            var gate = new TaskCompletionSource();
+
+            Assert.True(viewModel.Archive.CanCloseNow);
+
+            _operations.OnExport = (_, _, _) =>
+            {
+                gate.Task.Wait();
+
+                return Result();
+            };
+
+            viewModel.ExportArchiveCommand.Execute(null);
+
+            await WaitUntil(() => _operations.Requests.Count == 1);
+
+            Assert.False(viewModel.Archive.CanCloseNow);
+            Assert.True(viewModel.Archive.CanCancel);
+
+            gate.SetResult();
+
+            await FinishedAsync(viewModel);
+
+            Assert.True(viewModel.Archive.CanCloseNow);
+
+            viewModel.CloseSession();
+        }
+
+        [Fact]
+        public async Task DuringTheCheckAfterAnExport_CancelIsNotOffered_AndTheWindowMayClose()
+        {
+            var viewModel = await OpenedAsync();
+            var gate = new TaskCompletionSource();
+
+            _operations.OnCheck = () => gate.Task.Wait();
+
+            viewModel.ExportArchiveCommand.Execute(null);
+
+            await WaitUntil(() => _operations.Checks == 1);
+
+            Assert.True(viewModel.Archive.IsRunning);
+            Assert.False(viewModel.Archive.CanCancel);
+            Assert.False(viewModel.Archive.CancelCommand.CanExecute(null));
+            Assert.True(viewModel.Archive.CanCloseNow);
+
+            gate.SetResult();
+
+            await FinishedAsync(viewModel);
+
+            viewModel.CloseSession();
+        }
+
+        [Fact]
+        public async Task DuringValidateOnly_CancelIsNotOffered_AndTheWindowMayClose()
+        {
+            var viewModel = Create();
+            var gate = new TaskCompletionSource();
+
+            _archiveFolder = _workspace.ExportsFolder;
+            _operations.OnCheck = () => gate.Task.Wait();
+
+            viewModel.ValidateArchiveCommand.Execute(null);
+
+            await WaitUntil(() => _operations.Checks == 1);
+
+            Assert.True(viewModel.Archive.IsRunning);
+            Assert.False(viewModel.Archive.CanCancel);
+            Assert.True(viewModel.Archive.CanCloseNow);
+
+            gate.SetResult();
+
+            await FinishedAsync(viewModel);
+        }
+
+        [Fact]
+        public async Task WhileAnExportRuns_ADecisionReachingTheShell_IsRefusedAndNotWritten()
+        {
+            var viewModel = await OpenedAsync();
+            var gate = new TaskCompletionSource();
+            var wrote = false;
+
+            _operations.OnExport = (_, _, _) =>
+            {
+                gate.Task.Wait();
+
+                return Result();
+            };
+
+            viewModel.ExportArchiveCommand.Execute(null);
+
+            await WaitUntil(() => _operations.Requests.Count == 1);
+
+            var refusal = await viewModel.ExecuteDecisionAsync(() => wrote = true);
+
+            Assert.IsType<InvalidOperationException>(refusal);
+            Assert.Contains("archive export or check is running", refusal!.Message, StringComparison.Ordinal);
+            Assert.False(wrote);
+
+            gate.SetResult();
+
+            await FinishedAsync(viewModel);
+
+            viewModel.CloseSession();
+        }
+
+        [Fact]
+        public async Task WhileADecisionIsInFlight_NeitherArchiveCommandIsOffered()
+        {
+            var viewModel = await OpenedAsync();
+            var gate = new ManualResetEventSlim();
+            var told = 0;
+
+            viewModel.ExportArchiveCommand.CanExecuteChanged += (_, _) => told++;
+
+            var decision = viewModel.ExecuteDecisionAsync(() => gate.Wait(TimeSpan.FromSeconds(30)));
+
+            await WaitUntil(() => viewModel.IsBusy);
+
+            Assert.False(viewModel.ExportArchiveCommand.CanExecute(null));
+            Assert.False(viewModel.ValidateArchiveCommand.CanExecute(null));
+            Assert.True(told > 0, "The export button was never told a decision was in flight.");
+
+            gate.Set();
+
+            Assert.Null(await decision);
+
+            await WaitUntil(() => !viewModel.IsBusy);
+
+            Assert.True(viewModel.ExportArchiveCommand.CanExecute(null));
+            Assert.True(viewModel.ValidateArchiveCommand.CanExecute(null));
+
+            viewModel.CloseSession();
+        }
+
+        [Theory]
+        [InlineData(true, true)]
+        [InlineData(true, false)]
+        [InlineData(false, true)]
+        [InlineData(false, false)]
+        public async Task AStopThatLeavesThePartialFolder_SaysSoPlainly(bool cancelled, bool leftBehind)
+        {
+            var viewModel = await OpenedAsync();
+
+            _operations.OnExport = (request, _, _) =>
+            {
+                if (leftBehind)
+                {
+                    Directory.CreateDirectory(request.OutputPath + ArchiveExporter.PartialSuffix);
+                }
+
+                throw cancelled
+                    ? new OperationCanceledException()
+                    : new ArchiveExportStoppedException("A fixed phrase. No archive folder was written.");
+            };
+
+            viewModel.ExportArchiveCommand.Execute(null);
+
+            await FinishedAsync(viewModel);
+
+            Assert.Equal(cancelled ? ArchiveOutcome.Cancelled : ArchiveOutcome.Failed, viewModel.Archive.Outcome);
+            Assert.Equal(leftBehind, viewModel.Archive.Lines.Contains(ArchiveViewModel.PartialLeftText));
+
+            if (cancelled)
+            {
+                Assert.Equal(
+                    leftBehind,
+                    viewModel.Archive.HeadlineText.Contains("incomplete folder was left", StringComparison.Ordinal));
+            }
+
+            AssertNothingPrivateShown(viewModel);
+
+            viewModel.CloseSession();
+        }
+
+        // ---------------------------------------------------------------------------------------
         // Helpers.
         // ---------------------------------------------------------------------------------------
 
@@ -676,8 +857,12 @@ namespace Chatcheology.Desktop.Tests
                 Checks++;
                 LastTarget = target;
 
+                OnCheck?.Invoke();
+
                 return CheckResult;
             }
+
+            internal Action? OnCheck { get; set; }
         }
     }
 }
