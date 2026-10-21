@@ -60,16 +60,23 @@
                                Visibility="{Binding HasLowQualityCopyLabel,
                                    Converter={StaticResource BoolToVisibility}}" />
 
+                    <!-- With details off (CH-20) the headline goes only when a preview is
+                         shown; the asset facts, the detail sentence and the file name always go.
+                         The preview, Open media, its error and the copy label and note stay. -->
                     <TextBlock Text="{Binding HeadlineText}" FontWeight="SemiBold"
-                               TextWrapping="Wrap" />
+                               TextWrapping="Wrap"
+                               Visibility="{Binding IsHeadlineShown,
+                                   Converter={StaticResource BoolToVisibility}}" />
 
                     <TextBlock Text="{Binding AssetText}" Margin="0,2,0,0" Foreground="#FF3C3C3C"
                                TextWrapping="Wrap"
-                               Visibility="{Binding HasAssetText,
+                               Visibility="{Binding IsAssetTextShown,
                                    Converter={StaticResource BoolToVisibility}}" />
 
                     <TextBlock Text="{Binding DetailText}" Margin="0,2,0,0" FontSize="11"
-                               Foreground="#FF5A5A5A" TextWrapping="Wrap" />
+                               Foreground="#FF5A5A5A" TextWrapping="Wrap"
+                               Visibility="{Binding AreDetailsShown,
+                                   Converter={StaticResource BoolToVisibility}}" />
 
                     <Image Source="{Binding Thumbnail}" Margin="0,6,0,0"
                            MaxWidth="320" MaxHeight="320"
@@ -79,7 +86,7 @@
 
                     <TextBlock Text="{Binding FileName}" Margin="0,4,0,0" FontSize="11"
                                Foreground="#FF5A5A5A" TextWrapping="Wrap"
-                               Visibility="{Binding IsResolvedAndAvailable,
+                               Visibility="{Binding IsFileNameShown,
                                    Converter={StaticResource BoolToVisibility}}" />
 
                     <Button Content="Open media" Margin="0,4,0,0" Padding="8,2"
@@ -277,6 +284,24 @@
                           ToolTip="Session only. Nothing is written to the workspace."
                           Visibility="{Binding HasLowQualityCopies,
                               Converter={StaticResource BoolToVisibility}}" />
+
+                <!-- Card details (CH-20). Offered whenever a conversation is open; off by default,
+                     and toggling it redraws the cards without moving the page. -->
+                <CheckBox x:Name="ShowDetailsToggle" Content="Show details"
+                          Margin="16,0,0,0" VerticalAlignment="Center" DockPanel.Dock="Left"
+                          IsChecked="{Binding ShowDetails}"
+                          ToolTip="Session only. Nothing is written to the workspace.">
+                    <CheckBox.Style>
+                        <Style TargetType="CheckBox">
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding SelectedConversation}"
+                                             Value="{x:Null}">
+                                    <Setter Property="Visibility" Value="Collapsed" />
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </CheckBox.Style>
+                </CheckBox>
 
                 <!-- Portable archive (CH-18). Export takes the selected conversation; Validate
                      checks any archive folder, and compares it when a conversation is open. -->

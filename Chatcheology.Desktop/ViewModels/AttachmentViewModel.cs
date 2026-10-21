@@ -33,6 +33,8 @@ namespace Chatcheology.Desktop.ViewModels
 
         private bool _showLowQualityCopies;
 
+        private bool _showDetails;
+
         /// <param name="fact">
         /// The attachment's msgstore fact, or <see langword="null"/> when none is recorded.
         /// Presentation only: it never changes the Phase 7 state this card shows.
@@ -228,6 +230,41 @@ namespace Chatcheology.Desktop.ViewModels
         public string LowQualityCopyNoteText => LowQualityCopyCount == 1
             ? "WhatsApp also kept a smaller duplicate (hidden)"
             : $"WhatsApp also kept {Text(LowQualityCopyCount)} smaller duplicates (hidden)";
+
+        /// <summary>
+        /// Whether the operator has asked to see the card's details, for this session only (CH-20).
+        /// Presentation only: it changes which lines are drawn, never what the card says.
+        /// </summary>
+        public bool ShowDetails
+        {
+            get => _showDetails;
+            internal set
+            {
+                if (SetProperty(ref _showDetails, value))
+                {
+                    OnPropertyChanged(nameof(IsHeadlineShown));
+                    OnPropertyChanged(nameof(AreDetailsShown));
+                    OnPropertyChanged(nameof(IsAssetTextShown));
+                    OnPropertyChanged(nameof(IsFileNameShown));
+                }
+            }
+        }
+
+        /// <summary>
+        /// Whether the one-line state is drawn. A preview says what the card is on its own, so the
+        /// headline goes with the details only then; every other card keeps it, because without
+        /// it nothing would say whether the slot is missing, unmatched or unreachable.
+        /// </summary>
+        public bool IsHeadlineShown => _showDetails || !HasThumbnail;
+
+        /// <summary>Whether the sentence the state rests on is drawn.</summary>
+        public bool AreDetailsShown => _showDetails;
+
+        /// <summary>Whether the resolved asset's recorded facts are drawn.</summary>
+        public bool IsAssetTextShown => HasAssetText && _showDetails;
+
+        /// <summary>Whether the reachable copy's file name is drawn.</summary>
+        public bool IsFileNameShown => IsResolvedAndAvailable && _showDetails;
 
         /// <summary>Why the last Open media attempt did not work, or <see langword="null"/>.</summary>
         public string? OpenError

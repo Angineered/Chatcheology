@@ -113,6 +113,15 @@ namespace Chatcheology.Desktop.ViewModels
             OnPropertyChanged(nameof(IsShown));
         }
 
+        /// <summary>Shows or hides the details of this message's cards, for this session only.</summary>
+        internal void SetShowDetails(bool show)
+        {
+            foreach (var attachment in Attachments)
+            {
+                attachment.ShowDetails = show;
+            }
+        }
+
         /// <summary>Its position in the authoritative conversation order.</summary>
         public int SequenceNumber { get; }
 

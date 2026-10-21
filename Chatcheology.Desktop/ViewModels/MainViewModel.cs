@@ -48,6 +48,7 @@ namespace Chatcheology.Desktop.ViewModels
         private bool _isBusy;
         private bool _hasLowQualityCopies;
         private bool _showLowQualityCopies;
+        private bool _showDetails;
 
         /// <summary>
         /// Creates the viewer.
@@ -288,6 +289,28 @@ namespace Chatcheology.Desktop.ViewModels
             }
         }
 
+        /// <summary>
+        /// Whether the attachment cards show their details, for this session only (CH-20). Off by
+        /// default: a card then shows the media and only as much wording as it needs. Toggling is
+        /// presentation and never a move, so the operator's place on the page is kept.
+        /// </summary>
+        public bool ShowDetails
+        {
+            get => _showDetails;
+            set
+            {
+                if (!SetProperty(ref _showDetails, value))
+                {
+                    return;
+                }
+
+                foreach (var message in Messages)
+                {
+                    message.SetShowDetails(value);
+                }
+            }
+        }
+
         /// <summary>Whether a read or a decision is in flight.</summary>
         public bool IsBusy
         {
@@ -402,6 +425,8 @@ namespace Chatcheology.Desktop.ViewModels
             HasLowQualityCopies = false;
             _showLowQualityCopies = false;
             OnPropertyChanged(nameof(ShowLowQualityCopies));
+            _showDetails = false;
+            OnPropertyChanged(nameof(ShowDetails));
 
             RangeText = string.Empty;
             ConversationTitle = string.Empty;
@@ -518,8 +543,9 @@ namespace Chatcheology.Desktop.ViewModels
 
                 foreach (var message in built)
                 {
-                    // The toggle may have moved while the page was being built.
+                    // The toggles may have moved while the page was being built.
                     message.SetShowLowQualityCopies(ShowLowQualityCopies);
+                    message.SetShowDetails(ShowDetails);
                     Messages.Add(message);
                 }
 
