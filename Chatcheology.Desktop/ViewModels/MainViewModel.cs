@@ -57,6 +57,20 @@ namespace Chatcheology.Desktop.ViewModels
         /// window, because a file dialog is a window's business rather than a view-model's.
         /// </param>
         public MainViewModel(Func<string?> chooseWorkspace)
+            : this(chooseWorkspace, ArchiveDialogs.None, new ArchiveOperations())
+        {
+        }
+
+        /// <summary>
+        /// Creates the viewer with the archive work's dialogs and operations (CH-18).
+        /// </summary>
+        /// <param name="chooseWorkspace">As for the public constructor.</param>
+        /// <param name="archiveDialogs">The window's confirmation, folder and open-folder dialogs.</param>
+        /// <param name="archiveOperations">Counting, exporting and checking; a seam for tests.</param>
+        internal MainViewModel(
+            Func<string?> chooseWorkspace,
+            ArchiveDialogs archiveDialogs,
+            IArchiveOperations archiveOperations)
         {
             _chooseWorkspace = chooseWorkspace
                 ?? throw new ArgumentNullException(nameof(chooseWorkspace));
@@ -65,7 +79,21 @@ namespace Chatcheology.Desktop.ViewModels
                 () => _session?.DatabasePath ?? string.Empty,
                 ExecuteDecisionAsync);
 
-            OpenWorkspaceCommand = new AsyncRelayCommand(OpenWorkspaceAsync);
+            Archive = new ArchiveViewModel(
+                archiveOperations,
+                archiveDialogs,
+                ArchiveContext,
+                message => StatusText = message);
+
+            // While an archive is exported or checked, no decision can change the workspace under it,
+            // and no other workspace can be opened in its place.
+            Archive.RunningChanged += (_, _) =>
+            {
+                Review.AreDecisionsSuspended = Archive.IsRunning;
+                OpenWorkspaceCommand?.RaiseCanExecuteChanged();
+            };
+
+            OpenWorkspaceCommand = new AsyncRelayCommand(OpenWorkspaceAsync, () => !Archive.IsRunning);
 
             PreviousCommand = new AsyncRelayCommand(
                 () => NavigateAsync(PageDirection.Before, _page?.FirstSequenceNumber ?? 1),
@@ -95,6 +123,15 @@ namespace Chatcheology.Desktop.ViewModels
 
         /// <summary>The review panel, open or closed.</summary>
         public AttachmentReviewViewModel Review { get; }
+
+        /// <summary>The archive export and check panel (CH-18).</summary>
+        public ArchiveViewModel Archive { get; }
+
+        /// <summary>Exports the selected conversation to a new portable archive folder.</summary>
+        public AsyncRelayCommand ExportArchiveCommand => Archive.ExportCommand;
+
+        /// <summary>Checks an existing archive folder.</summary>
+        public AsyncRelayCommand ValidateArchiveCommand => Archive.ValidateCommand;
 
         /// <summary>
         /// Raised when the operator has moved to a different page — another conversation, the
@@ -589,6 +626,13 @@ namespace Chatcheology.Desktop.ViewModels
                 return new InvalidOperationException("No workspace is open.");
             }
 
+            // The panel's commands are already disabled; this is the backstop.
+            if (Archive.IsRunning)
+            {
+                return new InvalidOperationException(
+                    "An archive export or check is running. No decision was recorded.");
+            }
+
             await QuiesceAsync().ConfigureAwait(true);
 
             var conversationID = SelectedConversation?.ConversationID;
@@ -796,7 +840,19 @@ namespace Chatcheology.Desktop.ViewModels
             PreviousCommand.RaiseCanExecuteChanged();
             NextCommand.RaiseCanExecuteChanged();
             JumpToDateCommand.RaiseCanExecuteChanged();
+            Archive.RaiseCommandStates();
         }
+
+        /// <summary>What an export would take from: the open workspace and conversation, or nothing.</summary>
+        private ArchiveWorkspaceContext? ArchiveContext() =>
+            _session is { } session && SelectedConversation is { } conversation
+                ? new ArchiveWorkspaceContext(
+                    session.DatabasePath,
+                    conversation.ConversationID,
+                    conversation.Title,
+                    LocalParticipant?.ParticipantID,
+                    LocalParticipant?.DisplayName)
+                : null;
 
         private static string DescribeRange(ConversationPage page, ConversationSummary conversation)
         {

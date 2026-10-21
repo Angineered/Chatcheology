@@ -53,7 +53,12 @@ namespace Chatcheology.Data.ArchiveExport
             try
             {
                 source = ArchiveExportSource.Read(
-                    request.WorkspacePath, request.ConversationID, request.LocalParticipantID, PageSize, progress: null);
+                    request.WorkspacePath,
+                    request.ConversationID,
+                    request.LocalParticipantID,
+                    PageSize,
+                    progress: null,
+                    CancellationToken.None);
             }
             catch (ArchiveExportRefusedException exception)
             {

@@ -59,15 +59,59 @@ namespace Chatcheology.Data.ArchiveExport
                  .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion.Split('+')[0]
              ?? "unknown");
 
+        /// <summary>
+        /// What an export of the conversation would hold, read exactly as <see cref="Export"/> reads it:
+        /// the counts a caller shows before exporting and then passes back as
+        /// <see cref="ArchiveExportRequest.ExpectResolved"/> and
+        /// <see cref="ArchiveExportRequest.ExpectMissingReviewed"/> (CH-18). Writes nothing.
+        /// </summary>
+        /// <exception cref="ArchiveExportRefusedException">
+        /// The workspace, conversation or participant is unsuitable. Nothing was written.
+        /// </exception>
+        /// <exception cref="OperationCanceledException">Cancelled while reading.</exception>
+        public ArchiveExportPreview Preview(
+            string workspacePath,
+            long conversationID,
+            long localParticipantID,
+            CancellationToken cancellationToken = default)
+        {
+            if (string.IsNullOrWhiteSpace(workspacePath))
+            {
+                throw new ArchiveExportRefusedException("The WorkspacePath is empty. Nothing was written.");
+            }
+
+            var source = ArchiveExportSource.Read(
+                workspacePath, conversationID, localParticipantID, PageSize, progress: null, cancellationToken);
+
+            return new ArchiveExportPreview(
+                Messages: source.Messages.Count,
+                Restored: source.Resolved,
+                Missing: source.MissingReviewed,
+                Unmatched: source.Unmatched,
+                MediaFiles: source.AssetSha256.Count,
+                MediaBytes: source.ToArchiveMedia().Sum(media => media.SizeBytes));
+        }
+
         /// <summary>Exports the conversation.</summary>
         /// <exception cref="ArchiveExportRefusedException">A guard failed. Nothing was written.</exception>
         /// <exception cref="ArchiveExportStoppedException">
         /// Writing began and then stopped. The partial folder was removed and no archive exists.
         /// </exception>
+        /// <exception cref="OperationCanceledException">
+        /// <paramref name="cancellationToken"/> was cancelled. A cancellation is a stop like any other:
+        /// the partial folder, if one was created, was removed and no archive exists. It is checked
+        /// between messages read, between media payloads and between messages written, and once more
+        /// just before the partial folder is renamed; after that rename the archive is complete and
+        /// the export is not undone.
+        /// </exception>
         public ArchiveExportResult Export(
-            ArchiveExportRequest request, IProgress<ArchiveExportProgress>? progress = null)
+            ArchiveExportRequest request,
+            IProgress<ArchiveExportProgress>? progress = null,
+            CancellationToken cancellationToken = default)
         {
             ArgumentNullException.ThrowIfNull(request);
+
+            cancellationToken.ThrowIfCancellationRequested();
 
             // ---- Guards: nothing is written until every one has passed. ----
 
@@ -85,7 +129,7 @@ namespace Chatcheology.Data.ArchiveExport
             var output = OutputGuard.Check(request.OutputPath);
             var partial = output + PartialSuffix;
 
-            var source = ArchiveExportSource.Read(request, PageSize, progress);
+            var source = ArchiveExportSource.Read(request, PageSize, progress, cancellationToken);
 
             if (source.Resolved != request.ExpectResolved)
             {
@@ -113,6 +157,8 @@ namespace Chatcheology.Data.ArchiveExport
 
             // ---- Writing. ----
 
+            cancellationToken.ThrowIfCancellationRequested();
+
             BeforePartialCreatedForTests?.Invoke(partial);
 
             try
@@ -130,10 +176,16 @@ namespace Chatcheology.Data.ArchiveExport
 
             try
             {
-                return Write(source, request, partial, output, progress);
+                return Write(source, request, partial, output, progress, cancellationToken);
             }
             catch (ArchiveExportStoppedException)
             {
+                Remove(partial);
+                throw;
+            }
+            catch (OperationCanceledException)
+            {
+                // Cancelled by the caller: a stop like any other, so nothing is left behind.
                 Remove(partial);
                 throw;
             }
@@ -179,9 +231,10 @@ namespace Chatcheology.Data.ArchiveExport
             ArchiveExportRequest request,
             string partial,
             string output,
-            IProgress<ArchiveExportProgress>? progress)
+            IProgress<ArchiveExportProgress>? progress,
+            CancellationToken cancellationToken)
         {
-            var media = CopyMedia(source, partial, progress);
+            var media = CopyMedia(source, partial, progress, cancellationToken);
 
             if (media.Failed > 0)
             {
@@ -206,7 +259,8 @@ namespace Chatcheology.Data.ArchiveExport
             var now = DateTime.UtcNow;
             var created = new DateTime(now.Ticks - now.Ticks % TimeSpan.TicksPerSecond, DateTimeKind.Utc);
 
-            var (counts, linksOutside) = WriteDatabase(source, request, media.Stored, created, partial, progress);
+            var (counts, linksOutside) = WriteDatabase(
+                source, request, media.Stored, created, partial, progress, cancellationToken);
 
             // The ownership marker is not part of the archive. From here on a stop still removes the
             // folder: ownership was established when it was created.
@@ -219,6 +273,9 @@ namespace Chatcheology.Data.ArchiveExport
 
             var contents = ArchiveContents.Build(partial);
             File.WriteAllBytes(Path.Combine(partial, ArchiveContents.FileName), contents);
+
+            // The last moment a cancellation can still leave nothing behind.
+            cancellationToken.ThrowIfCancellationRequested();
 
             // Last step: only now does a folder at the output path exist.
             if (Directory.Exists(output) || File.Exists(output))
@@ -250,7 +307,8 @@ namespace Chatcheology.Data.ArchiveExport
             IReadOnlyDictionary<long, string> originalFileNames,
             DateTime created,
             string partial,
-            IProgress<ArchiveExportProgress>? progress)
+            IProgress<ArchiveExportProgress>? progress,
+            CancellationToken cancellationToken)
         {
             var info = new ArchiveInfo
             {
@@ -281,6 +339,8 @@ namespace Chatcheology.Data.ArchiveExport
 
             foreach (var message in source.Messages)
             {
+                cancellationToken.ThrowIfCancellationRequested();
+
                 writer.WriteMessage(
                     source.ToArchiveMessage(message, assetID => originalFileNames[assetID], ref linksOutside));
 
@@ -311,7 +371,10 @@ namespace Chatcheology.Data.ArchiveExport
         /// </summary>
         /// <returns>For each stored payload, the file name of the copy it was taken from.</returns>
         private MediaOutcome CopyMedia(
-            ArchiveExportSource source, string partial, IProgress<ArchiveExportProgress>? progress)
+            ArchiveExportSource source,
+            string partial,
+            IProgress<ArchiveExportProgress>? progress,
+            CancellationToken cancellationToken)
         {
             var folder = Path.Combine(partial, ArchiveFormat.MediaFolderName);
             Directory.CreateDirectory(folder);
@@ -323,6 +386,8 @@ namespace Chatcheology.Data.ArchiveExport
 
             foreach (var (assetID, expected) in source.AssetSha256.OrderBy(pair => pair.Key))
             {
+                cancellationToken.ThrowIfCancellationRequested();
+
                 var locations = source.Locations.GetValueOrDefault(assetID) ?? [];
                 string? taken = null;
 

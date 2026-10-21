@@ -87,6 +87,7 @@ namespace Chatcheology.Desktop.ViewModels
         private string _evidenceText = string.Empty;
         private bool _isBusy;
         private bool _isOpen;
+        private bool _areDecisionsSuspended;
 
         /// <summary>
         /// Creates the panel.
@@ -203,6 +204,26 @@ namespace Chatcheology.Desktop.ViewModels
             private set
             {
                 if (SetProperty(ref _isBusy, value))
+                {
+                    RaiseCommandStates();
+                }
+            }
+        }
+
+        /// <summary>
+        /// Whether decisions are held off because an archive export or check is running (CH-18).
+        /// </summary>
+        /// <remarks>
+        /// Set by the shell for the whole run, from the first count to the last check, so the workspace
+        /// cannot change underneath what is being exported or compared. Nothing armed is stood down;
+        /// it simply cannot be armed or committed until the run ends.
+        /// </remarks>
+        public bool AreDecisionsSuspended
+        {
+            get => _areDecisionsSuspended;
+            internal set
+            {
+                if (SetProperty(ref _areDecisionsSuspended, value))
                 {
                     RaiseCommandStates();
                 }
@@ -355,7 +376,8 @@ namespace Chatcheology.Desktop.ViewModels
         // Command availability.
         // -----------------------------------------------------------------------------------
 
-        private bool Idle => !IsBusy && Pending == PendingDecision.None && _state is not null;
+        private bool Idle =>
+            !IsBusy && !AreDecisionsSuspended && Pending == PendingDecision.None && _state is not null;
 
         private bool CanBeginReview => Idle && _state!.CurrentEvidenceRunID is not null;
 
@@ -374,7 +396,7 @@ namespace Chatcheology.Desktop.ViewModels
         private bool CanBeginRevoke =>
             Idle && IsResolved && _state!.CurrentEffectiveEventID is not null;
 
-        private bool CanCommit => !IsBusy && Pending switch
+        private bool CanCommit => !IsBusy && !AreDecisionsSuspended && Pending switch
         {
             PendingDecision.Review => true,
             PendingDecision.Disprove => Stated(DisproofReason),

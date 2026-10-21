@@ -52,6 +52,22 @@ namespace Chatcheology.Data.ArchiveExport
     /// <param name="Total">Items in that stage.</param>
     public sealed record ArchiveExportProgress(ArchiveExportStage Stage, int Done, int Total);
 
+    /// <summary>
+    /// What an export of a conversation would hold, from <see cref="ArchiveExporter.Preview"/>. Counts
+    /// only: no title, name or path.
+    /// </summary>
+    /// <param name="Messages">The conversation's messages.</param>
+    /// <param name="Restored">Resolved attachments: pass as <see cref="ArchiveExportRequest.ExpectResolved"/>.</param>
+    /// <param name="Missing">
+    /// Unresolved attachments with a current "reviewed, insufficient evidence" review: pass as
+    /// <see cref="ArchiveExportRequest.ExpectMissingReviewed"/>.
+    /// </param>
+    /// <param name="Unmatched">Every other unresolved attachment.</param>
+    /// <param name="MediaFiles">Distinct media payloads, one file each in the archive.</param>
+    /// <param name="MediaBytes">Their recorded sizes, added up.</param>
+    public sealed record ArchiveExportPreview(
+        int Messages, int Restored, int Missing, int Unmatched, int MediaFiles, long MediaBytes);
+
     /// <summary>What a completed export wrote. Counts only.</summary>
     public sealed class ArchiveExportResult
     {

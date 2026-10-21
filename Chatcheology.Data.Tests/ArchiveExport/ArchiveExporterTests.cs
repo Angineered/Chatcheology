@@ -930,6 +930,137 @@ namespace Chatcheology.Data.Tests.ArchiveExport
         }
 
         // ---------------------------------------------------------------------------------------
+        // Preview and cancellation (CH-18).
+        // ---------------------------------------------------------------------------------------
+
+        [Fact]
+        public void Preview_CountsWhatTheExportWillHold_AndWritesNothing()
+        {
+            Build();
+            var before = _fixture.WorkspaceFingerprint();
+
+            var preview = new ArchiveExporter().Preview(
+                _fixture.DatabasePath, MatchingTestWorkspace.ConversationID, Local);
+
+            Assert.Equal(new ArchiveExportPreview(9, 3, 1, 2, 2, "alpha payload".Length + "beta payload".Length), preview);
+            Assert.Equal(before, _fixture.WorkspaceFingerprint());
+            Assert.Empty(_fixture.ExportsContent());
+
+            // The counts it shows are the counts the export then accepts.
+            var result = new ArchiveExporter().Export(
+                _fixture.Request(_fixture.Output(), preview.Restored, preview.Missing));
+
+            Assert.Equal(preview.Messages, result.Counts.Messages);
+            Assert.Equal(preview.Restored, result.Counts.Restored);
+            Assert.Equal(preview.Missing, result.Counts.Missing);
+            Assert.Equal(preview.Unmatched, result.Counts.Unmatched);
+            Assert.Equal(preview.MediaFiles, result.Counts.MediaFiles);
+        }
+
+        [Fact]
+        public void Preview_RefusesAParticipantOutsideTheConversation()
+        {
+            Build();
+
+            Assert.Throws<ArchiveExportRefusedException>(
+                () => new ArchiveExporter().Preview(
+                    _fixture.DatabasePath, MatchingTestWorkspace.ConversationID, MatchingTestWorkspace.OutsiderParticipantID));
+        }
+
+        [Fact]
+        public void AnAlreadyCancelledExport_WritesNothing()
+        {
+            Build();
+            using var cancellation = new CancellationTokenSource();
+            cancellation.Cancel();
+
+            Assert.ThrowsAny<OperationCanceledException>(
+                () => new ArchiveExporter().Export(_fixture.Request(_fixture.Output(), 3, 1), null, cancellation.Token));
+
+            Assert.Empty(_fixture.ExportsContent());
+        }
+
+        [Fact]
+        public void ACancelWhileReadingMessages_WritesNothing()
+        {
+            Build();
+            using var cancellation = new CancellationTokenSource();
+
+            var progress = new ImmediateProgress(report =>
+            {
+                if (report.Stage == ArchiveExportStage.ReadingMessages)
+                {
+                    cancellation.Cancel();
+                }
+            });
+
+            Assert.ThrowsAny<OperationCanceledException>(
+                () => new ArchiveExporter { PageSize = 2 }.Export(
+                    _fixture.Request(_fixture.Output(), 3, 1), progress, cancellation.Token));
+
+            Assert.Empty(_fixture.ExportsContent());
+        }
+
+        [Fact]
+        public void ACancelWhileCopyingMedia_RemovesThePartialFolder()
+        {
+            Build();
+            using var cancellation = new CancellationTokenSource();
+            var sawPartial = false;
+
+            var exporter = new ArchiveExporter
+            {
+                BeforeMediaCopiedForTests = folder =>
+                {
+                    sawPartial = Directory.Exists(folder);
+                    cancellation.Cancel();
+                },
+            };
+
+            Assert.ThrowsAny<OperationCanceledException>(
+                () => exporter.Export(_fixture.Request(_fixture.Output(), 3, 1), null, cancellation.Token));
+
+            Assert.True(sawPartial);
+            Assert.Empty(_fixture.ExportsContent());
+        }
+
+        [Fact]
+        public void ACancelAfterTheMediaAreCopied_RemovesThePartialFolder()
+        {
+            Build();
+            using var cancellation = new CancellationTokenSource();
+
+            var exporter = new ArchiveExporter { AfterMediaCopiedForTests = _ => cancellation.Cancel() };
+
+            Assert.ThrowsAny<OperationCanceledException>(
+                () => exporter.Export(_fixture.Request(_fixture.Output(), 3, 1), null, cancellation.Token));
+
+            Assert.Empty(_fixture.ExportsContent());
+        }
+
+        [Fact]
+        public void ACancelWhileWritingMessages_RemovesThePartialFolder()
+        {
+            Build();
+            using var cancellation = new CancellationTokenSource();
+
+            var progress = new ImmediateProgress(report =>
+            {
+                if (report.Stage == ArchiveExportStage.WritingArchive)
+                {
+                    cancellation.Cancel();
+                }
+            });
+
+            // The last progress report of the stage comes after the last message, so the cancel is
+            // seen by the final check before the rename.
+            Assert.ThrowsAny<OperationCanceledException>(
+                () => new ArchiveExporter().Export(_fixture.Request(_fixture.Output(), 3, 1), progress, cancellation.Token));
+
+            Assert.Empty(_fixture.ExportsContent());
+        }
+
+        // ---------------------------------------------------------------------------------------
         // Helpers.
         // ---------------------------------------------------------------------------------------
 

@@ -1,7 +1,11 @@
-﻿using System.Windows;
+﻿using System.ComponentModel;
+using System.Diagnostics;
+using System.IO;
+using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using Chatcheology.Desktop.Controls;
+using Chatcheology.Desktop.Services;
 using Chatcheology.Desktop.ViewModels;
 using Microsoft.Win32;
 
@@ -11,8 +15,9 @@ namespace Chatcheology.Desktop
     /// Interaction logic for MainWindow.xaml
     /// </summary>
     /// <remarks>
-    /// The window owns two things a view-model should not: the file dialog, and the click that
-    /// hands a media file to the operating system. Everything else it does is data binding.
+    /// The window owns what a view-model should not: the file and folder dialogs, the export
+    /// confirmation, and the clicks that hand a media file or an archive folder to the operating
+    /// system. Everything else it does is data binding.
     /// </remarks>
     public partial class MainWindow : Window
     {
@@ -31,7 +36,17 @@ namespace Chatcheology.Desktop
         {
             InitializeComponent();
 
-            _viewModel = new MainViewModel(chooseWorkspace ?? ChooseWorkspace);
+            _viewModel = new MainViewModel(
+                chooseWorkspace ?? ChooseWorkspace,
+                new ArchiveDialogs
+                {
+                    ConfirmExport = ConfirmExport,
+                    ChooseExportParent = () => ChooseFolder("Choose where the new archive folder goes"),
+                    ChooseArchiveFolder = () => ChooseFolder("Choose an archive folder to check"),
+                    OpenFolder = OpenFolder,
+                },
+                new ArchiveOperations());
+
             DataContext = _viewModel;
 
             _viewModel.MovedToPage += OnMovedToPage;
@@ -56,6 +71,75 @@ namespace Chatcheology.Desktop
             };
 
             return dialog.ShowDialog(this) == true ? dialog.FileName : null;
+        }
+
+        /// <remarks>
+        /// Counts and who is "me", nothing else (CH-18). Cancel is the default, so a stray Enter
+        /// exports nothing.
+        /// </remarks>
+        private bool ConfirmExport(ArchiveExportConfirmation confirmation) =>
+            MessageBox.Show(
+                this,
+                confirmation.Text,
+                "Export archive",
+                MessageBoxButton.OKCancel,
+                MessageBoxImage.Question,
+                MessageBoxResult.Cancel) == MessageBoxResult.OK;
+
+        /// <remarks>
+        /// No initial directory and no remembered location, as for the workspace.
+        /// </remarks>
+        private string? ChooseFolder(string title)
+        {
+            var dialog = new OpenFolderDialog
+            {
+                Title = title,
+                Multiselect = false,
+            };
+
+            return dialog.ShowDialog(this) == true ? dialog.FolderName : null;
+        }
+
+        /// <remarks>
+        /// Hands the folder to the shell, which opens it in Explorer. Nothing is recorded.
+        /// </remarks>
+        private static bool OpenFolder(string path)
+        {
+            try
+            {
+                using var process = Process.Start(new ProcessStartInfo
+                {
+                    FileName = path,
+                    UseShellExecute = true,
+                });
+
+                return true;
+            }
+            catch (Exception exception) when (
+                exception is Win32Exception or InvalidOperationException or FileNotFoundException)
+            {
+                return false;
+            }
+        }
+
+        /// <remarks>
+        /// An export left running when the process ends would leave its partial folder behind, so
+        /// the window does not close under one: it asks the export to stop and stays open until the
+        /// operator closes it again.
+        /// </remarks>
+        protected override void OnClosing(CancelEventArgs e)
+        {
+            if (_viewModel.Archive.IsRunning)
+            {
+                e.Cancel = true;
+
+                _viewModel.Archive.CancelCommand.Execute(null);
+                _viewModel.ReportStatus(
+                    "An archive export or check is still running. It has been asked to stop where it " +
+                    "can; close the window again once it has finished.");
+            }
+
+            base.OnClosing(e);
         }
 
         /// <remarks>

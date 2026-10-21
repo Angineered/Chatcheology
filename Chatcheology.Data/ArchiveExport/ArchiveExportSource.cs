@@ -90,19 +90,32 @@ namespace Chatcheology.Data.ArchiveExport
         /// The workspace, conversation or participant is unsuitable. Nothing was written.
         /// </exception>
         internal static ArchiveExportSource Read(
-            ArchiveExportRequest request, int pageSize, IProgress<ArchiveExportProgress>? progress) =>
-            Read(request.WorkspacePath, request.ConversationID, request.LocalParticipantID, pageSize, progress);
+            ArchiveExportRequest request,
+            int pageSize,
+            IProgress<ArchiveExportProgress>? progress,
+            CancellationToken cancellationToken) =>
+            Read(
+                request.WorkspacePath,
+                request.ConversationID,
+                request.LocalParticipantID,
+                pageSize,
+                progress,
+                cancellationToken);
 
         /// <summary>Reads the conversation; the refusals name the options as an export request does.</summary>
         /// <exception cref="ArchiveExportRefusedException">
         /// The workspace, conversation or participant is unsuitable. Nothing was written.
+        /// </exception>
+        /// <exception cref="OperationCanceledException">
+        /// Cancelled between pages or between attachments. Reading writes nothing, so nothing is left.
         /// </exception>
         internal static ArchiveExportSource Read(
             string workspacePath,
             long conversationID,
             long localParticipantID,
             int pageSize,
-            IProgress<ArchiveExportProgress>? progress)
+            IProgress<ArchiveExportProgress>? progress,
+            CancellationToken cancellationToken)
         {
             if (!File.Exists(workspacePath))
             {
@@ -135,7 +148,8 @@ namespace Chatcheology.Data.ArchiveExport
                         "The LocalParticipantID is not a participant of the conversation. Nothing was written.");
                 }
 
-                var messages = ReadMessages(connection, conversationReader, summary, pageSize, progress);
+                var messages = ReadMessages(
+                    connection, conversationReader, summary, pageSize, progress, cancellationToken);
 
                 if (messages.Count != summary.MessageCount)
                 {
@@ -145,7 +159,7 @@ namespace Chatcheology.Data.ArchiveExport
                 }
 
                 var attachmentIDs = messages.SelectMany(m => m.Attachments).Select(a => a.AttachmentID).ToList();
-                var states = ReadStates(connection, attachmentIDs);
+                var states = ReadStates(connection, attachmentIDs, cancellationToken);
 
                 var resolved = states.Values
                     .Where(s => s.Status == Phase7ResolutionStatus.Resolved)
@@ -168,7 +182,7 @@ namespace Chatcheology.Data.ArchiveExport
                     .GroupBy(l => l.MediaAssetID)
                     .ToDictionary(g => g.Key, g => (IReadOnlyList<MediaAssetLocation>)g.ToList());
 
-                var basis = ReadBasis(connection, resolved);
+                var basis = ReadBasis(connection, resolved, cancellationToken);
                 var facts = new MsgstoreFactReader().Read(connection, attachmentIDs);
 
                 var messageFacts = new MessageMsgstoreFactReader()
@@ -358,13 +372,16 @@ namespace Chatcheology.Data.ArchiveExport
             ConversationReader reader,
             ConversationSummary summary,
             int pageSize,
-            IProgress<ArchiveExportProgress>? progress)
+            IProgress<ArchiveExportProgress>? progress,
+            CancellationToken cancellationToken)
         {
             var messages = new List<ConversationMessage>(summary.MessageCount);
             var page = reader.ReadFirstPage(connection, summary.ConversationID, pageSize);
 
             while (true)
             {
+                cancellationToken.ThrowIfCancellationRequested();
+
                 messages.AddRange(page.Messages);
                 progress?.Report(new ArchiveExportProgress(
                     ArchiveExportStage.ReadingMessages, messages.Count, summary.MessageCount));
@@ -379,13 +396,15 @@ namespace Chatcheology.Data.ArchiveExport
         }
 
         private static Dictionary<long, Phase7ReconstructionState> ReadStates(
-            SqliteConnection connection, List<long> attachmentIDs)
+            SqliteConnection connection, List<long> attachmentIDs, CancellationToken cancellationToken)
         {
             var reader = new Phase7ReconstructionReader();
             var states = new Dictionary<long, Phase7ReconstructionState>(attachmentIDs.Count);
 
             for (var offset = 0; offset < attachmentIDs.Count; offset += ChunkSize)
             {
+                cancellationToken.ThrowIfCancellationRequested();
+
                 foreach (var state in reader.Read(connection, attachmentIDs.Skip(offset).Take(ChunkSize).ToList()))
                 {
                     states.Add(state.AttachmentID, state);
@@ -400,13 +419,17 @@ namespace Chatcheology.Data.ArchiveExport
         /// must be a confirmation of the very asset the projection records.
         /// </summary>
         private static Dictionary<long, Phase7ResolutionHistoryEntry> ReadBasis(
-            SqliteConnection connection, IReadOnlyList<Phase7ReconstructionState> resolved)
+            SqliteConnection connection,
+            IReadOnlyList<Phase7ReconstructionState> resolved,
+            CancellationToken cancellationToken)
         {
             var reader = new Phase7ResolutionHistoryReader();
             var basis = new Dictionary<long, Phase7ResolutionHistoryEntry>(resolved.Count);
 
             foreach (var state in resolved)
             {
+                cancellationToken.ThrowIfCancellationRequested();
+
                 var projection = reader.ReplayProjection(connection, state.AttachmentID);
 
                 var current = projection.CurrentEffectiveEventID is { } eventID

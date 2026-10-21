@@ -276,6 +276,90 @@
                           ToolTip="Session only. Nothing is written to the workspace."
                           Visibility="{Binding HasLowQualityCopies,
                               Converter={StaticResource BoolToVisibility}}" />
+
+                <!-- Portable archive (CH-18). Export takes the selected conversation; Validate
+                     checks any archive folder, and compares it when a conversation is open. -->
+                <Button Content="Export archive…" Padding="10,3" Margin="16,0,0,0"
+                        DockPanel.Dock="Left" Command="{Binding ExportArchiveCommand}"
+                        ToolTip="Export the selected conversation to a new archive folder." />
+
+                <Button Content="Validate archive…" Padding="10,3" Margin="8,0,0,0"
+                        DockPanel.Dock="Left" Command="{Binding ValidateArchiveCommand}"
+                        ToolTip="Check an archive folder. Nothing is written." />
+            </DockPanel>
+        </Border>
+
+        <!-- Archive panel: progress while an export or check runs, then its summary. Counts and
+             check outcomes only; never message text, names or paths. -->
+        <Border DockPanel.Dock="Top" Background="#FFF7F6F3" BorderBrush="#FFCFC8BC"
+                BorderThickness="0,0,0,1" Padding="10,8"
+                Visibility="{Binding Archive.IsOpen, Converter={StaticResource BoolToVisibility}}">
+            <DockPanel>
+                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Top">
+                    <Button Content="Cancel export" Padding="10,3" Margin="8,0,0,0"
+                            Command="{Binding Archive.CancelCommand}"
+                            Visibility="{Binding Archive.IsRunning,
+                                Converter={StaticResource BoolToVisibility}}" />
+                    <Button Content="Open folder" Padding="10,3" Margin="8,0,0,0"
+                            Command="{Binding Archive.OpenFolderCommand}"
+                            Visibility="{Binding Archive.CanOpenFolder,
+                                Converter={StaticResource BoolToVisibility}}" />
+                    <Button Content="Close" Padding="10,3" Margin="8,0,0,0"
+                            Command="{Binding Archive.CloseCommand}"
+                            Visibility="{Binding Archive.IsFinished,
+                                Converter={StaticResource BoolToVisibility}}" />
+                </StackPanel>
+
+                <StackPanel>
+                    <TextBlock Text="{Binding Archive.HeadlineText}" FontWeight="SemiBold"
+                               TextWrapping="Wrap">
+                        <TextBlock.Style>
+                            <Style TargetType="TextBlock">
+                                <Setter Property="Foreground" Value="#FF3C3C3C" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding Archive.Outcome}" Value="Passed">
+                                        <Setter Property="Foreground" Value="#FF1F6B4F" />
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding Archive.Outcome}"
+                                                 Value="PassedNotCompared">
+                                        <Setter Property="Foreground" Value="#FF7A6A2E" />
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding Archive.Outcome}" Value="Failed">
+                                        <Setter Property="Foreground" Value="#FF8A2727" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
+
+                    <StackPanel Margin="0,4,0,0"
+                                Visibility="{Binding Archive.IsRunning,
+                                    Converter={StaticResource BoolToVisibility}}">
+                        <TextBlock Text="{Binding Archive.ProgressText}" FontSize="11"
+                                   Foreground="#FF5A5A5A" />
+                        <ProgressBar Height="8" Width="360" Margin="0,3,0,0"
+                                     HorizontalAlignment="Left"
+                                     Minimum="0" Maximum="{Binding Archive.ProgressMaximum}"
+                                     Value="{Binding Archive.ProgressValue, Mode=OneWay}"
+                                     IsIndeterminate="{Binding Archive.IsProgressIndeterminate}" />
+                    </StackPanel>
+
+                    <ItemsControl ItemsSource="{Binding Archive.Lines}" Margin="0,4,0,0">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <TextBlock Text="{Binding}" FontSize="11" Foreground="#FF3C3C3C"
+                                           TextWrapping="Wrap" Margin="0,1,0,0" />
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+
+                    <!-- Selectable, so the hash can be copied and compared elsewhere. -->
+                    <TextBox Text="{Binding Archive.ContentsHashText, Mode=OneWay}" IsReadOnly="True"
+                             BorderThickness="0" Background="Transparent" Padding="0"
+                             Margin="0,4,0,0" FontFamily="Consolas" FontSize="11"
+                             Visibility="{Binding Archive.HasContentsHash,
+                                 Converter={StaticResource BoolToVisibility}}" />
+                </StackPanel>
             </DockPanel>
         </Border>
 
