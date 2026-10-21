@@ -236,10 +236,11 @@
     </Window.Resources>
 
     <DockPanel>
-        <!-- Toolbar -->
+        <!-- Toolbar. A WrapPanel, so items that do not fit the window's width move to a second
+             row instead of being clipped off the right edge (CH-18: the archive buttons are last). -->
         <Border DockPanel.Dock="Top" Background="#FFE7E2D9" BorderBrush="#FFCFC8BC"
                 BorderThickness="0,0,0,1" Padding="8,6">
-            <DockPanel LastChildFill="False">
+            <WrapPanel Orientation="Horizontal">
                 <TextBlock Text="Chatcheology" FontWeight="Bold" FontSize="14"
                            VerticalAlignment="Center" Margin="0,0,16,0" DockPanel.Dock="Left" />
 
@@ -286,7 +287,7 @@
                 <Button Content="Validate archive…" Padding="10,3" Margin="8,0,0,0"
                         DockPanel.Dock="Left" Command="{Binding ValidateArchiveCommand}"
                         ToolTip="Check an archive folder. Nothing is written." />
-            </DockPanel>
+            </WrapPanel>
         </Border>
 
         <!-- Archive panel: progress while an export or check runs, then its summary. Counts and
