@@ -435,7 +435,7 @@ namespace Chatcheology.Data.Tests.ArchiveExport
         [InlineData("3000000000")]
         [InlineData("0")]
         [InlineData("-1")]
-        public void AnArchiveWithAnUnusableSequenceNumber_IsRefused_WithoutHanging(string value)
+        public async Task AnArchiveWithAnUnusableSequenceNumber_IsRefused_WithoutHanging(string value)
         {
             var scenario = BuildAndExport();
 
@@ -445,7 +445,7 @@ namespace Chatcheology.Data.Tests.ArchiveExport
 
             // On another thread, so a comparison that never returns fails the test instead of hanging it.
             var task = Task.Run(() => Compare(scenario.Output));
-            var finished = Task.WhenAny(task, Task.Delay(TimeSpan.FromSeconds(30))).GetAwaiter().GetResult() == task;
+            var finished = await Task.WhenAny(task, Task.Delay(TimeSpan.FromSeconds(30))) == task;
 
             Assert.True(finished, "The comparison did not finish.");
 

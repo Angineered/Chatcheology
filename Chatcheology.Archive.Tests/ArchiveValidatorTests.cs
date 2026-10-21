@@ -373,13 +373,14 @@ namespace Chatcheology.Archive.Tests
         // ---------------------------------------------------------------------------------------
 
         /// <summary>Validates on another thread and fails the test, rather than hanging it, if it never returns.</summary>
-        private static ArchiveValidationResult ValidateWithin(string folder)
+        private static async Task<ArchiveValidationResult> ValidateWithinAsync(string folder)
         {
             var task = Task.Run(() => ArchiveValidator.Validate(folder));
 
-            Assert.True(task.Wait(TimeSpan.FromSeconds(30)), "The validator did not finish.");
+            Assert.True(
+                await Task.WhenAny(task, Task.Delay(TimeSpan.FromSeconds(30))) == task, "The validator did not finish.");
 
-            return task.Result;
+            return await task;
         }
 
         private static void AssertRowChecksNotRun(ArchiveValidationResult result)
@@ -398,12 +399,12 @@ namespace Chatcheology.Archive.Tests
         [InlineData("3000000000")]
         [InlineData("0")]
         [InlineData("-1")]
-        public void ASequenceNumberThatIsNotAWholeNumberFromOne_FailsSequence_WithoutHanging(string value)
+        public async Task ASequenceNumberThatIsNotAWholeNumberFromOne_FailsSequence_WithoutHanging(string value)
         {
             TamperAndRelist(
                 $"PRAGMA ignore_check_constraints = ON; UPDATE Message SET SequenceNumber = {value} WHERE MessageID = 106;");
 
-            var result = ValidateWithin(_folder.Path);
+            var result = await ValidateWithinAsync(_folder.Path);
 
             AssertRowChecksNotRun(result);
             Assert.Equal(1, result.ProblemCounts[ArchiveProblemKind.SequenceNumberInvalid]);
@@ -419,11 +420,11 @@ namespace Chatcheology.Archive.Tests
         [InlineData("UPDATE Message SET Text = X'01' WHERE MessageID = 101;")]
         [InlineData("UPDATE Participant SET DisplayName = X'02' WHERE ParticipantID = 2;")]
         [InlineData("UPDATE ArchiveInfo SET Key = NULL WHERE Key = 'TimeZoneID';")]
-        public void AValueOfTheWrongKindOrSize_FailsDatabase_InsteadOfThrowing(string sql)
+        public async Task AValueOfTheWrongKindOrSize_FailsDatabase_InsteadOfThrowing(string sql)
         {
             TamperAndRelist(sql);
 
-            var result = ValidateWithin(_folder.Path);
+            var result = await ValidateWithinAsync(_folder.Path);
 
             AssertRowChecksNotRun(result);
             Assert.Equal(1, result.ProblemCounts[ArchiveProblemKind.DatabaseUnreadable]);
@@ -451,7 +452,7 @@ namespace Chatcheology.Archive.Tests
         }
 
         [Fact]
-        public void AFileThatCannotBeRead_IsAProblem_NotAnException()
+        public async Task AFileThatCannotBeRead_IsAProblem_NotAnException()
         {
             var path = MediaPath(ArchiveSample.BetaSha, ArchiveSample.BetaName);
 
@@ -459,7 +460,7 @@ namespace Chatcheology.Archive.Tests
 
             using (new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.None))
             {
-                result = ValidateWithin(_folder.Path);
+                result = await ValidateWithinAsync(_folder.Path);
             }
 
             Assert.False(result.Passed);
