@@ -155,8 +155,27 @@ namespace Chatcheology.Archive.Tests
             Attachments = message.Attachments,
         };
 
+        /// <summary>
+        /// The sample's messages numbered 1..n with no gap, as an exported archive is, for the
+        /// validator's self-check.
+        /// </summary>
+        internal static IReadOnlyList<ArchiveMessage> GaplessMessages =>
+            Messages.Select((message, index) => new ArchiveMessage
+            {
+                MessageID = message.MessageID,
+                SequenceNumber = index + 1,
+                DateTimeLocal = message.DateTimeLocal,
+                Kind = message.Kind,
+                SenderParticipantID = message.SenderParticipantID,
+                Text = message.Text,
+                IsForwarded = message.IsForwarded,
+                ForwardScore = message.ForwardScore,
+                Attachments = message.Attachments,
+            }).ToList();
+
         /// <summary>Writes <c>archive.db</c> only, into <paramref name="folder"/>.</summary>
-        internal static ArchiveCounts WriteDatabase(string folder, int formatVersion = ArchiveFormat.FormatVersion)
+        internal static ArchiveCounts WriteDatabase(
+            string folder, int formatVersion = ArchiveFormat.FormatVersion, bool gapless = false)
         {
             using var writer = ArchiveWriter.Create(
                 System.IO.Path.Combine(folder, ArchiveFormat.DatabaseFileName), Info(formatVersion));
@@ -171,7 +190,7 @@ namespace Chatcheology.Archive.Tests
                 writer.WriteMedia(media);
             }
 
-            foreach (var message in Messages)
+            foreach (var message in gapless ? GaplessMessages : Messages)
             {
                 writer.WriteMessage(message);
             }
@@ -180,9 +199,9 @@ namespace Chatcheology.Archive.Tests
         }
 
         /// <summary>Writes a whole archive folder: database, media, manifest and contents list.</summary>
-        internal static void WriteFolder(string folder)
+        internal static void WriteFolder(string folder, bool gapless = false)
         {
-            var counts = WriteDatabase(folder);
+            var counts = WriteDatabase(folder, gapless: gapless);
 
             var media = System.IO.Path.Combine(folder, ArchiveFormat.MediaFolderName);
             Directory.CreateDirectory(media);

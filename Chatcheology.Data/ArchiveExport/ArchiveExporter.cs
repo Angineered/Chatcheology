@@ -3,8 +3,6 @@ using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
 using Chatcheology.Archive;
-using Chatcheology.Core.Models;
-using Chatcheology.Data.Phase7;
 using Chatcheology.Data.Viewer;
 using Microsoft.Data.Sqlite;
 
@@ -265,98 +263,26 @@ namespace Chatcheology.Data.ArchiveExport
                 LocalParticipantID = request.LocalParticipantID,
             };
 
-            var inConversation = source.States.Keys.ToHashSet();
             var linksOutside = 0;
 
             using var writer = ArchiveWriter.Create(Path.Combine(partial, ArchiveFormat.DatabaseFileName), info);
 
-            foreach (var participant in source.Participants)
+            foreach (var participant in source.ToArchiveParticipants(request.LocalParticipantID))
             {
-                writer.WriteParticipant(new ArchiveParticipant
-                {
-                    ParticipantID = participant.ParticipantID,
-                    DisplayName = participant.DisplayName,
-                    IsLocal = participant.ParticipantID == request.LocalParticipantID,
-                });
+                writer.WriteParticipant(participant);
             }
 
-            var assets = source.States.Values
-                .Where(s => s.Status == Phase7ResolutionStatus.Resolved)
-                .Select(s => s.ResolvedAsset!)
-                .DistinctBy(a => a.MediaAssetID)
-                .OrderBy(a => a.MediaAssetID);
-
-            foreach (var asset in assets)
+            foreach (var media in source.ToArchiveMedia())
             {
-                writer.WriteMedia(new ArchiveMedia
-                {
-                    Sha256 = source.AssetSha256[asset.MediaAssetID],
-                    MediaType = asset.MediaType,
-                    SizeBytes = asset.SizeBytes,
-                    DurationMS = asset.DurationMS,
-                    Width = asset.Width,
-                    Height = asset.Height,
-                });
+                writer.WriteMedia(media);
             }
 
             var written = 0;
 
             foreach (var message in source.Messages)
             {
-                var attachments = new List<ArchiveAttachment>(message.Attachments.Count);
-
-                foreach (var position in message.Attachments)
-                {
-                    var state = source.States[position.AttachmentID];
-                    source.Facts.Facts.TryGetValue(position.AttachmentID, out var fact);
-
-                    var lowQualityOf = fact?.LowQualityCopyOfAttachmentID;
-
-                    // A link to a full copy outside this conversation cannot point at a row of the
-                    // archive. It is left out (null: no link known) and counted.
-                    if (lowQualityOf is { } target && !inConversation.Contains(target))
-                    {
-                        lowQualityOf = null;
-                        linksOutside++;
-                    }
-
-                    attachments.Add(state.Status == Phase7ResolutionStatus.Resolved
-                        ? Restored(source, message.MessageID, position, state, originalFileNames, fact, lowQualityOf)
-                        : new ArchiveAttachment
-                        {
-                            AttachmentID = position.AttachmentID,
-                            MessageID = message.MessageID,
-                            Ordinal = position.Ordinal,
-                            State = ArchiveExportSource.IsMissing(state)
-                                ? ArchiveAttachmentState.Missing
-                                : ArchiveAttachmentState.Unmatched,
-                            MediaSha256 = null,
-                            OriginalFileName = null,
-                            IsForwarded = fact?.IsForwarded,
-                            ForwardScore = fact?.ForwardScore,
-                            LowQualityCopyOfAttachmentID = lowQualityOf,
-                            Basis = null,
-                        });
-                }
-
-                source.MessageFacts.TryGetValue(message.MessageID, out var messageFact);
-
-                writer.WriteMessage(new ArchiveMessage
-                {
-                    MessageID = message.MessageID,
-                    SequenceNumber = message.SequenceNumber,
-                    DateTimeLocal = message.MessageDateTimeLocal,
-                    Kind = message.MessageType == MessageType.System ? ArchiveMessageKind.System : ArchiveMessageKind.User,
-                    SenderParticipantID = message.SenderParticipantID,
-                    Text = message.MessageContent,
-
-                    // From the message's msgstore fact (CH-22). No row: null, "not known", never
-                    // "not forwarded".
-                    IsForwarded = messageFact?.IsForwarded,
-                    ForwardScore = messageFact?.ForwardScore,
-
-                    Attachments = attachments,
-                });
+                writer.WriteMessage(
+                    source.ToArchiveMessage(message, assetID => originalFileNames[assetID], ref linksOutside));
 
                 written++;
 
@@ -369,50 +295,6 @@ namespace Chatcheology.Data.ArchiveExport
 
             return (writer.Complete(), linksOutside);
         }
-
-        private static ArchiveAttachment Restored(
-            ArchiveExportSource source,
-            long messageID,
-            ConversationAttachment position,
-            Phase7ReconstructionState state,
-            IReadOnlyDictionary<long, string> originalFileNames,
-            MsgstoreFacts.AttachmentMsgstoreFact? fact,
-            long? lowQualityOf)
-        {
-            var assetID = state.ResolvedAsset!.MediaAssetID;
-            var basis = source.Basis[position.AttachmentID];
-
-            return new ArchiveAttachment
-            {
-                AttachmentID = position.AttachmentID,
-                MessageID = messageID,
-                Ordinal = position.Ordinal,
-                State = ArchiveAttachmentState.Restored,
-                MediaSha256 = source.AssetSha256[assetID],
-                OriginalFileName = originalFileNames[assetID],
-                IsForwarded = fact?.IsForwarded,
-                ForwardScore = fact?.ForwardScore,
-                LowQualityCopyOfAttachmentID = lowQualityOf,
-                Basis = new ArchiveAttachmentBasis
-                {
-                    BasisType = BasisTypeText(basis.IndependentBasisType!.Value),
-                    BasisText = basis.IndependentBasisDescription!,
-                    Actor = basis.ActorLabel,
-                    ConfirmedUtc = basis.OccurredAtUtc,
-                },
-            };
-        }
-
-        /// <summary>
-        /// The archive's spelling of a basis type: the workspace's own names, mapped explicitly so a
-        /// renamed enum member cannot silently change what an archive says.
-        /// </summary>
-        internal static string BasisTypeText(Phase7IndependentBasisType type) => type switch
-        {
-            Phase7IndependentBasisType.HumanContentOrContextInspection => "HumanContentOrContextInspection",
-            Phase7IndependentBasisType.ExternalProvenanceOrGroundTruth => "ExternalProvenanceOrGroundTruth",
-            _ => throw new ArgumentOutOfRangeException(nameof(type), type, "Not a basis type the archive knows."),
-        };
 
         // -------------------------------------------------------------------------------------
         // Media.

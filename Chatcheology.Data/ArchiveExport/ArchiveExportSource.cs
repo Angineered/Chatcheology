@@ -1,4 +1,6 @@
 using System.Globalization;
+using Chatcheology.Archive;
+using Chatcheology.Core.Models;
 using Chatcheology.Data.MsgstoreFacts;
 using Chatcheology.Data.Phase7;
 using Chatcheology.Data.Viewer;
@@ -23,6 +25,10 @@ namespace Chatcheology.Data.ArchiveExport
     /// <para>Two small read-only queries of its own, because no reader exposes these on purpose:
     /// <c>MediaAsset.SHA256</c> of the resolved payloads (the same query the CH-14 backup uses), and
     /// the import source's recorded export hash and time zone.</para>
+    /// <para><strong>One owner for the archive's rows.</strong> <see cref="ToArchiveParticipants"/>,
+    /// <see cref="ToArchiveMedia"/> and <see cref="ToArchiveMessage"/> turn what was read into the rows an
+    /// archive holds. The exporter writes them and <see cref="ArchiveWorkspaceComparer"/> compares an
+    /// archive against them, so the two cannot come to disagree about what the workspace says.</para>
     /// </remarks>
     internal sealed class ArchiveExportSource
     {
@@ -84,16 +90,28 @@ namespace Chatcheology.Data.ArchiveExport
         /// The workspace, conversation or participant is unsuitable. Nothing was written.
         /// </exception>
         internal static ArchiveExportSource Read(
-            ArchiveExportRequest request, int pageSize, IProgress<ArchiveExportProgress>? progress)
+            ArchiveExportRequest request, int pageSize, IProgress<ArchiveExportProgress>? progress) =>
+            Read(request.WorkspacePath, request.ConversationID, request.LocalParticipantID, pageSize, progress);
+
+        /// <summary>Reads the conversation; the refusals name the options as an export request does.</summary>
+        /// <exception cref="ArchiveExportRefusedException">
+        /// The workspace, conversation or participant is unsuitable. Nothing was written.
+        /// </exception>
+        internal static ArchiveExportSource Read(
+            string workspacePath,
+            long conversationID,
+            long localParticipantID,
+            int pageSize,
+            IProgress<ArchiveExportProgress>? progress)
         {
-            if (!File.Exists(request.WorkspacePath))
+            if (!File.Exists(workspacePath))
             {
                 throw new ArchiveExportRefusedException("There is no file at the WorkspacePath. Nothing was written.");
             }
 
             try
             {
-                using var connection = WorkspaceDatabase.OpenReadOnlyConnection(request.WorkspacePath);
+                using var connection = WorkspaceDatabase.OpenReadOnlyConnection(workspacePath);
 
                 var version = WorkspaceDatabase.ReadSchemaVersion(connection);
 
@@ -107,11 +125,11 @@ namespace Chatcheology.Data.ArchiveExport
                 var conversationReader = new ConversationReader();
 
                 var summary = conversationReader.ReadConversations(connection)
-                    .SingleOrDefault(c => c.ConversationID == request.ConversationID)
+                    .SingleOrDefault(c => c.ConversationID == conversationID)
                     ?? throw new ArchiveExportRefusedException(
                         "The ConversationID names no conversation in this workspace. Nothing was written.");
 
-                if (summary.Participants.All(p => p.ParticipantID != request.LocalParticipantID))
+                if (summary.Participants.All(p => p.ParticipantID != localParticipantID))
                 {
                     throw new ArchiveExportRefusedException(
                         "The LocalParticipantID is not a participant of the conversation. Nothing was written.");
@@ -135,7 +153,7 @@ namespace Chatcheology.Data.ArchiveExport
                     .ToList();
 
                 var assetIDs = resolved.Select(s => s.ResolvedAsset!.MediaAssetID).Distinct().Order().ToList();
-                var hashes = AssetHashes(connection, request.ConversationID);
+                var hashes = AssetHashes(connection, conversationID);
 
                 if (hashes.Count != assetIDs.Count
                     || assetIDs.Any(id => !hashes.ContainsKey(id))
@@ -155,7 +173,7 @@ namespace Chatcheology.Data.ArchiveExport
 
                 var messageFacts = new MessageMsgstoreFactReader()
                     .Read(connection, messages.Select(m => m.MessageID).ToList());
-                var (exportSha, timeZone) = ImportSource(connection, request.ConversationID);
+                var (exportSha, timeZone) = ImportSource(connection, conversationID);
 
                 return new ArchiveExportSource
                 {
@@ -192,6 +210,148 @@ namespace Chatcheology.Data.ArchiveExport
                 SqliteConnection.ClearAllPools();
             }
         }
+
+        // -------------------------------------------------------------------------------------
+        // The archive's rows.
+        // -------------------------------------------------------------------------------------
+
+        /// <summary>Every participant, ordered by identifier, with the local one marked.</summary>
+        internal IEnumerable<ArchiveParticipant> ToArchiveParticipants(long localParticipantID) =>
+            Participants.Select(participant => new ArchiveParticipant
+            {
+                ParticipantID = participant.ParticipantID,
+                DisplayName = participant.DisplayName,
+                IsLocal = participant.ParticipantID == localParticipantID,
+            });
+
+        /// <summary>Every resolved payload once, ordered by asset, as the workspace describes it.</summary>
+        internal IEnumerable<ArchiveMedia> ToArchiveMedia() =>
+            States.Values
+                .Where(s => s.Status == Phase7ResolutionStatus.Resolved)
+                .Select(s => s.ResolvedAsset!)
+                .DistinctBy(a => a.MediaAssetID)
+                .OrderBy(a => a.MediaAssetID)
+                .Select(asset => new ArchiveMedia
+                {
+                    Sha256 = AssetSha256[asset.MediaAssetID],
+                    MediaType = asset.MediaType,
+                    SizeBytes = asset.SizeBytes,
+                    DurationMS = asset.DurationMS,
+                    Width = asset.Width,
+                    Height = asset.Height,
+                });
+
+        /// <summary>One message as the archive holds it, with its attachments.</summary>
+        /// <param name="message">One of <see cref="Messages"/>.</param>
+        /// <param name="originalFileName">
+        /// The file name of the copy a resolved asset was taken from. The exporter knows it once the
+        /// media are copied; a comparison, which copies nothing, passes <see langword="null"/>s and
+        /// leaves the name out of what it compares.
+        /// </param>
+        /// <param name="linksOutside">Increased by each low-quality link left out.</param>
+        internal ArchiveMessage ToArchiveMessage(
+            ConversationMessage message, Func<long, string?> originalFileName, ref int linksOutside)
+        {
+            var attachments = new List<ArchiveAttachment>(message.Attachments.Count);
+
+            foreach (var position in message.Attachments)
+            {
+                var state = States[position.AttachmentID];
+                Facts.Facts.TryGetValue(position.AttachmentID, out var fact);
+
+                var lowQualityOf = fact?.LowQualityCopyOfAttachmentID;
+
+                // A link to a full copy outside this conversation cannot point at a row of the
+                // archive. It is left out (null: no link known) and counted.
+                if (lowQualityOf is { } target && !States.ContainsKey(target))
+                {
+                    lowQualityOf = null;
+                    linksOutside++;
+                }
+
+                attachments.Add(state.Status == Phase7ResolutionStatus.Resolved
+                    ? Restored(message.MessageID, position, state, originalFileName, fact, lowQualityOf)
+                    : new ArchiveAttachment
+                    {
+                        AttachmentID = position.AttachmentID,
+                        MessageID = message.MessageID,
+                        Ordinal = position.Ordinal,
+                        State = IsMissing(state) ? ArchiveAttachmentState.Missing : ArchiveAttachmentState.Unmatched,
+                        MediaSha256 = null,
+                        OriginalFileName = null,
+                        IsForwarded = fact?.IsForwarded,
+                        ForwardScore = fact?.ForwardScore,
+                        LowQualityCopyOfAttachmentID = lowQualityOf,
+                        Basis = null,
+                    });
+            }
+
+            MessageFacts.TryGetValue(message.MessageID, out var messageFact);
+
+            return new ArchiveMessage
+            {
+                MessageID = message.MessageID,
+                SequenceNumber = message.SequenceNumber,
+                DateTimeLocal = message.MessageDateTimeLocal,
+                Kind = message.MessageType == MessageType.System ? ArchiveMessageKind.System : ArchiveMessageKind.User,
+                SenderParticipantID = message.SenderParticipantID,
+                Text = message.MessageContent,
+
+                // From the message's msgstore fact (CH-22). No row: null, "not known", never
+                // "not forwarded".
+                IsForwarded = messageFact?.IsForwarded,
+                ForwardScore = messageFact?.ForwardScore,
+
+                Attachments = attachments,
+            };
+        }
+
+        private ArchiveAttachment Restored(
+            long messageID,
+            ConversationAttachment position,
+            Phase7ReconstructionState state,
+            Func<long, string?> originalFileName,
+            AttachmentMsgstoreFact? fact,
+            long? lowQualityOf)
+        {
+            var assetID = state.ResolvedAsset!.MediaAssetID;
+            var basis = Basis[position.AttachmentID];
+
+            return new ArchiveAttachment
+            {
+                AttachmentID = position.AttachmentID,
+                MessageID = messageID,
+                Ordinal = position.Ordinal,
+                State = ArchiveAttachmentState.Restored,
+                MediaSha256 = AssetSha256[assetID],
+                OriginalFileName = originalFileName(assetID),
+                IsForwarded = fact?.IsForwarded,
+                ForwardScore = fact?.ForwardScore,
+                LowQualityCopyOfAttachmentID = lowQualityOf,
+                Basis = new ArchiveAttachmentBasis
+                {
+                    BasisType = BasisTypeText(basis.IndependentBasisType!.Value),
+                    BasisText = basis.IndependentBasisDescription!,
+                    Actor = basis.ActorLabel,
+                    ConfirmedUtc = basis.OccurredAtUtc,
+                },
+            };
+        }
+
+        /// <summary>
+        /// The archive's spelling of a basis type: the workspace's own names, mapped explicitly so a
+        /// renamed enum member cannot silently change what an archive says.
+        /// </summary>
+        internal static string BasisTypeText(Phase7IndependentBasisType type) => type switch
+        {
+            Phase7IndependentBasisType.HumanContentOrContextInspection => "HumanContentOrContextInspection",
+            Phase7IndependentBasisType.ExternalProvenanceOrGroundTruth => "ExternalProvenanceOrGroundTruth",
+            _ => throw new ArgumentOutOfRangeException(nameof(type), type, "Not a basis type the archive knows."),
+        };
+
+        // -------------------------------------------------------------------------------------
+        // Reading.
+        // -------------------------------------------------------------------------------------
 
         private static List<ConversationMessage> ReadMessages(
             SqliteConnection connection,

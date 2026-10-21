@@ -282,6 +282,36 @@ namespace Chatcheology.Archive
         public void Dispose() => _connection.Dispose();
 
         // -------------------------------------------------------------------------------------
+        // Whole-table questions for ArchiveValidator, which a viewer never asks. Fixed SELECTs only.
+        // -------------------------------------------------------------------------------------
+
+        /// <summary>The first line of <c>PRAGMA integrity_check</c>: <c>ok</c> for a sound file.</summary>
+        internal string ReadIntegrityCheck() =>
+            Convert.ToString(Scalar(_connection, "PRAGMA integrity_check;"), CultureInfo.InvariantCulture) ?? "";
+
+        /// <summary>The one whole number a fixed <c>SELECT</c> returns.</summary>
+        internal long ReadCount(string sql) =>
+            Convert.ToInt64(Scalar(_connection, sql), CultureInfo.InvariantCulture);
+
+        /// <summary>The first column of every row a fixed <c>SELECT</c> returns, as identifiers.</summary>
+        internal IReadOnlyList<long> ReadIdentifiers(string sql)
+        {
+            using var command = _connection.CreateCommand();
+            command.CommandText = sql;
+
+            var values = new List<long>();
+
+            using var reader = command.ExecuteReader();
+
+            while (reader.Read())
+            {
+                values.Add(reader.GetInt64(0));
+            }
+
+            return values;
+        }
+
+        // -------------------------------------------------------------------------------------
         // Reading.
         // -------------------------------------------------------------------------------------
 
