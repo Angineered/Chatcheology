@@ -109,8 +109,7 @@ namespace Chatcheology.Android.Pages
                         {
                             Text = "Only days with messages can be chosen; months without any are skipped.",
                             FontSize = 13,
-                            TextColor = (Color)Application.Current!.Resources["MutedText"],
-                        },
+                        }.TextIn("MutedText"),
                     },
                 },
             };
@@ -159,12 +158,9 @@ namespace Chatcheology.Android.Pages
                 _grid.RowDefinitions.Add(new RowDefinition(GridLength.Auto));
             }
 
-            var muted = (Color)Application.Current!.Resources["MutedText"];
-            var primary = (Color)Application.Current!.Resources["Primary"];
-
             for (var column = 0; column < 7; column++)
             {
-                _grid.Add(new Label { Text = month.WeekdayNames[column], FontSize = 12, TextColor = muted, HorizontalTextAlignment = TextAlignment.Center }, column, 0);
+                _grid.Add(new Label { Text = month.WeekdayNames[column], FontSize = 12, HorizontalTextAlignment = TextAlignment.Center }.TextIn("MutedText"), column, 0);
             }
 
             for (var i = 0; i < month.Cells.Count; i++)
@@ -185,9 +181,8 @@ namespace Chatcheology.Android.Pages
                         Text = cell.Text,
                         Padding = 0,
                         HeightRequest = 44,
-                        BackgroundColor = primary,
                         TextColor = Colors.White,
-                    };
+                    }.Themed(VisualElement.BackgroundColorProperty, "Primary");
 
                     button.Clicked += async (_, _) =>
                     {
@@ -218,11 +213,10 @@ namespace Chatcheology.Android.Pages
                     {
                         Text = cell.Text,
                         HeightRequest = 44,
-                        TextColor = muted,
                         Opacity = 0.5,
                         HorizontalTextAlignment = TextAlignment.Center,
                         VerticalTextAlignment = TextAlignment.Center,
-                    };
+                    }.TextIn("MutedText");
                 }
 
                 _grid.Add(view, i % 7, 1 + i / 7);

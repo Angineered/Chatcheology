@@ -29,20 +29,16 @@ namespace Chatcheology.Android.Controls
         /// <summary>A card view, filled from its binding context.</summary>
         public AttachmentCardView()
         {
-            var resources = Application.Current!.Resources;
-            var muted = (Color)resources["MutedText"];
-
-            _heading.TextColor = muted;
-            _extra.TextColor = muted;
+            _heading.TextIn("MutedText");
+            _extra.TextIn("MutedText");
 
             _card = new Border
             {
-                BackgroundColor = (Color)resources["CardBackground"],
                 StrokeThickness = 0,
                 Padding = new Thickness(10, 8),
                 WidthRequest = ImageWidth,
                 Content = _heading,
-            };
+            }.Themed(BackgroundColorProperty, "CardBackground");
 
             _stack = new VerticalStackLayout { Spacing = 2 };
             Content = _stack;

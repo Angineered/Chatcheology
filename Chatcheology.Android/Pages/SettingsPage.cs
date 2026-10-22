@@ -25,9 +25,6 @@ namespace Chatcheology.Android.Pages
 
             Title = "Settings";
 
-            var resources = Application.Current!.Resources;
-            var muted = (Color)resources["MutedText"];
-
             _loading = true;
             _me.ItemsSource = _choices.Select(choice => choice.Label).ToList();
             _me.SelectedIndex = IndexOf(session.Me);
@@ -48,11 +45,11 @@ namespace Chatcheology.Android.Pages
                     Children =
                     {
                         Heading("Me"),
-                        new Label { Text = "Whose messages are shown on the right.", FontSize = 13, TextColor = muted },
+                        new Label { Text = "Whose messages are shown on the right.", FontSize = 13 }.TextIn("MutedText"),
                         _me,
 
                         Heading("Remove archive"),
-                        new Label { Text = "Deletes the app's copy of this archive. The folder you imported it from is not touched.", FontSize = 13, TextColor = muted },
+                        new Label { Text = "Deletes the app's copy of this archive. The folder you imported it from is not touched.", FontSize = 13 }.TextIn("MutedText"),
                         remove,
 
                         Heading("About"),
@@ -117,7 +114,7 @@ namespace Chatcheology.Android.Pages
             Spacing = 0,
             Children =
             {
-                new Label { Text = name, FontSize = 13, TextColor = (Color)Application.Current!.Resources["MutedText"] },
+                new Label { Text = name, FontSize = 13 }.TextIn("MutedText"),
                 new Label { Text = value, FontSize = 15 },
             },
         };

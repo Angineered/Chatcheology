@@ -11,14 +11,14 @@
              xmlns:pages="clr-namespace:Chatcheology.Android.Pages"
              xmlns:controls="clr-namespace:Chatcheology.Android.Controls"
              x:Class="Chatcheology.Android.Pages.ConversationPage"
-             BackgroundColor="{StaticResource ChatBackground}">
+             BackgroundColor="{AppThemeBinding Light={StaticResource ChatBackgroundLight}, Dark={StaticResource ChatBackgroundDark}}">
 
     <ContentPage.Resources>
         <DataTemplate x:Key="Separator" x:DataType="conv:DateSeparatorRow">
             <Grid Padding="0,8">
-                <Border HorizontalOptions="Center" BackgroundColor="{StaticResource SeparatorBackground}"
+                <Border HorizontalOptions="Center" BackgroundColor="{AppThemeBinding Light={StaticResource SeparatorBackgroundLight}, Dark={StaticResource SeparatorBackgroundDark}}"
                         StrokeThickness="0" Padding="10,4" StrokeShape="RoundRectangle 8">
-                    <Label Text="{Binding Text}" FontSize="12" TextColor="{StaticResource MutedText}" />
+                    <Label Text="{Binding Text}" FontSize="12" TextColor="{AppThemeBinding Light={StaticResource MutedTextLight}, Dark={StaticResource MutedTextDark}}" />
                 </Border>
             </Grid>
         </DataTemplate>
@@ -27,16 +27,16 @@
             <Grid Padding="8,2,56,2">
                 <Grid.Triggers>
                     <DataTrigger TargetType="Grid" Binding="{Binding IsHighlighted}" Value="True">
-                        <Setter Property="BackgroundColor" Value="{StaticResource Highlight}" />
+                        <Setter Property="BackgroundColor" Value="{AppThemeBinding Light={StaticResource HighlightLight}, Dark={StaticResource HighlightDark}}" />
                     </DataTrigger>
                 </Grid.Triggers>
-                <controls:MessageBubble HorizontalOptions="Start" BackgroundColor="{StaticResource BubbleTheirs}"
+                <controls:MessageBubble HorizontalOptions="Start" BackgroundColor="{AppThemeBinding Light={StaticResource BubbleTheirsLight}, Dark={StaticResource BubbleTheirsDark}}"
                                         StrokeThickness="0" Padding="8,6" StrokeShape="RoundRectangle 8">
                     <VerticalStackLayout Spacing="2">
                         <Label Text="{Binding SenderText}" FontSize="13" FontAttributes="Bold"
-                               TextColor="{StaticResource SenderText}" />
+                               TextColor="{AppThemeBinding Light={StaticResource SenderTextLight}, Dark={StaticResource SenderTextDark}}" />
                         <Label Text="{Binding ForwardedText}" IsVisible="{Binding IsForwarded}" FontSize="12"
-                               FontAttributes="Italic" TextColor="{StaticResource MutedText}" />
+                               FontAttributes="Italic" TextColor="{AppThemeBinding Light={StaticResource MutedTextLight}, Dark={StaticResource MutedTextDark}}" />
                         <VerticalStackLayout Spacing="4" BindableLayout.ItemsSource="{Binding ShownAttachments}">
                             <BindableLayout.ItemTemplate>
                                 <DataTemplate x:DataType="conv:AttachmentCard">
@@ -46,7 +46,7 @@
                         </VerticalStackLayout>
                         <controls:MessageText />
                         <Label Text="{Binding TimeText}" FontSize="11" HorizontalOptions="End"
-                               TextColor="{StaticResource MutedText}" />
+                               TextColor="{AppThemeBinding Light={StaticResource MutedTextLight}, Dark={StaticResource MutedTextDark}}" />
                     </VerticalStackLayout>
                 </controls:MessageBubble>
             </Grid>
@@ -56,14 +56,14 @@
             <Grid Padding="56,2,8,2">
                 <Grid.Triggers>
                     <DataTrigger TargetType="Grid" Binding="{Binding IsHighlighted}" Value="True">
-                        <Setter Property="BackgroundColor" Value="{StaticResource Highlight}" />
+                        <Setter Property="BackgroundColor" Value="{AppThemeBinding Light={StaticResource HighlightLight}, Dark={StaticResource HighlightDark}}" />
                     </DataTrigger>
                 </Grid.Triggers>
-                <controls:MessageBubble HorizontalOptions="End" BackgroundColor="{StaticResource BubbleMine}"
+                <controls:MessageBubble HorizontalOptions="End" BackgroundColor="{AppThemeBinding Light={StaticResource BubbleMineLight}, Dark={StaticResource BubbleMineDark}}"
                                         StrokeThickness="0" Padding="8,6" StrokeShape="RoundRectangle 8">
                     <VerticalStackLayout Spacing="2">
                         <Label Text="{Binding ForwardedText}" IsVisible="{Binding IsForwarded}" FontSize="12"
-                               FontAttributes="Italic" TextColor="{StaticResource MutedText}" />
+                               FontAttributes="Italic" TextColor="{AppThemeBinding Light={StaticResource MutedTextLight}, Dark={StaticResource MutedTextDark}}" />
                         <VerticalStackLayout Spacing="4" BindableLayout.ItemsSource="{Binding ShownAttachments}">
                             <BindableLayout.ItemTemplate>
                                 <DataTemplate x:DataType="conv:AttachmentCard">
@@ -73,7 +73,7 @@
                         </VerticalStackLayout>
                         <controls:MessageText />
                         <Label Text="{Binding TimeText}" FontSize="11" HorizontalOptions="End"
-                               TextColor="{StaticResource MutedText}" />
+                               TextColor="{AppThemeBinding Light={StaticResource MutedTextLight}, Dark={StaticResource MutedTextDark}}" />
                     </VerticalStackLayout>
                 </controls:MessageBubble>
             </Grid>
@@ -83,13 +83,13 @@
             <Grid Padding="32,4">
                 <Grid.Triggers>
                     <DataTrigger TargetType="Grid" Binding="{Binding IsHighlighted}" Value="True">
-                        <Setter Property="BackgroundColor" Value="{StaticResource Highlight}" />
+                        <Setter Property="BackgroundColor" Value="{AppThemeBinding Light={StaticResource HighlightLight}, Dark={StaticResource HighlightDark}}" />
                     </DataTrigger>
                 </Grid.Triggers>
-                <Border HorizontalOptions="Center" BackgroundColor="{StaticResource BubbleSystem}"
+                <Border HorizontalOptions="Center" BackgroundColor="{AppThemeBinding Light={StaticResource BubbleSystemLight}, Dark={StaticResource BubbleSystemDark}}"
                         StrokeThickness="0" Padding="10,4" StrokeShape="RoundRectangle 8">
                     <Label Text="{Binding Text}" FontSize="12" HorizontalTextAlignment="Center"
-                           TextColor="{StaticResource MutedText}" />
+                           TextColor="{AppThemeBinding Light={StaticResource MutedTextLight}, Dark={StaticResource MutedTextDark}}" />
                 </Border>
             </Grid>
         </DataTemplate>

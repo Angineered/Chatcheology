@@ -27,10 +27,7 @@ namespace Chatcheology.Android
 
         /// <inheritdoc />
         protected override Window CreateWindow(IActivationState? activationState) =>
-            new(new NavigationPage(new StartPage(_state))
-            {
-                BarBackgroundColor = (Color)Resources["Primary"],
-                BarTextColor = Colors.White,
-            });
+            new(new NavigationPage(new StartPage(_state)) { BarTextColor = Colors.White }
+                .Themed(NavigationPage.BarBackgroundColorProperty, "BarBackground"));
     }
 }

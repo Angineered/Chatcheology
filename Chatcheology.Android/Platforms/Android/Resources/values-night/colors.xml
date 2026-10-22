@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Dark mode (CH-41): the status bar and the system's own controls follow the phone's setting. -->
+<resources>
+    <color name="colorPrimary">#1F2C34</color>
+    <color name="colorPrimaryDark">#111B21</color>
+    <color name="colorAccent">#7FD1B9</color>
+</resources>

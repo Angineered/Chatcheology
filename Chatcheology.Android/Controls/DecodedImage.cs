@@ -54,7 +54,6 @@ namespace Chatcheology.Android.Controls
         {
             var context = Context;
             var frame = new FrameLayout(context);
-            frame.SetBackgroundColor(((Microsoft.Maui.Graphics.Color)Application.Current!.Resources["CardBackground"]).ToPlatform());
 
             _image = new ImageView(context);
             _image.SetScaleType(ImageView.ScaleType.CenterCrop);
@@ -66,18 +65,43 @@ namespace Chatcheology.Android.Controls
                 Gravity = GravityFlags.Center,
                 Visibility = ViewStates.Gone,
             };
-            _failed.SetTextColor(((Microsoft.Maui.Graphics.Color)Application.Current!.Resources["MutedText"]).ToPlatform());
             _failed.SetPadding(16, 16, 16, 16);
             frame.AddView(_failed, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, ViewGroup.LayoutParams.MatchParent));
+
+            Recolour(frame);
 
             return frame;
         }
 
+        protected override void ConnectHandler(FrameLayout platformView)
+        {
+            base.ConnectHandler(platformView);
+
+            if (Application.Current is { } app)
+            {
+                app.RequestedThemeChanged += OnThemeChanged;
+            }
+        }
+
         protected override void DisconnectHandler(FrameLayout platformView)
         {
+            if (Application.Current is { } app)
+            {
+                app.RequestedThemeChanged -= OnThemeChanged;
+            }
+
             _generation++;
             _image?.SetImageBitmap(null);
             base.DisconnectHandler(platformView);
+        }
+
+        /// <summary>The phone switched between light and dark (CH-41): the box and its text follow.</summary>
+        private void OnThemeChanged(object? sender, AppThemeChangedEventArgs e) => Recolour(PlatformView);
+
+        private void Recolour(FrameLayout? frame)
+        {
+            frame?.SetBackgroundColor(Palette.Current("CardBackground").ToPlatform());
+            _failed?.SetTextColor(Palette.Current("MutedText").ToPlatform());
         }
 
         private static void MapPath(DecodedImageHandler handler, DecodedImage view) => handler.Load(view.Path);

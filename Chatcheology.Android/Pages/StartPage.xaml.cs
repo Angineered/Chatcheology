@@ -94,7 +94,6 @@ namespace Chatcheology.Android.Pages
         /// <summary>One archive in the list: title, created date and message count; never a path.</summary>
         private View ArchiveItem(InstalledArchive archive)
         {
-            var resources = Application.Current!.Resources;
             var layout = new VerticalStackLayout { Spacing = 2 };
 
             if (archive.IsReadable)
@@ -106,8 +105,7 @@ namespace Chatcheology.Android.Pages
                 {
                     Text = $"Created {created} · {archive.MessageCount.ToString("N0", CultureInfo.CurrentCulture)} messages",
                     FontSize = 13,
-                    TextColor = (Color)resources["MutedText"],
-                });
+                }.TextIn("MutedText"));
             }
             else
             {
@@ -120,12 +118,11 @@ namespace Chatcheology.Android.Pages
 
             var item = new Border
             {
-                BackgroundColor = (Color)resources["CardBackground"],
                 StrokeThickness = 0,
                 Padding = new Thickness(12, 10),
                 StrokeShape = new Microsoft.Maui.Controls.Shapes.RoundRectangle { CornerRadius = 8 },
                 Content = layout,
-            };
+            }.Themed(VisualElement.BackgroundColorProperty, "CardBackground");
 
             if (archive.IsReadable)
             {
