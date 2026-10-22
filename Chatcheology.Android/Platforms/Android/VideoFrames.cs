@@ -63,12 +63,20 @@ namespace Chatcheology.Android
 
                 using (var retriever = new MediaMetadataRetriever())
                 {
-                    retriever.SetDataSource(videoPath);
+                    try
+                    {
+                        retriever.SetDataSource(videoPath);
 
-                    var duration = long.TryParse(retriever.ExtractMetadata(MetadataKey.Duration), out var ms) ? ms : 0;
-                    var at = duration > 1000 || duration == 0 ? 1_000_000L : duration * 500L;
+                        var duration = long.TryParse(retriever.ExtractMetadata(MetadataKey.Duration), out var ms) ? ms : 0;
+                        var at = duration > 1000 || duration == 0 ? 1_000_000L : duration * 500L;
 
-                    frame = retriever.GetFrameAtTime(at, Option.ClosestSync) ?? retriever.GetFrameAtTime(0, Option.ClosestSync);
+                        frame = retriever.GetFrameAtTime(at, Option.ClosestSync) ?? retriever.GetFrameAtTime(0, Option.ClosestSync);
+                    }
+                    finally
+                    {
+                        // Disposing the wrapper does not free the native retriever: release it explicitly.
+                        retriever.Release();
+                    }
                 }
 
                 if (frame is null || frame.Width <= 0 || frame.Height <= 0)

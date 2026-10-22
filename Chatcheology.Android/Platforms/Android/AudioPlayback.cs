@@ -17,6 +17,7 @@ namespace Chatcheology.Android
     {
         private static MediaPlayer? _player;
         private static IDispatcherTimer? _ticks;
+        private static bool _ready;
 
         /// <summary>Raised when the state or the position changes.</summary>
         internal static event EventHandler? Changed;
@@ -25,7 +26,7 @@ namespace Chatcheology.Android
         internal static AttachmentCard? Current { get; private set; }
 
         /// <summary>Whether <see cref="Current"/> is playing (not paused).</summary>
-        internal static bool IsPlaying => _player is { IsPlaying: true };
+        internal static bool IsPlaying => _ready && _player is { IsPlaying: true };
 
         /// <summary>How far <see cref="Current"/> has played, from 0 to 1.</summary>
         internal static double Progress
@@ -34,7 +35,7 @@ namespace Chatcheology.Android
             {
                 try
                 {
-                    return _player is { Duration: > 0 } player ? Math.Clamp((double)player.CurrentPosition / player.Duration, 0, 1) : 0;
+                    return _ready && _player is { Duration: > 0 } player ? Math.Clamp((double)player.CurrentPosition / player.Duration, 0, 1) : 0;
                 }
                 catch (Java.Lang.IllegalStateException)
                 {
@@ -53,6 +54,12 @@ namespace Chatcheology.Android
 
             if (ReferenceEquals(card, Current) && _player is { } player)
             {
+                if (!_ready)
+                {
+                    // Still being prepared: it starts by itself.
+                    return true;
+                }
+
                 if (player.IsPlaying)
                 {
                     player.Pause();
@@ -80,13 +87,41 @@ namespace Chatcheology.Android
             try
             {
                 created.SetDataSource(path);
-                created.Prepare();
             }
             catch (Exception exception) when (exception is Java.Lang.Throwable or IOException)
             {
                 created.Release();
                 return false;
             }
+
+            // Prepared on the player's own thread, not the UI thread; it starts when ready, unless
+            // another card was started or the screen was left in the meantime.
+            created.Prepared += (_, _) =>
+            {
+                if (!ReferenceEquals(_player, created))
+                {
+                    return;
+                }
+
+                _ready = true;
+                created.Start();
+
+                _ticks ??= CreateTicks();
+                _ticks.Start();
+
+                Changed?.Invoke(null, EventArgs.Empty);
+            };
+
+            created.Error += (_, e) =>
+            {
+                e.Handled = true;
+
+                if (ReferenceEquals(_player, created))
+                {
+                    Stop();
+                    Failed?.Invoke(null, card);
+                }
+            };
 
             created.Completion += (_, _) =>
             {
@@ -98,19 +133,29 @@ namespace Chatcheology.Android
 
             _player = created;
             Current = card;
-            created.Start();
 
-            _ticks ??= CreateTicks();
-            _ticks.Start();
+            try
+            {
+                created.PrepareAsync();
+            }
+            catch (Java.Lang.IllegalStateException)
+            {
+                Stop();
+                return false;
+            }
 
             Changed?.Invoke(null, EventArgs.Empty);
             return true;
         }
 
+        /// <summary>Raised on the UI thread with a card whose file turned out not to be playable while it was being prepared.</summary>
+        internal static event EventHandler<AttachmentCard>? Failed;
+
         /// <summary>Stops and releases whatever plays. Does nothing when nothing does.</summary>
         internal static void Stop()
         {
             _ticks?.Stop();
+            _ready = false;
 
             if (_player is { } player)
             {

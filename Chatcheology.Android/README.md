@@ -87,7 +87,8 @@ file opened, and only files under `files/archives/`. MAUI Essentials' own FilePr
 from the manifest and its paths resource is overridden with the same single folder.
 
 Stars (CH-38) and the On this day setting (CH-39) are kept in the app's private preferences, under the
-archive's contents hash, never in the archive; removing the archive forgets them. Video preview frames
+archive's contents hash, never in the archive. Removing the archive forgets the On this day setting but
+keeps the stars, so the same archive imported again has them back (a re-export starts with none). Video preview frames
 (CH-40) are kept in the app's cache folder (`video-frames/`, named by media hash; Android may clear it
 and they are read again). Nothing is ever written inside an installed archive.
 

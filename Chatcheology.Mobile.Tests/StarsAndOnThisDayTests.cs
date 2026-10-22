@@ -7,7 +7,7 @@ using Chatcheology.Mobile.Tests.Support;
 namespace Chatcheology.Mobile.Tests
 {
     /// <summary>
-    /// Favourites (CH-38): stars added and removed, kept per archive hash, forgotten on remove, the flags on
+    /// Favourites (CH-38): stars added and removed, kept per archive hash, kept through a remove, the flags on
     /// screen and the Starred list; and On this day (CH-39): matching, 29 February, once a day, the switch.
     /// </summary>
     public sealed class StarsAndOnThisDayTests : IDisposable
@@ -108,23 +108,63 @@ namespace Chatcheology.Mobile.Tests
         }
 
         [Fact]
-        public void Removing_the_archive_forgets_its_stars()
+        public void Stars_survive_removing_the_archive_and_come_back_when_the_same_archive_is_imported_again()
+        {
+            var archive = Install(Builder());
+
+            // The folder she would import again: the same files, so the same hash.
+            var source = Path.Combine(_root.Path, "source-folder");
+            CopyFolder(archive.Folder, source);
+
+            using (var session = ArchiveSession.Open(archive, _settings))
+            {
+                session.Stars.SetMessage(1, true);
+                session.Stars.SetAttachment(2, 20, true);
+                session.SavePosition(3);
+                session.OnThisDayEnabled = false;
+            }
+
+            _library.Remove(archive, _settings);
+
+            // Everything else about it is forgotten; the stars are kept (Angie, 2026-10-22).
+            Assert.Null(_settings.GetPosition(archive.ContentsSha256!));
+            Assert.True(_settings.GetOnThisDayEnabled(archive.ContentsSha256!));
+            Assert.Equal([1], _settings.GetStarredMessages(archive.ContentsSha256!));
+
+            var staging = _library.CreateStagingFolder();
+            CopyFolder(source, staging);
+            var outcome = _library.Install(staging);
+            Assert.True(outcome.Installed);
+
+            var reimported = _library.ListArchives(_settings).Single(listed => listed.Folder == outcome.InstalledFolder);
+            Assert.Equal(archive.ContentsSha256, reimported.ContentsSha256);
+
+            using var again = ArchiveSession.Open(reimported, _settings);
+
+            Assert.True(again.Stars.IsMessageStarred(1));
+            Assert.True(again.Stars.IsAttachmentStarred(20));
+            Assert.Equal(2, again.Stars.Count);
+        }
+
+        [Fact]
+        public void After_a_remove_an_archive_with_another_hash_starts_without_stars()
         {
             var archive = Install(Builder());
 
             using (var session = ArchiveSession.Open(archive, _settings))
             {
                 session.Stars.SetMessage(1, true);
-                session.Stars.SetAttachment(2, 20, true);
             }
 
             _library.Remove(archive, _settings);
 
-            Assert.DoesNotContain(_store.Values.Keys, key => key.Contains("starred", StringComparison.Ordinal));
+            var reExport = Builder();
+            reExport.Add("Added later");
+            var other = Install(reExport);
 
-            var reimported = Install(Builder());
-            using var fresh = ArchiveSession.Open(reimported, _settings);
+            using var fresh = ArchiveSession.Open(other, _settings);
 
+            Assert.NotEqual(archive.ContentsSha256, other.ContentsSha256);
             Assert.Equal(0, fresh.Stars.Count);
         }
 
@@ -236,7 +276,7 @@ namespace Chatcheology.Mobile.Tests
         }
 
         [Fact]
-        public void The_starred_list_is_newest_first_with_messages_before_their_photos()
+        public async Task The_starred_list_is_newest_first_with_messages_before_their_photos()
         {
             var archive = Install(Builder());
 
@@ -248,7 +288,7 @@ namespace Chatcheology.Mobile.Tests
             session.Stars.SetAttachment(4, 40, true);
             session.Stars.SetMessage(99, true);
 
-            var list = session.ReadStarredAsync().GetAwaiter().GetResult();
+            var list = await session.ReadStarredAsync();
 
             Assert.Equal(
                 [(4, false, (long?)40), (4, true, 40), (4, true, 41), (2, false, 20), (1, false, null)],
@@ -263,13 +303,13 @@ namespace Chatcheology.Mobile.Tests
         }
 
         [Fact]
-        public void An_empty_starred_list_reads_nothing()
+        public async Task An_empty_starred_list_reads_nothing()
         {
             var archive = Install(Builder());
 
             using var session = ArchiveSession.Open(archive, _settings);
 
-            Assert.Empty(session.ReadStarredAsync().GetAwaiter().GetResult());
+            Assert.Empty(await session.ReadStarredAsync());
         }
 
         [Fact]
@@ -286,14 +326,14 @@ namespace Chatcheology.Mobile.Tests
         }
 
         [Fact]
-        public void Gallery_cells_carry_star_flags_and_follow_a_toggle()
+        public async Task Gallery_cells_carry_star_flags_and_follow_a_toggle()
         {
             var archive = Install(Builder());
 
             using var session = ArchiveSession.Open(archive, _settings);
             session.Stars.SetAttachment(2, 20, true);
 
-            var gallery = session.GetGalleryAsync().GetAwaiter().GetResult();
+            var gallery = await session.GetGalleryAsync();
 
             Assert.Equal([41L, 40L, 20L], gallery.Photos.Select(photo => photo.AttachmentID).ToList());
             Assert.True(gallery.Photos[2].IsStarred);
@@ -303,7 +343,7 @@ namespace Chatcheology.Mobile.Tests
             gallery.RefreshStars(session.Stars);
 
             Assert.True(gallery.Photos[0].IsStarred);
-            Assert.Same(gallery, session.GetGalleryAsync().GetAwaiter().GetResult());
+            Assert.Same(gallery, await session.GetGalleryAsync());
         }
 
         [Fact]

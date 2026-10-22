@@ -110,6 +110,7 @@ namespace Chatcheology.Android.Pages
             MessageText.LinkTapped += OnLinkTapped;
             MessageLongPress.Pressed += OnMessageLongPressed;
             AttachmentCardView.PlayFailed += OnPlayFailed;
+            AudioPlayback.Failed += OnPlayFailed;
             _session.Stars.Changed += OnStarsChanged;
         }
 
@@ -178,6 +179,7 @@ namespace Chatcheology.Android.Pages
             MessageText.LinkTapped -= OnLinkTapped;
             MessageLongPress.Pressed -= OnMessageLongPressed;
             AttachmentCardView.PlayFailed -= OnPlayFailed;
+            AudioPlayback.Failed -= OnPlayFailed;
             _session.Stars.Changed -= OnStarsChanged;
             AudioPlayback.Stop();
 
@@ -354,13 +356,14 @@ namespace Chatcheology.Android.Pages
         /// Builds a new timeline off the UI thread with <paramref name="open"/> (which returns the row to
         /// place at the top, or -1) and swaps it in. The pager is stopped first and the read runs through
         /// the gate, so only one read uses the reader at a time and none runs once the page is closing.
-        /// Never throws: its callers are tap handlers.
+        /// Never throws: its callers are tap handlers. True when the new timeline was put on screen; false
+        /// when the read was refused (another read under way, the page closing) or found nothing there.
         /// </summary>
-        private async Task ReopenAsync(Func<ConversationTimeline, int> open, int? highlightSequenceNumber)
+        private async Task<bool> ReopenAsync(Func<ConversationTimeline, int> open, int? highlightSequenceNumber)
         {
             if (!_turn.TryBegin())
             {
-                return;
+                return false;
             }
 
             Busy.IsVisible = Busy.IsRunning = true;
@@ -387,21 +390,23 @@ namespace Chatcheology.Android.Pages
 
                 if (_closed)
                 {
-                    return;
+                    return false;
                 }
 
                 if (!read.Ran || read.Value.Row < 0)
                 {
                     // Nothing to show there: carry on with what is loaded.
                     _pager = new ConversationPager(_timeline) { List = _recycler, Ready = true };
-                    return;
+                    return false;
                 }
 
                 await BindAsync(read.Value.Timeline, new OpenedAt(read.Value.Row, AtLatest: false), highlightSequenceNumber);
+                return true;
             }
             catch (Exception)
             {
                 // A failure after the read (or a read failing as the page closed): what is shown stays.
+                return false;
             }
             finally
             {
@@ -442,7 +447,7 @@ namespace Chatcheology.Android.Pages
         /// Opens the conversation at the first message on or after <paramref name="day"/>: the day's
         /// separator heads the screen, with its first message below it.
         /// </summary>
-        private Task GoToDayAsync(DateOnly day) => ReopenAsync(
+        private Task<bool> GoToDayAsync(DateOnly day) => ReopenAsync(
             timeline =>
             {
                 var first = timeline.OpenAtDay(day);
@@ -590,10 +595,13 @@ namespace Chatcheology.Android.Pages
                 SemanticProperties.SetDescription(link, "Go to " + DateSeparatorRow.DayText(year.Day));
 
                 var tap = new TapGestureRecognizer();
-                tap.Tapped += (_, _) =>
+                tap.Tapped += async (_, _) =>
                 {
-                    OnThisDayCard.IsVisible = false;
-                    _ = GoToDayAsync(year.Day);
+                    // The card goes only once the jump is made; a refused jump leaves it to tap again.
+                    if (await GoToDayAsync(year.Day))
+                    {
+                        OnThisDayCard.IsVisible = false;
+                    }
                 };
 
                 link.GestureRecognizers.Add(tap);

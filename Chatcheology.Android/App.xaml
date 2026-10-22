@@ -36,6 +36,8 @@
             <Color x:Key="HighlightDark">#6B5A1E</Color>
             <Color x:Key="LinkTextLight">#027EB5</Color>
             <Color x:Key="LinkTextDark">#53BDEB</Color>
+            <Color x:Key="ButtonBackgroundLight">#E3E8EB</Color>
+            <Color x:Key="ButtonBackgroundDark">#2F3E47</Color>
             <Color x:Key="StarLight">#C98A00</Color>
             <Color x:Key="StarDark">#F2C14E</Color>
 
@@ -54,6 +56,25 @@
                 <Setter Property="TextColor" Value="{AppThemeBinding Light={StaticResource BodyTextLight}, Dark={StaticResource BodyTextDark}}" />
                 <Setter Property="PlaceholderColor" Value="{AppThemeBinding Light={StaticResource MutedTextLight}, Dark={StaticResource MutedTextDark}}" />
                 <Setter Property="CancelButtonColor" Value="{AppThemeBinding Light={StaticResource MutedTextLight}, Dark={StaticResource MutedTextDark}}" />
+            </Style>
+            <!-- Buttons without colours of their own (the date picker's steps, "Open in another app",
+                 "Back", "Remove it"): readable in both modes, and visibly dimmed when disabled. Buttons
+                 that set their own colours (the day buttons, Import, Remove archive) keep them. -->
+            <Style TargetType="Button">
+                <Setter Property="BackgroundColor" Value="{AppThemeBinding Light={StaticResource ButtonBackgroundLight}, Dark={StaticResource ButtonBackgroundDark}}" />
+                <Setter Property="TextColor" Value="{AppThemeBinding Light={StaticResource BodyTextLight}, Dark={StaticResource BodyTextDark}}" />
+                <Setter Property="VisualStateManager.VisualStateGroups">
+                    <VisualStateGroupList>
+                        <VisualStateGroup x:Name="CommonStates">
+                            <VisualState x:Name="Normal" />
+                            <VisualState x:Name="Disabled">
+                                <VisualState.Setters>
+                                    <Setter Property="Opacity" Value="0.35" />
+                                </VisualState.Setters>
+                            </VisualState>
+                        </VisualStateGroup>
+                    </VisualStateGroupList>
+                </Setter>
             </Style>
             <Style TargetType="ActivityIndicator">
                 <Setter Property="Color" Value="{AppThemeBinding Light={StaticResource PrimaryLight}, Dark={StaticResource SenderTextDark}}" />

@@ -42,6 +42,12 @@ namespace Chatcheology.Android.Controls
         /// </summary>
         public string? VideoKey { get; set; }
 
+        /// <summary>
+        /// What the box says when the picture will not decode; <see cref="AttachmentCard.CannotPreviewHeading"/>
+        /// unless set (a small thumbnail sets a short mark). Set it before <see cref="Path"/>.
+        /// </summary>
+        public string FailedText { get; set; } = AttachmentCard.CannotPreviewHeading;
+
         /// <summary>Raised on the UI thread when the current file could not be decoded.</summary>
         public event EventHandler? Failed;
 
@@ -172,6 +178,7 @@ namespace Chatcheology.Android.Controls
 
                             if (_failed is not null && videoKey is null)
                             {
+                                _failed.Text = VirtualView.FailedText;
                                 _failed.Visibility = ViewStates.Visible;
                             }
 

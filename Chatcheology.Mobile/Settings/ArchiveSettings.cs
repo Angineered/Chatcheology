@@ -27,17 +27,18 @@ namespace Chatcheology.Mobile.Settings
     /// (attachment ids, each with its message's sequence number so it can be read without the whole
     /// conversation), <c>.onThisDay</c> ("off" when turned off) and <c>.onThisDayShown</c> (the last
     /// day the card was shown).</para>
-    /// <para>Stars (CH-38) are private to the phone and never written into the archive. Removing the
-    /// archive forgets them with everything else; an installed archive with the same hash has them.</para>
+    /// <para>Stars (CH-38) are private to the phone and never written into the archive. They are the one
+    /// thing removing the archive keeps (Angie, 2026-10-22): the same archive (same hash) imported again
+    /// has its stars back. A re-exported archive has a new hash and starts with none.</para>
     /// </remarks>
     public sealed class ArchiveSettings
     {
         private const string Prefix = "archive.";
 
+        /// <summary>What <see cref="Forget"/> removes: everything but the stars.</summary>
         private static readonly string[] Names =
         [
-            "me", "position", "lastOpenedUtc", "validatedUtc", "validation",
-            "starredMessages", "starredAttachments", "onThisDay", "onThisDayShown",
+            "me", "position", "lastOpenedUtc", "validatedUtc", "validation", "onThisDay", "onThisDayShown",
         ];
 
         private readonly ISettingsStore _store;
@@ -183,7 +184,10 @@ namespace Chatcheology.Mobile.Settings
         public void SetOnThisDayShown(string contentsSha256, DateOnly day) =>
             Set(contentsSha256, "onThisDayShown", day.ToString("yyyy'-'MM'-'dd", CultureInfo.InvariantCulture));
 
-        /// <summary>Forgets everything stored for the archive.</summary>
+        /// <summary>
+        /// Forgets what is stored for the archive when it is removed: everything except its stars, which an
+        /// import of the same archive finds again.
+        /// </summary>
         public void Forget(string contentsSha256)
         {
             foreach (var name in Names)

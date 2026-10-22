@@ -115,7 +115,7 @@ namespace Chatcheology.Android.Pages
         {
             private const double Thumbnail = 56;
 
-            private readonly DecodedImage _image = new() { WidthRequest = Thumbnail, HeightRequest = Thumbnail };
+            private readonly DecodedImage _image = new() { WidthRequest = Thumbnail, HeightRequest = Thumbnail, FailedText = "⊘" };
             private readonly Label _header = new() { FontSize = 12 };
             private readonly Label _snippet = new() { FontSize = 15, MaxLines = 2, LineBreakMode = LineBreakMode.TailTruncation };
             private readonly Label _star = new() { Text = "★", FontSize = 14 };

@@ -187,6 +187,11 @@ namespace Chatcheology.Android.Pages
             {
                 // The conversation reports its own read failures; nothing else may end the app.
             }
+            finally
+            {
+                // When the chat did not take over (the page was closing, say), this page carries on.
+                _leaving = false;
+            }
         }
 
         private async Task OpenCurrentAsync()
