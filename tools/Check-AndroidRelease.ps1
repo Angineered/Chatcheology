@@ -68,13 +68,35 @@ if (-not $buildTools -or [version]($buildTools.Name -replace '[^0-9.].*$', '') -
 $aapt2 = Join-Path $buildTools.FullName 'aapt2.exe'
 $zipalign = Join-Path $buildTools.FullName 'zipalign.exe'
 
+# Runs a native tool and returns its exit code and its output, standard error included, as text.
+# Windows PowerShell 5.1 turns a native tool's standard error into error records when it is
+# redirected, which ErrorActionPreference Stop would turn into a confusing failure: so the
+# preference is relaxed for the call and every line is converted to a plain string.
+function Invoke-Native([string]$exe, [string[]]$arguments) {
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $output = @(& $exe @arguments 2>&1 | ForEach-Object { "$_" })
+        $code = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $previous
+    }
+    return [pscustomobject]@{ ExitCode = $code; Output = $output }
+}
+
 # ---------------------------------------------------------------------------------------------
 # aapt2's xmltree dump as a tree of @{ Name; Attributes; Children }.
 # ---------------------------------------------------------------------------------------------
 
 function Read-XmlTree([string]$file) {
-    $lines = & $aapt2 dump xmltree --file $file $Apk 2>&1
-    if ($LASTEXITCODE -ne 0) { throw "aapt2 could not read $file from the APK." }
+    $result = Invoke-Native $aapt2 @('dump', 'xmltree', '--file', $file, $Apk)
+    if ($result.ExitCode -ne 0) {
+        Write-Host "aapt2 could not read $file from the APK:"
+        $result.Output | Select-Object -First 5 | ForEach-Object { Write-Host "  $_" }
+        exit 1
+    }
+    $lines = $result.Output
 
     $root = @{ Name = '#root'; Attributes = @{}; Children = New-Object System.Collections.ArrayList; Indent = -1 }
     $stack = New-Object System.Collections.Stack
@@ -115,7 +137,13 @@ function Find-Elements($node, [string]$name) {
 # Resource id (0x7f......) to its file in the APK, from aapt2's resource table.
 $resourceFiles = @{}
 $current = $null
-foreach ($line in (& $aapt2 dump resources $Apk)) {
+$resources = Invoke-Native $aapt2 @('dump', 'resources', $Apk)
+if ($resources.ExitCode -ne 0) {
+    Write-Host 'aapt2 could not read the resource table of the APK:'
+    $resources.Output | Select-Object -First 5 | ForEach-Object { Write-Host "  $_" }
+    exit 1
+}
+foreach ($line in $resources.Output) {
     $text = ([string]$line).Trim()
     if ($text -match '^resource (?<id>0x[0-9a-f]{8}) ') { $current = $Matches.id }
     elseif ($current -and $text -match '\(file\) (?<file>\S+)') { $resourceFiles[$current] = $Matches.file; $current = $null }
@@ -234,8 +262,8 @@ foreach ($provider in $providers) {
 }
 
 # 6. 16 KB page alignment.
-$align = & $zipalign -c -P 16 -v 4 $Apk 2>&1
-Report ($LASTEXITCODE -eq 0) 'zipalign -c -P 16 passes' (($align | Select-Object -Last 1) -join '')
+$align = Invoke-Native $zipalign @('-c', '-P', '16', '-v', '4', $Apk)
+Report ($align.ExitCode -eq 0) 'zipalign -c -P 16 passes' (($align.Output | Select-Object -Last 1) -join '')
 
 if ($failures -gt 0) {
     Write-Host "$failures check(s) failed."

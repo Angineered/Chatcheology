@@ -105,7 +105,7 @@ namespace Chatcheology.Android.Controls
             var height = Math.Max(1, (int)Math.Round(Math.Max(VirtualView.HeightRequest, 1) * density));
             var frame = PlatformView;
 
-            Task.Run(() => ImageDecoding.Decode(path, width, height)).ContinueWith(
+            Task.Run(() => ImageDecoding.DecodeToCover(path, width, height)).ContinueWith(
                 decoded =>
                 {
                     var bitmap = decoded.IsCompletedSuccessfully ? decoded.Result : null;

@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Globalization;
 using Chatcheology.Archive;
 using Chatcheology.Mobile.Presentation;
@@ -46,8 +47,10 @@ namespace Chatcheology.Mobile.Conversation
     /// a system message is never "me"; a bubble with no text whose attachments are all hidden is not
     /// shown.
     /// </remarks>
-    public sealed class MessageRow : ConversationRow
+    public sealed class MessageRow : ConversationRow, INotifyPropertyChanged
     {
+        private bool _isHighlighted;
+
         /// <summary>
         /// The export's placeholder for an omitted media item. The same text as
         /// <c>ParsedMessage.MediaPlaceholderContent</c> in Core, which this library does not reference.
@@ -118,6 +121,26 @@ namespace Chatcheology.Mobile.Conversation
 
         /// <summary>"Forwarded", "Forwarded many times", or empty.</summary>
         public string ForwardedText { get; }
+
+        /// <summary>Raised when <see cref="IsHighlighted"/> changes.</summary>
+        public event PropertyChangedEventHandler? PropertyChanged;
+
+        /// <summary>
+        /// Whether the bubble is briefly highlighted (a message opened from search). It belongs to the
+        /// message, not to whichever view shows it, so recycled views and inserted pages cannot move it.
+        /// </summary>
+        public bool IsHighlighted
+        {
+            get => _isHighlighted;
+            set
+            {
+                if (_isHighlighted != value)
+                {
+                    _isHighlighted = value;
+                    PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsHighlighted)));
+                }
+            }
+        }
 
         /// <summary>Whether a forwarded label applies.</summary>
         public bool IsForwarded => ForwardedText.Length > 0;

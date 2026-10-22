@@ -141,8 +141,16 @@ namespace Chatcheology.Android.Pages
             }
 
             _opening = true;
-            await Navigation.PopAsync();
-            await _conversation.OpenAtMessageAsync(hit.SequenceNumber);
+
+            try
+            {
+                await Navigation.PopAsync();
+                await _conversation.OpenAtMessageAsync(hit.SequenceNumber);
+            }
+            catch (Exception)
+            {
+                // The conversation reports its own read failures; nothing else may end the app.
+            }
         }
 
         /// <summary>One hit: date, time and sender, then the snippet with every match highlighted.</summary>

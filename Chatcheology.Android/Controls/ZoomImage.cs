@@ -8,8 +8,8 @@ using MauiView = Microsoft.Maui.Controls.View;
 namespace Chatcheology.Android.Controls
 {
     /// <summary>
-    /// A picture shown full screen with pinch zoom, pan and double-tap. Decoded at about twice the
-    /// screen's size at most, so zooming in stays sharp without a full-size bitmap.
+    /// A picture shown full screen with pinch zoom, pan and double-tap. Decoded no smaller than it is
+    /// shown and at most twice the screen's size, so zooming in stays sharp without a full-size bitmap.
     /// </summary>
     public sealed class ZoomImage : MauiView
     {
@@ -46,23 +46,36 @@ namespace Chatcheology.Android.Controls
 
         protected override ZoomImageView CreatePlatformView() => new(Context);
 
-        private static void MapPath(ZoomImageHandler handler, ZoomImage view)
+        private int _generation;
+
+        /// <summary>Stops a decode under way from landing and releases the picture: the page is closing.</summary>
+        protected override void DisconnectHandler(ZoomImageView platformView)
         {
+            _generation++;
+            platformView.SetPicture(null);
+            base.DisconnectHandler(platformView);
+        }
+
+        private static void MapPath(ZoomImageHandler handler, ZoomImage view) => handler.Load(view);
+
+        private void Load(ZoomImage view)
+        {
+            // A newer path, or the page closing, makes any decode still running stale.
+            var generation = ++_generation;
             var path = view.Path;
-            var platform = handler.PlatformView;
+            var platform = PlatformView;
 
             if (string.IsNullOrEmpty(path))
             {
-                platform.SetImageBitmap(null);
+                platform.SetPicture(null);
                 return;
             }
 
-            var metrics = handler.Context.Resources?.DisplayMetrics;
-            var longest = Math.Min(4096, 2 * Math.Max(metrics?.WidthPixels ?? 1080, metrics?.HeightPixels ?? 1920));
+            var metrics = Context.Resources?.DisplayMetrics;
+            var screenWidth = Math.Max(1, metrics?.WidthPixels ?? 1080);
+            var screenHeight = Math.Max(1, metrics?.HeightPixels ?? 1920);
 
-            Task.Run(() => ImageDecoding.Decode(path, longest, longest, cache: false) is { } bitmap
-                    ? Fit(bitmap, longest)
-                    : null)
+            Task.Run(() => ImageDecoding.DecodeToFitScreen(path, screenWidth, screenHeight))
                 .ContinueWith(
                     decoded =>
                     {
@@ -70,32 +83,18 @@ namespace Chatcheology.Android.Controls
 
                         platform.Post(() =>
                         {
+                            if (generation != _generation)
+                            {
+                                // Stale: nobody will show it.
+                                bitmap?.Recycle();
+                                return;
+                            }
+
                             platform.SetPicture(bitmap);
                             view.RaiseDecoded(bitmap is not null);
                         });
                     },
                     TaskScheduler.Default);
-        }
-
-        /// <summary>The decode covers a square of the longest side; keep the longer edge within it.</summary>
-        private static Bitmap Fit(Bitmap bitmap, int longest)
-        {
-            var scale = (double)longest / Math.Max(bitmap.Width, bitmap.Height);
-
-            if (scale >= 1)
-            {
-                return bitmap;
-            }
-
-            var fitted = Bitmap.CreateScaledBitmap(
-                bitmap, Math.Max(1, (int)(bitmap.Width * scale)), Math.Max(1, (int)(bitmap.Height * scale)), filter: true);
-
-            if (!ReferenceEquals(fitted, bitmap))
-            {
-                bitmap.Recycle();
-            }
-
-            return fitted;
         }
     }
 
@@ -120,9 +119,21 @@ namespace Chatcheology.Android.Controls
             _gestures = new GestureDetector(context, new GestureListener(this));
         }
 
+        private Bitmap? _picture;
+
+        /// <summary>Shows <paramref name="bitmap"/>, which the view now owns, and releases the one before.</summary>
         internal void SetPicture(Bitmap? bitmap)
         {
+            var previous = _picture;
+            _picture = bitmap;
+
             SetImageBitmap(bitmap);
+
+            if (previous is not null && !ReferenceEquals(previous, bitmap))
+            {
+                previous.Recycle();
+            }
+
             _zoom = 1f;
             Reset();
         }

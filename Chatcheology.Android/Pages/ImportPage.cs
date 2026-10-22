@@ -23,6 +23,7 @@ namespace Chatcheology.Android.Pages
         private readonly Button _cancelButton = new() { Text = "Cancel" };
         private readonly VerticalStackLayout _outcome = new() { Spacing = 8, IsVisible = false };
         private bool _running;
+        private bool _leaving;
 
         internal ImportPage(AppState state, IImportSource source, StartPage start)
         {
@@ -157,16 +158,46 @@ namespace Chatcheology.Android.Pages
                 var open = new Button { Text = "Open the archive", BackgroundColor = (Color)Application.Current!.Resources["Primary"], TextColor = Colors.White };
                 open.Clicked += async (_, _) =>
                 {
-                    await Navigation.PopAsync();
-                    await _start.OpenByIdAsync(id);
+                    if (!Leave())
+                    {
+                        return;
+                    }
+
+                    try
+                    {
+                        await Navigation.PopAsync();
+                        await _start.OpenByIdAsync(id);
+                    }
+                    catch (Exception)
+                    {
+                        // The start screen shows what it can; nothing here may end the app.
+                    }
                 };
 
                 _outcome.Children.Add(open);
             }
 
             var back = new Button { Text = "Back" };
-            back.Clicked += async (_, _) => await Navigation.PopAsync();
+            back.Clicked += async (_, _) =>
+            {
+                if (Leave())
+                {
+                    await Navigation.PopAsync();
+                }
+            };
             _outcome.Children.Add(back);
+        }
+
+        /// <summary>True the first time only: a second tap while the page closes does nothing.</summary>
+        private bool Leave()
+        {
+            if (_leaving)
+            {
+                return false;
+            }
+
+            _leaving = true;
+            return true;
         }
 
         /// <summary>

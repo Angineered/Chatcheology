@@ -173,7 +173,16 @@ namespace Chatcheology.Android.Pages
                 AppState.LogTiming("open-read", watch.Elapsed, $"messages={opened.Session.MessageCount}");
                 Status.Text = string.Empty;
 
-                await Navigation.PushAsync(new ConversationPage(_state, opened, watch));
+                try
+                {
+                    await Navigation.PushAsync(new ConversationPage(_state, opened, watch));
+                }
+                catch (Exception)
+                {
+                    // The page never took the session over: close it here.
+                    opened.Session.Dispose();
+                    Status.Text = "This archive could not be opened.";
+                }
             }
             finally
             {

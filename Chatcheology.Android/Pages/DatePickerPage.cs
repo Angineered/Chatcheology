@@ -17,6 +17,7 @@ namespace Chatcheology.Android.Pages
         private readonly Button _nextMonth = new() { Text = "›" };
         private readonly Button _nextYear = new() { Text = "»" };
         private int _index;
+        private bool _chosen;
 
         internal DatePickerPage(DayCalendar calendar, DateOnly near, Func<DateOnly, Task> jump)
         {
@@ -137,8 +138,23 @@ namespace Chatcheology.Android.Pages
 
                     button.Clicked += async (_, _) =>
                     {
-                        await Navigation.PopAsync();
-                        await _jump(day);
+                        // One day only: a second tap while the page closes is ignored.
+                        if (_chosen)
+                        {
+                            return;
+                        }
+
+                        _chosen = true;
+
+                        try
+                        {
+                            await Navigation.PopAsync();
+                            await _jump(day);
+                        }
+                        catch (Exception)
+                        {
+                            // The jump reports its own read failures; nothing else may end the app.
+                        }
                     };
 
                     view = button;

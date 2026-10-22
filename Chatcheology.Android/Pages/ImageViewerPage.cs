@@ -9,12 +9,13 @@ namespace Chatcheology.Android.Pages
     /// </summary>
     internal sealed class ImageViewerPage : ContentPage
     {
+        private readonly ZoomImage _image = new();
+
         internal ImageViewerPage(AppState state, string path, string mimeType)
         {
             Title = "Photo";
             BackgroundColor = Colors.Black;
 
-            var image = new ZoomImage();
             var failed = new VerticalStackLayout
             {
                 IsVisible = false,
@@ -24,23 +25,35 @@ namespace Chatcheology.Android.Pages
                 Children = { new Label { Text = AttachmentCard.CannotPreviewHeading, TextColor = Colors.White, HorizontalTextAlignment = TextAlignment.Center } },
             };
 
-            image.Decoded += (_, ok) =>
+            _image.Decoded += (_, ok) =>
             {
-                image.IsVisible = ok;
+                _image.IsVisible = ok;
                 failed.IsVisible = !ok;
             };
 
-            var open = new ToolbarItem("Open in another app", null, async () =>
-                await ConversationPage.OpenInAnotherAppAsync(this, state, path, mimeType));
-            ToolbarItems.Add(open);
+            ToolbarItems.Add(new ToolbarItem("Open in another app", null, async () =>
+                await ConversationPage.OpenInAnotherAppAsync(this, state, path, mimeType)));
 
             var button = new Button { Text = "Open in another app" };
             button.Clicked += async (_, _) => await ConversationPage.OpenInAnotherAppAsync(this, state, path, mimeType);
             failed.Children.Add(button);
 
-            Content = new Grid { Children = { image, failed } };
+            Content = new Grid { Children = { _image, failed } };
 
-            image.Path = path;
+            _image.Path = path;
+        }
+
+        /// <inheritdoc />
+        protected override void OnNavigatedFrom(NavigatedFromEventArgs args)
+        {
+            base.OnNavigatedFrom(args);
+
+            // Closed (not just covered): release the full-screen bitmap now rather than at the next
+            // garbage collection, and let any decode still running land nowhere.
+            if (!Navigation.NavigationStack.Contains(this))
+            {
+                _image.Handler?.DisconnectHandler();
+            }
         }
     }
 }

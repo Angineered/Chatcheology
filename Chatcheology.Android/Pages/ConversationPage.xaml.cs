@@ -29,13 +29,16 @@ namespace Chatcheology.Android.Pages
         private ConversationTimeline _timeline;
         private ConversationPager _pager;
         private OpenedAt _openedAt;
-        private Task _work = Task.CompletedTask;
+        private readonly ArchiveReadGate _gate = new();
         private RecyclerView? _recycler;
         private bool _opened;
         private bool _busy;
-        private bool _closed;
+        private bool _meChangePending;
         private int? _savedPosition;
         private DayCalendar? _calendar;
+
+        /// <summary>Whether the page has begun closing its archive: nothing more is read.</summary>
+        private bool _closed => _gate.IsClosed;
 
         /// <summary>
         /// A page over a conversation the caller opened off the UI thread. The page owns the session from
@@ -129,7 +132,10 @@ namespace Chatcheology.Android.Pages
             await CloseAsync();
         }
 
-        /// <summary>Stops every read, then closes the archive. Safe to call twice.</summary>
+        /// <summary>
+        /// Stops every read, waits for any read already started, then closes the archive. No read starts
+        /// once this has begun (<see cref="ArchiveReadGate"/>). Safe to call twice.
+        /// </summary>
         private async Task CloseAsync()
         {
             if (_closed)
@@ -137,15 +143,17 @@ namespace Chatcheology.Android.Pages
                 return;
             }
 
-            _closed = true;
             AttachmentCardView.Tapped -= OnAttachmentTapped;
             MessageText.LinkTapped -= OnLinkTapped;
 
-            // A page read or a reopen may still be running on the reader's connection: let it finish.
-            await _pager.StopAsync();
-            await WaitQuietly(_work);
-
-            _session.Dispose();
+            try
+            {
+                await _gate.CloseAsync(() => _pager.StopAsync(), _session.Dispose);
+            }
+            catch (Exception)
+            {
+                // The gate closes the session whatever stopping the pager did; nothing to report here.
+            }
         }
 
         // -----------------------------------------------------------------------------------------
@@ -175,9 +183,10 @@ namespace Chatcheology.Android.Pages
                 SavePosition(placed.FindFirstVisibleItemPosition());
             }
 
-            if (highlightSequenceNumber is { } sequence && timeline.IndexOfMessage(sequence) is var row and >= 0)
+            if (highlightSequenceNumber is { } sequence && timeline.IndexOfMessage(sequence) is var row and >= 0
+                && timeline.Rows[row] is MessageRow message)
             {
-                Highlight(row);
+                Highlight(message);
             }
         }
 
@@ -250,27 +259,16 @@ namespace Chatcheology.Android.Pages
             await Task.WhenAny(done.Task, Task.Delay(500));
         }
 
-        /// <summary>Briefly highlights the row at <paramref name="index"/>, once it is on screen.</summary>
-        private void Highlight(int index)
+        /// <summary>
+        /// Briefly highlights <paramref name="message"/>. The flag is on the message itself and the
+        /// bubble's template follows it, so a page inserted above or a recycled view cannot flash
+        /// another message.
+        /// </summary>
+        private static async void Highlight(MessageRow message)
         {
-            if (_recycler is not { } recycler)
-            {
-                return;
-            }
-
-            recycler.PostDelayed(
-                () =>
-                {
-                    if (recycler.FindViewHolderForAdapterPosition(index)?.ItemView is not { } view)
-                    {
-                        return;
-                    }
-
-                    var colour = ((Color)Application.Current!.Resources["Highlight"]).ToPlatform();
-                    view.SetBackgroundColor(colour);
-                    view.PostDelayed(() => view.SetBackgroundColor(global::Android.Graphics.Color.Transparent), HighlightMilliseconds);
-                },
-                150);
+            message.IsHighlighted = true;
+            await Task.Delay(HighlightMilliseconds);
+            message.IsHighlighted = false;
         }
 
         /// <summary>Stores the first message at or below the top row as the reader's position.</summary>
@@ -319,8 +317,9 @@ namespace Chatcheology.Android.Pages
 
         /// <summary>
         /// Builds a new timeline off the UI thread with <paramref name="open"/> (which returns the row to
-        /// place at the top, or -1) and swaps it in. The old pager is stopped first, so only one read
-        /// uses the reader at a time.
+        /// place at the top, or -1) and swaps it in. The pager is stopped first and the read runs through
+        /// the gate, so only one read uses the reader at a time and none runs once the page is closing.
+        /// Never throws: its callers are tap handlers.
         /// </summary>
         private async Task ReopenAsync(Func<ConversationTimeline, int> open, int? highlightSequenceNumber)
         {
@@ -334,26 +333,22 @@ namespace Chatcheology.Android.Pages
 
             try
             {
-                await _pager.StopAsync();
-
-                var read = Task.Run(() =>
-                {
-                    var timeline = _session.CreateTimeline();
-                    return (Timeline: timeline, Row: open(timeline));
-                });
-
-                _work = read;
-
-                (ConversationTimeline Timeline, int Row) result;
+                GatedRead<(ConversationTimeline Timeline, int Row)> read;
 
                 try
                 {
-                    result = await read;
+                    read = await _gate.RunAsync(
+                        () => _pager.StopAsync(),
+                        () =>
+                        {
+                            var timeline = _session.CreateTimeline();
+                            return (timeline, open(timeline));
+                        });
                 }
-                catch (Exception exception) when (exception is ArchiveFormatException or SqliteException or IOException)
+                catch (Exception) when (!_closed)
                 {
                     await DisplayAlertAsync("Conversation", "That part of the archive could not be read.", "OK");
-                    result = (_timeline, -1);
+                    read = default;
                 }
 
                 if (_closed)
@@ -361,19 +356,30 @@ namespace Chatcheology.Android.Pages
                     return;
                 }
 
-                if (result.Row < 0 || ReferenceEquals(result.Timeline, _timeline))
+                if (!read.Ran || read.Value.Row < 0)
                 {
                     // Nothing to show there: carry on with what is loaded.
                     _pager = new ConversationPager(_timeline) { List = _recycler, Ready = true };
                     return;
                 }
 
-                await BindAsync(result.Timeline, new OpenedAt(result.Row, AtLatest: false), highlightSequenceNumber);
+                await BindAsync(read.Value.Timeline, new OpenedAt(read.Value.Row, AtLatest: false), highlightSequenceNumber);
+            }
+            catch (Exception)
+            {
+                // A failure after the read (or a read failing as the page closed): what is shown stays.
             }
             finally
             {
                 Busy.IsVisible = Busy.IsRunning = false;
                 _busy = false;
+
+                // "Me" changed again while this ran: rebuild once more, so the latest choice wins.
+                if (_meChangePending && !_closed)
+                {
+                    _meChangePending = false;
+                    _ = OnMeChangedAsync();
+                }
             }
         }
 
@@ -390,24 +396,34 @@ namespace Chatcheology.Android.Pages
 
             if (_calendar is null)
             {
+                _busy = true;
                 Busy.IsVisible = Busy.IsRunning = true;
 
                 try
                 {
                     // Between page reads only: the pager is paused while the days are read.
-                    await _pager.StopAsync();
-                    var read = Task.Run(() => new DayCalendar(_session.ReadDays()));
-                    _work = read;
-                    _calendar = await read;
+                    var read = await _gate.RunAsync(() => _pager.StopAsync(), () => new DayCalendar(_session.ReadDays()));
+
+                    if (!read.Ran || _closed)
+                    {
+                        return;
+                    }
+
+                    _calendar = read.Value;
                 }
-                catch (Exception exception) when (exception is ArchiveFormatException or SqliteException or IOException)
+                catch (Exception) when (!_closed)
                 {
                     await DisplayAlertAsync("Go to date", "The days could not be read.", "OK");
+                    return;
+                }
+                catch (Exception)
+                {
                     return;
                 }
                 finally
                 {
                     Busy.IsVisible = Busy.IsRunning = false;
+                    _busy = false;
 
                     if (!_closed)
                     {
@@ -420,12 +436,12 @@ namespace Chatcheology.Android.Pages
                 ? _timeline.Rows[row].Day
                 : DateOnly.FromDateTime(DateTime.Today);
 
-            await Navigation.PushAsync(new DatePickerPage(_calendar, near, day => ReopenAsync(
+            await Navigation.PushAsync(new DatePickerPage(_calendar!, near, day => ReopenAsync(
                 timeline =>
                 {
                     // The day's separator heads the screen, with its first message below it.
-                    var row = timeline.OpenAtDay(day);
-                    return row > 0 && timeline.Rows[row - 1] is DateSeparatorRow ? row - 1 : row;
+                    var first = timeline.OpenAtDay(day);
+                    return first > 0 && timeline.Rows[first - 1] is DateSeparatorRow ? first - 1 : first;
                 },
                 null)));
         }
@@ -450,9 +466,23 @@ namespace Chatcheology.Android.Pages
             await Navigation.PushAsync(new SettingsPage(_session, OnMeChangedAsync, RemoveArchiveAsync));
         }
 
-        /// <summary>"Me" changed in Settings: the bubbles are rebuilt at the same place.</summary>
+        /// <summary>
+        /// "Me" changed in Settings: the bubbles are rebuilt at the same place. A change made while a
+        /// rebuild is under way is not dropped: it is rebuilt again when that one ends.
+        /// </summary>
         private Task OnMeChangedAsync()
         {
+            if (_closed)
+            {
+                return Task.CompletedTask;
+            }
+
+            if (_busy)
+            {
+                _meChangePending = true;
+                return Task.CompletedTask;
+            }
+
             var at = CurrentSequenceNumber();
 
             return ReopenAsync(
@@ -525,18 +555,6 @@ namespace Chatcheology.Android.Pages
                 case OpenResult.NotAllowed:
                     await page.DisplayAlertAsync("Open", "This file cannot be opened.", "OK");
                     break;
-            }
-        }
-
-        private static async Task WaitQuietly(Task task)
-        {
-            try
-            {
-                await task;
-            }
-            catch (Exception exception) when (exception is ArchiveFormatException or SqliteException or IOException)
-            {
-                // Already reported where it ran.
             }
         }
 
