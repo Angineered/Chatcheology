@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The only files the app's FileProvider can give out: the installed archives, under the app's
+     private files folder. Nothing in staging, the cache or shared storage. -->
+<paths>
+	<files-path name="archives" path="archives/" />
+</paths>

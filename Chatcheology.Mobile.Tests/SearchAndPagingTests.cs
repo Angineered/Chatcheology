@@ -91,7 +91,52 @@ namespace Chatcheology.Mobile.Tests
             Assert.All(hit.Highlights, range =>
                 Assert.Equal(0, CultureInfo.InvariantCulture.CompareInfo.Compare(
                     hit.Snippet.Substring(range.Start, range.Length), "café", CompareOptions.IgnoreCase | CompareOptions.IgnoreNonSpace)));
+
+            // The first "café" in the text is decomposed: five characters match the four-character query.
+            Assert.Equal("café", hit.Snippet.Substring(hit.Highlights[0].Start, hit.Highlights[0].Length));
+            Assert.Equal(new MatchRange(3, 5), hit.Matches[0]);
             Assert.Equal(4, hit.Matches[1].Length);
+        }
+
+        [Theory]
+        [InlineData("́")]
+        [InlineData("́̈")]
+        [InlineData(" ́ ")]
+        public void A_query_of_only_combining_marks_finds_nothing(string query)
+        {
+            var builder = new ArchiveBuilder();
+            builder.Add("Un café et un CAFÉ");
+            builder.Add("Plain text");
+
+            var results = Index(builder).Find(query);
+
+            Assert.Empty(results.Hits);
+            Assert.Equal(0, results.TotalMatches);
+            Assert.Empty(ConversationSearch.FindAll("café", query.Trim()));
+        }
+
+        [Fact]
+        public void The_summary_gives_the_total_and_says_when_the_list_is_capped()
+        {
+            var builder = new ArchiveBuilder();
+
+            for (var i = 0; i < 12; i++)
+            {
+                builder.Add("needle " + i);
+            }
+
+            var index = Index(builder);
+
+            Assert.Equal("12 messages match.", index.Find("needle").Summary);
+            Assert.False(index.Find("needle").IsCapped);
+
+            var capped = index.Find("needle", maximumHits: 5);
+            Assert.True(capped.IsCapped);
+            Assert.Equal(5, capped.Hits.Count);
+            Assert.Equal("12 messages match. The newest 5 are listed.", capped.Summary);
+
+            Assert.Equal("1 message matches.", index.Find("needle 11").Summary);
+            Assert.Equal("No messages match.", index.Find("absent").Summary);
         }
 
         [Fact]

@@ -157,17 +157,43 @@ namespace Chatcheology.Mobile.Import
                 return new ImportResult(ImportOutcome.NotEnoughSpace) { ContentsSha256 = hash, RequiredBytes = required, AvailableBytes = available };
             }
 
-            // 5. The copy.
+            // 5. The copy. Whatever ends the import from here on, staging is deleted unless the copy was
+            // installed: an exception this method does not expect (a source adapter's own exception type,
+            // say) still propagates, but leaves nothing behind.
             var staging = _library.CreateStagingFolder();
+            var installedCopy = false;
 
-            ImportResult Fail(ImportResult result)
+            try
             {
-                DeleteQuietly(staging);
+                var result = CopyCheckAndInstall(source, listed, lengths, total, contents, staging, hash, required, available, progress, cancellationToken);
+                installedCopy = result.Outcome == ImportOutcome.Installed;
+
                 return result;
             }
+            finally
+            {
+                if (!installedCopy)
+                {
+                    DeleteQuietly(staging);
+                }
+            }
+        }
 
+        private ImportResult CopyCheckAndInstall(
+            IImportSource source,
+            IReadOnlyList<(string Sha256, string Path)> listed,
+            IReadOnlyDictionary<string, long> lengths,
+            long total,
+            byte[] contents,
+            string staging,
+            string hash,
+            long required,
+            long available,
+            IProgress<ImportProgress>? progress,
+            CancellationToken cancellationToken)
+        {
             ImportResult Refuse(ImportRefusal refusal) =>
-                Fail(new ImportResult(ImportOutcome.Refused, refusal) { ContentsSha256 = hash, RequiredBytes = required, AvailableBytes = available });
+                new(ImportOutcome.Refused, refusal) { ContentsSha256 = hash, RequiredBytes = required, AvailableBytes = available };
 
             try
             {
@@ -175,7 +201,7 @@ namespace Chatcheology.Mobile.Import
             }
             catch (OperationCanceledException)
             {
-                return Fail(new ImportResult(ImportOutcome.Cancelled) { ContentsSha256 = hash });
+                return new ImportResult(ImportOutcome.Cancelled) { ContentsSha256 = hash };
             }
             catch (DestinationException)
             {
@@ -210,8 +236,6 @@ namespace Chatcheology.Mobile.Import
 
             if (!outcome.Installed)
             {
-                DeleteQuietly(staging);
-
                 return new ImportResult(ImportOutcome.Refused, ImportRefusal.FailedValidation)
                 {
                     ContentsSha256 = hash,

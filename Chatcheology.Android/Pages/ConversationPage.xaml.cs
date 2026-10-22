@@ -1,52 +1,93 @@
+using System.Diagnostics;
 using AndroidX.RecyclerView.Widget;
+using Chatcheology.Android.Controls;
 using Chatcheology.Android.Conversation;
 using Chatcheology.Archive;
 using Chatcheology.Mobile.Conversation;
+using Chatcheology.Mobile.Presentation;
 using Microsoft.Data.Sqlite;
+using Microsoft.Maui.Platform;
 
 namespace Chatcheology.Android.Pages
 {
     /// <summary>The conversation in MAUI's CollectionView.</summary>
     /// <remarks>
-    /// Opens where the reader last was (the sequence number at the top of the screen, stored per
-    /// archive), or at the newest messages the first time. The position is stored as she scrolls.
+    /// <para>Opens where the reader last was (the sequence number at the top of the screen, stored per
+    /// archive), or fully at the newest message the first time. The position is stored as she scrolls.</para>
+    /// <para>Everything that reads the archive runs off the UI thread, one read at a time: the pager's
+    /// pages, and the reopen for a date jump, a search hit or a change of "me", which builds a new
+    /// timeline on a worker thread and swaps it in only when it is ready.</para>
     /// </remarks>
     public partial class ConversationPage : ContentPage
     {
+        /// <summary>How long a message opened from search stays highlighted.</summary>
+        private const int HighlightMilliseconds = 1600;
+
+        private readonly AppState _state;
         private readonly ArchiveSession _session;
-        private readonly ConversationTimeline _timeline;
-        private readonly ConversationPager _pager;
+        private readonly Stopwatch? _openWatch;
+        private ConversationTimeline _timeline;
+        private ConversationPager _pager;
+        private OpenedAt _openedAt;
+        private Task _work = Task.CompletedTask;
+        private RecyclerView? _recycler;
         private bool _opened;
+        private bool _busy;
+        private bool _closed;
         private int? _savedPosition;
+        private DayCalendar? _calendar;
 
         /// <summary>
-        /// A page over an open session, which the caller opens off the UI thread. The page owns the
-        /// session from here on and closes it when it is closed.
+        /// A page over a conversation the caller opened off the UI thread. The page owns the session from
+        /// here on and closes it when it is closed.
         /// </summary>
-        internal ConversationPage(ArchiveSession session)
+        internal ConversationPage(AppState state, OpenedConversation opened, Stopwatch? openWatch = null)
         {
             InitializeComponent();
 
-            _session = session;
-            _timeline = session.CreateTimeline();
-            _pager = new ConversationPager(_timeline, "CollectionView");
+            _state = state;
+            _session = opened.Session;
+            _timeline = opened.Timeline;
+            _openedAt = opened.At;
+            _openWatch = openWatch;
+            _pager = new ConversationPager(_timeline);
 
-            Title = session.Title;
+            Title = _session.Title;
             List.ItemsUpdatingScrollMode = ItemsUpdatingScrollMode.KeepItemsInView;
 
-            List.HandlerChanged += (_, _) => _pager.List = List.Handler?.PlatformView as RecyclerView;
+            List.HandlerChanged += (_, _) =>
+            {
+                _recycler = List.Handler?.PlatformView as RecyclerView;
+                _pager.List = _recycler;
+            };
+
             List.Scrolled += (_, e) =>
             {
                 _pager.OnVisibleRange(e.FirstVisibleItemIndex, e.LastVisibleItemIndex);
                 SavePosition(e.FirstVisibleItemIndex);
             };
 
+            if (_session.CanPickDate)
+            {
+                ToolbarItems.Add(new ToolbarItem("Date", null, () => _ = PickDateAsync()));
+            }
+
+            if (_session.CanSearch)
+            {
+                ToolbarItems.Add(new ToolbarItem("Search", null, () => _ = OpenSearchAsync()));
+            }
+
+            ToolbarItems.Add(new ToolbarItem("Settings", null, () => _ = OpenSettingsAsync()));
+
 #if DEBUG
             // The trial's controlled step: a page added above with no scrolling under way, so a
             // screenshot before and after shows whether anything on screen moved.
-            ToolbarItems.Add(new ToolbarItem("Top", null, () => List.ScrollTo(0, position: ScrollToPosition.Start, animate: false)));
-            ToolbarItems.Add(new ToolbarItem("Load earlier", null, () => _ = LoadEarlierNow()));
+            ToolbarItems.Add(new ToolbarItem("Top", null, () => List.ScrollTo(0, position: ScrollToPosition.Start, animate: false)) { Order = ToolbarItemOrder.Secondary });
+            ToolbarItems.Add(new ToolbarItem("Load earlier", null, () => _ = LoadEarlierNow()) { Order = ToolbarItemOrder.Secondary });
 #endif
+
+            AttachmentCardView.Tapped += OnAttachmentTapped;
+            MessageText.LinkTapped += OnLinkTapped;
         }
 
         /// <inheritdoc />
@@ -67,32 +108,12 @@ namespace Chatcheology.Android.Pages
                 return;
             }
 
-            OpenedAt opened;
+            await BindAsync(_timeline, _openedAt, highlightSequenceNumber: null);
 
-            try
+            if (_openWatch is { } watch)
             {
-                // Built before the list is bound, so nothing is observing the rows yet.
-                opened = await _pager.OpenAsync(() => _session.OpenTimeline(_timeline));
+                AppState.LogTiming("open-shown", watch.Elapsed, $"messages={_session.MessageCount} rows={_timeline.Rows.Count}");
             }
-            catch (Exception exception) when (exception is ArchiveFormatException or SqliteException)
-            {
-                List.EmptyView = "This archive could not be read.";
-                return;
-            }
-
-            List.ItemsSource = _timeline.Rows;
-
-            if (opened.RowIndex >= 0)
-            {
-                List.ScrollTo(
-                    opened.RowIndex,
-                    position: opened.AtLatest ? ScrollToPosition.End : ScrollToPosition.Start,
-                    animate: false);
-            }
-
-            // Let the first placement settle before scrolling may load more or move the stored position.
-            await Task.Delay(500);
-            _pager.Ready = true;
         }
 
         /// <inheritdoc />
@@ -105,9 +126,151 @@ namespace Chatcheology.Android.Pages
                 return;
             }
 
-            // A page read may still be running on the reader's connection: let it finish first.
+            await CloseAsync();
+        }
+
+        /// <summary>Stops every read, then closes the archive. Safe to call twice.</summary>
+        private async Task CloseAsync()
+        {
+            if (_closed)
+            {
+                return;
+            }
+
+            _closed = true;
+            AttachmentCardView.Tapped -= OnAttachmentTapped;
+            MessageText.LinkTapped -= OnLinkTapped;
+
+            // A page read or a reopen may still be running on the reader's connection: let it finish.
             await _pager.StopAsync();
+            await WaitQuietly(_work);
+
             _session.Dispose();
+        }
+
+        // -----------------------------------------------------------------------------------------
+        // Placing the list.
+        // -----------------------------------------------------------------------------------------
+
+        /// <summary>Binds a loaded timeline and places it: at the bottom for the newest, otherwise the row at the top.</summary>
+        private async Task BindAsync(ConversationTimeline timeline, OpenedAt at, int? highlightSequenceNumber)
+        {
+            _timeline = timeline;
+            _pager = new ConversationPager(timeline) { List = _recycler };
+            _savedPosition = null;
+
+            List.ItemsSource = timeline.Rows;
+
+            if (at.RowIndex >= 0)
+            {
+                await PlaceAsync(at);
+            }
+
+            _pager.Ready = true;
+
+            // Where the list now is counts as where she last was, even before she scrolls (a date
+            // jump or a search hit followed by closing the app reopens there).
+            if (_recycler?.GetLayoutManager() is LinearLayoutManager placed)
+            {
+                SavePosition(placed.FindFirstVisibleItemPosition());
+            }
+
+            if (highlightSequenceNumber is { } sequence && timeline.IndexOfMessage(sequence) is var row and >= 0)
+            {
+                Highlight(row);
+            }
+        }
+
+        /// <summary>
+        /// Puts the row in place once the list has laid it out. The newest message is placed fully on
+        /// screen: rows are measured as they are drawn, so the end is checked again for a few frames
+        /// and the list moved down until it cannot go further.
+        /// </summary>
+        private async Task PlaceAsync(OpenedAt at)
+        {
+            // OnAppearing can come before the list has its Android view, or before that view is laid out
+            // with the new rows: wait for both (two seconds at most).
+            var waited = Stopwatch.StartNew();
+
+            while ((List.Handler?.PlatformView is not RecyclerView view || !view.IsLaidOut || view.Height == 0
+                    || (view.GetAdapter()?.ItemCount ?? 0) <= at.RowIndex)
+                   && waited.ElapsedMilliseconds < 2000)
+            {
+                await Task.Delay(16);
+            }
+
+            if (List.Handler?.PlatformView is not RecyclerView recycler)
+            {
+                List.ScrollTo(at.RowIndex, position: at.AtLatest ? ScrollToPosition.End : ScrollToPosition.Start, animate: false);
+                return;
+            }
+
+            _recycler = recycler;
+            _pager.List = recycler;
+
+            await NextFrameAsync(recycler);
+
+            if (recycler.GetLayoutManager() is LinearLayoutManager layout)
+            {
+                if (!at.AtLatest)
+                {
+                    layout.ScrollToPositionWithOffset(at.RowIndex, 0);
+                    await NextFrameAsync(recycler);
+                    return;
+                }
+
+                for (var attempt = 0; attempt < 12; attempt++)
+                {
+                    layout.ScrollToPosition(at.RowIndex);
+                    await NextFrameAsync(recycler);
+
+                    if (!recycler.CanScrollVertically(1))
+                    {
+                        // Two quiet frames in a row: the last row is measured and fully shown.
+                        await NextFrameAsync(recycler);
+
+                        if (!recycler.CanScrollVertically(1))
+                        {
+                            break;
+                        }
+                    }
+
+                    recycler.ScrollBy(0, Math.Max(recycler.Height, 1));
+                    await NextFrameAsync(recycler);
+                }
+            }
+        }
+
+        /// <summary>Waits for the list's next frame (at most half a second).</summary>
+        private static async Task NextFrameAsync(RecyclerView view)
+        {
+            var done = new TaskCompletionSource();
+            view.PostOnAnimation(new Java.Lang.Runnable(() => done.TrySetResult()));
+
+            await Task.WhenAny(done.Task, Task.Delay(500));
+        }
+
+        /// <summary>Briefly highlights the row at <paramref name="index"/>, once it is on screen.</summary>
+        private void Highlight(int index)
+        {
+            if (_recycler is not { } recycler)
+            {
+                return;
+            }
+
+            recycler.PostDelayed(
+                () =>
+                {
+                    if (recycler.FindViewHolderForAdapterPosition(index)?.ItemView is not { } view)
+                    {
+                        return;
+                    }
+
+                    var colour = ((Color)Application.Current!.Resources["Highlight"]).ToPlatform();
+                    view.SetBackgroundColor(colour);
+                    view.PostDelayed(() => view.SetBackgroundColor(global::Android.Graphics.Color.Transparent), HighlightMilliseconds);
+                },
+                150);
         }
 
         /// <summary>Stores the first message at or below the top row as the reader's position.</summary>
@@ -133,10 +296,254 @@ namespace Chatcheology.Android.Pages
             }
         }
 
+        /// <summary>The sequence number of the first message on screen, or the stored position.</summary>
+        private int? CurrentSequenceNumber()
+        {
+            if (_recycler?.GetLayoutManager() is LinearLayoutManager layout && layout.FindFirstVisibleItemPosition() is var first and >= 0)
+            {
+                for (var i = first; i < _timeline.Rows.Count; i++)
+                {
+                    if (_timeline.Rows[i] is MessageRow message)
+                    {
+                        return message.SequenceNumber;
+                    }
+                }
+            }
+
+            return _session.Position;
+        }
+
+        // -----------------------------------------------------------------------------------------
+        // Reopening: date jump, search hit, change of "me".
+        // -----------------------------------------------------------------------------------------
+
+        /// <summary>
+        /// Builds a new timeline off the UI thread with <paramref name="open"/> (which returns the row to
+        /// place at the top, or -1) and swaps it in. The old pager is stopped first, so only one read
+        /// uses the reader at a time.
+        /// </summary>
+        private async Task ReopenAsync(Func<ConversationTimeline, int> open, int? highlightSequenceNumber)
+        {
+            if (_busy || _closed)
+            {
+                return;
+            }
+
+            _busy = true;
+            Busy.IsVisible = Busy.IsRunning = true;
+
+            try
+            {
+                await _pager.StopAsync();
+
+                var read = Task.Run(() =>
+                {
+                    var timeline = _session.CreateTimeline();
+                    return (Timeline: timeline, Row: open(timeline));
+                });
+
+                _work = read;
+
+                (ConversationTimeline Timeline, int Row) result;
+
+                try
+                {
+                    result = await read;
+                }
+                catch (Exception exception) when (exception is ArchiveFormatException or SqliteException or IOException)
+                {
+                    await DisplayAlertAsync("Conversation", "That part of the archive could not be read.", "OK");
+                    result = (_timeline, -1);
+                }
+
+                if (_closed)
+                {
+                    return;
+                }
+
+                if (result.Row < 0 || ReferenceEquals(result.Timeline, _timeline))
+                {
+                    // Nothing to show there: carry on with what is loaded.
+                    _pager = new ConversationPager(_timeline) { List = _recycler, Ready = true };
+                    return;
+                }
+
+                await BindAsync(result.Timeline, new OpenedAt(result.Row, AtLatest: false), highlightSequenceNumber);
+            }
+            finally
+            {
+                Busy.IsVisible = Busy.IsRunning = false;
+                _busy = false;
+            }
+        }
+
+        /// <summary>Opens the conversation at <paramref name="sequenceNumber"/> and highlights it (a search hit).</summary>
+        internal Task OpenAtMessageAsync(int sequenceNumber) =>
+            ReopenAsync(timeline => timeline.OpenAt(sequenceNumber), sequenceNumber);
+
+        private async Task PickDateAsync()
+        {
+            if (_busy || _closed)
+            {
+                return;
+            }
+
+            if (_calendar is null)
+            {
+                Busy.IsVisible = Busy.IsRunning = true;
+
+                try
+                {
+                    // Between page reads only: the pager is paused while the days are read.
+                    await _pager.StopAsync();
+                    var read = Task.Run(() => new DayCalendar(_session.ReadDays()));
+                    _work = read;
+                    _calendar = await read;
+                }
+                catch (Exception exception) when (exception is ArchiveFormatException or SqliteException or IOException)
+                {
+                    await DisplayAlertAsync("Go to date", "The days could not be read.", "OK");
+                    return;
+                }
+                finally
+                {
+                    Busy.IsVisible = Busy.IsRunning = false;
+
+                    if (!_closed)
+                    {
+                        _pager = new ConversationPager(_timeline) { List = _recycler, Ready = true };
+                    }
+                }
+            }
+
+            var near = CurrentSequenceNumber() is { } sequence && _timeline.IndexOfMessage(sequence) is var row and >= 0
+                ? _timeline.Rows[row].Day
+                : DateOnly.FromDateTime(DateTime.Today);
+
+            await Navigation.PushAsync(new DatePickerPage(_calendar, near, day => ReopenAsync(
+                timeline =>
+                {
+                    // The day's separator heads the screen, with its first message below it.
+                    var row = timeline.OpenAtDay(day);
+                    return row > 0 && timeline.Rows[row - 1] is DateSeparatorRow ? row - 1 : row;
+                },
+                null)));
+        }
+
+        private async Task OpenSearchAsync()
+        {
+            if (_closed)
+            {
+                return;
+            }
+
+            await Navigation.PushAsync(new SearchPage(_session, this));
+        }
+
+        private async Task OpenSettingsAsync()
+        {
+            if (_closed)
+            {
+                return;
+            }
+
+            await Navigation.PushAsync(new SettingsPage(_session, OnMeChangedAsync, RemoveArchiveAsync));
+        }
+
+        /// <summary>"Me" changed in Settings: the bubbles are rebuilt at the same place.</summary>
+        private Task OnMeChangedAsync()
+        {
+            var at = CurrentSequenceNumber();
+
+            return ReopenAsync(
+                timeline => at is { } sequence ? timeline.OpenAt(sequence) : timeline.OpenAtLatest(),
+                null);
+        }
+
+        /// <summary>Settings &gt; Remove archive, confirmed: closes the archive, deletes the app's copy, back to the start.</summary>
+        private async Task RemoveArchiveAsync()
+        {
+            var archive = _session.Archive;
+
+            await CloseAsync();
+
+            try
+            {
+                await Task.Run(() => _state.Library.Remove(archive, _state.Settings));
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                await DisplayAlertAsync("Remove archive", "The archive could not be removed completely. Try again from the start screen.", "OK");
+            }
+
+            await Navigation.PopToRootAsync();
+        }
+
+        // -----------------------------------------------------------------------------------------
+        // Taps.
+        // -----------------------------------------------------------------------------------------
+
+        private async void OnAttachmentTapped(object? sender, AttachmentTapped tapped)
+        {
+            var card = tapped.Card;
+
+            if (_closed || card.FullPath is not { } path)
+            {
+                return;
+            }
+
+            if (card.Kind == AttachmentCardKind.Image && !tapped.DecodeFailed)
+            {
+                await Navigation.PushAsync(new ImageViewerPage(_state, path, card.MimeType ?? MediaMimeTypes.Fallback));
+                return;
+            }
+
+            await OpenInAnotherAppAsync(this, _state, path, card.MimeType ?? MediaMimeTypes.Fallback);
+        }
+
+        private async void OnLinkTapped(object? sender, string target)
+        {
+            if (_closed)
+            {
+                return;
+            }
+
+            if (ExternalOpener.OpenAddress(target) == OpenResult.NoApp)
+            {
+                await DisplayAlertAsync("Link", "No app on this phone can open this link.", "OK");
+            }
+        }
+
+        /// <summary>Opens a restored file in another app, or says why it could not.</summary>
+        internal static async Task OpenInAnotherAppAsync(Page page, AppState state, string path, string mimeType)
+        {
+            switch (ExternalOpener.OpenFile(path, mimeType, state.Library.ArchivesFolder))
+            {
+                case OpenResult.NoApp:
+                    await page.DisplayAlertAsync("Open", "No app on this phone can open this file.", "OK");
+                    break;
+                case OpenResult.NotAllowed:
+                    await page.DisplayAlertAsync("Open", "This file cannot be opened.", "OK");
+                    break;
+            }
+        }
+
+        private static async Task WaitQuietly(Task task)
+        {
+            try
+            {
+                await task;
+            }
+            catch (Exception exception) when (exception is ArchiveFormatException or SqliteException or IOException)
+            {
+                // Already reported where it ran.
+            }
+        }
+
 #if DEBUG
         private async Task LoadEarlierNow()
         {
-            (List.Handler?.PlatformView as RecyclerView)?.StopScroll();
+            _recycler?.StopScroll();
             await _pager.LoadEarlierAsync();
         }
 #endif

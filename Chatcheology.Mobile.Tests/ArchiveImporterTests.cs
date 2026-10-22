@@ -194,19 +194,11 @@ namespace Chatcheology.Mobile.Tests
         {
             SyntheticArchive.Write(_source, Small);
 
-            // Something no import handles, as if the process died here.
-            var source = new FolderSource(_source)
-            {
-                OnOpen = path =>
-                {
-                    if (path.StartsWith(ArchiveFormat.MediaFolderName, StringComparison.Ordinal))
-                    {
-                        throw new InvalidOperationException("Simulated crash.");
-                    }
-                },
-            };
+            // What a process killed in the middle of the copy leaves: a staging folder with part of the
+            // files. (An exception, unlike a kill, is cleaned up by the import itself.)
+            var killed = _library.CreateStagingFolder();
+            File.Copy(Path.Combine(_source, ArchiveFormat.DatabaseFileName), Path.Combine(killed, ArchiveFormat.DatabaseFileName));
 
-            Assert.Throws<InvalidOperationException>(() => Import(source));
             Assert.NotEmpty(StagingLeft());
             Assert.Empty(_library.ListInstalled());
 
@@ -309,6 +301,30 @@ namespace Chatcheology.Mobile.Tests
             Assert.Equal(2, result.MissingFiles);
             Assert.Equal("2 files the archive lists are not in the folder.", result.Message);
             Assert.Equal([ArchiveContents.FileName], source.Opened);
+            Assert.Empty(StagingLeft());
+        }
+
+        [Fact]
+        public void An_unexpected_exception_from_the_source_still_deletes_the_copy()
+        {
+            // A source adapter that lets an exception of its own kind escape (a platform exception it
+            // did not translate) must not leave a partial copy in staging.
+            SyntheticArchive.Write(_source, Small);
+            var opened = 0;
+            var source = new FolderSource(_source)
+            {
+                OnOpen = path =>
+                {
+                    if (path.StartsWith(ArchiveFormat.MediaFolderName, StringComparison.Ordinal) && ++opened == 2)
+                    {
+                        throw new InvalidOperationException("Simulated platform exception.");
+                    }
+                },
+            };
+
+            Assert.Throws<InvalidOperationException>(() => Import(source));
+
+            Assert.Empty(_library.ListInstalled());
             Assert.Empty(StagingLeft());
         }
 

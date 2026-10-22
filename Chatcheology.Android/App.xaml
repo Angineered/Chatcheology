@@ -15,6 +15,8 @@
             <Color x:Key="SenderText">#2E6B5E</Color>
             <Color x:Key="CardBackground">#F0F2F5</Color>
             <Color x:Key="Primary">#2E6B5E</Color>
+            <Color x:Key="Highlight">#FFE58F</Color>
+            <Color x:Key="LinkText">#027EB5</Color>
         </ResourceDictionary>
     </Application.Resources>
 </Application>

@@ -9,11 +9,12 @@ namespace Chatcheology.Android.Conversation
     /// Loads the next page in either direction when the list nears an end, one page at a time.
     /// </summary>
     /// <remarks>
-    /// The page is read on a worker thread and applied on the UI thread as one range insert. The CH-26
-    /// trial found MAUI's CollectionView keeps the message on screen exactly in place through such an
-    /// insert, so nothing here moves the list.
+    /// The page is read <strong>and its rows built</strong> (including the check for each media file) on
+    /// a worker thread; the UI thread only inserts the finished rows, as one range insert. The CH-26 trial
+    /// found MAUI's CollectionView keeps the message on screen exactly in place through such an insert,
+    /// so nothing here moves the list.
     /// <para>Every read of the archive goes through here, one at a time, so <see cref="StopAsync"/> can
-    /// wait for the one under way before the page closes the reader.</para>
+    /// wait for the one under way before the reader is used for something else or closed.</para>
     /// <para>After each page it asks <see cref="PagingRule"/> again with the rows on screen (moved by
     /// what a page above added), so a list shorter than the screen fills both ways without waiting for a
     /// scroll that may never come.</para>
@@ -21,46 +22,26 @@ namespace Chatcheology.Android.Conversation
     internal sealed class ConversationPager
     {
         private readonly ConversationTimeline _timeline;
-        private readonly string _listName;
         private Task _running = Task.CompletedTask;
         private bool _loading;
         private bool _stopped;
         private int _first = -1;
         private int _last = -1;
 
-        internal ConversationPager(ConversationTimeline timeline, string listName)
+        internal ConversationPager(ConversationTimeline timeline)
         {
             _timeline = timeline;
-            _listName = listName;
         }
 
-        /// <summary>The list's Android view, once its handler is connected.</summary>
+        /// <summary>The list's Android view, once its handler is connected (Debug logging only).</summary>
         internal RecyclerView? List { get; set; }
 
         /// <summary>Whether loading may start; off until the list has been placed at its first position.</summary>
         internal bool Ready { get; set; }
 
-        /// <summary>Opens the timeline off the UI thread, before the list is bound to its rows.</summary>
-        internal async Task<T> OpenAsync<T>(Func<T> open)
-        {
-            _loading = true;
-
-            try
-            {
-                var read = Task.Run(open);
-                _running = read;
-
-                return await read;
-            }
-            finally
-            {
-                _loading = false;
-            }
-        }
-
         /// <summary>
         /// Stops any further loading and waits for a read under way to finish, so the reader can be
-        /// closed safely afterwards.
+        /// used for something else, or closed, safely afterwards. A stopped pager stays stopped.
         /// </summary>
         internal async Task StopAsync()
         {
@@ -71,7 +52,7 @@ namespace Chatcheology.Android.Conversation
             {
                 await _running;
             }
-            catch (Exception exception) when (exception is ArchiveFormatException or SqliteException)
+            catch (Exception exception) when (exception is ArchiveFormatException or SqliteException or IOException)
             {
                 // The read failed; there is nothing left to wait for.
             }
@@ -86,6 +67,7 @@ namespace Chatcheology.Android.Conversation
             _ = PumpAsync();
         }
 
+#if DEBUG
         /// <summary>Loads the page before the loaded rows now, unless a read is under way (the trial's controlled step).</summary>
         internal async Task LoadEarlierAsync()
         {
@@ -105,6 +87,7 @@ namespace Chatcheology.Android.Conversation
                 _loading = false;
             }
         }
+#endif
 
         private async Task PumpAsync()
         {
@@ -140,7 +123,7 @@ namespace Chatcheology.Android.Conversation
                     }
                 }
             }
-            catch (Exception exception) when (exception is ArchiveFormatException or SqliteException)
+            catch (Exception exception) when (exception is ArchiveFormatException or SqliteException or IOException)
             {
                 // The archive could not be read further; what is loaded stays.
             }
@@ -150,10 +133,10 @@ namespace Chatcheology.Android.Conversation
             }
         }
 
-        /// <summary>Reads and adds the page above; how far the loaded rows moved, or null when nothing was added.</summary>
+        /// <summary>Reads and builds the page above off the UI thread, then inserts it; how far the loaded rows moved, or null.</summary>
         private async Task<int?> LoadEarlierCoreAsync()
         {
-            var read = Task.Run(_timeline.ReadEarlier);
+            var read = Task.Run(_timeline.PrepareEarlier);
             _running = read;
             var page = await read;
 
@@ -163,12 +146,12 @@ namespace Chatcheology.Android.Conversation
             }
 
 #if DEBUG
-            var join = _timeline.Rows.Count > 0 && page.Messages.Count > 0 && DateOnly.FromDateTime(page.Messages[^1].DateTimeLocal) == _timeline.Rows[0].Day
+            var join = _timeline.Rows.Count > 0 && page.Page.Messages.Count > 0 && DateOnly.FromDateTime(page.Page.Messages[^1].DateTimeLocal) == _timeline.Rows[0].Day
                 ? "inside-day" : "day-start";
             var top = ScrollAnchor.TopRowKind(List, _timeline.Rows);
             var anchor = ScrollAnchor.Capture(List, _timeline.Rows);
             var added = _timeline.Prepend(page);
-            ScrollTrialLog.AfterPrepend($"{_listName} join={join} topRow={top}", List, _timeline.Rows, anchor, added);
+            ScrollTrialLog.AfterPrepend($"CollectionView join={join} topRow={top}", List, _timeline.Rows, anchor, added);
 
             return added;
 #else
@@ -176,10 +159,10 @@ namespace Chatcheology.Android.Conversation
 #endif
         }
 
-        /// <summary>Reads and adds the page below; false when there was none.</summary>
+        /// <summary>Reads and builds the page below off the UI thread, then inserts it; false when there was none.</summary>
         private async Task<bool> LoadLaterCoreAsync()
         {
-            var read = Task.Run(_timeline.ReadLater);
+            var read = Task.Run(_timeline.PrepareLater);
             _running = read;
             var page = await read;
 

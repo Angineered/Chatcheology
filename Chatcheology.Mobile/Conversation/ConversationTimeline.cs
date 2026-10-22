@@ -114,15 +114,50 @@ namespace Chatcheology.Mobile.Conversation
                 : null;
 
         /// <summary>
+        /// Reads the page before the loaded rows and builds its rows, without changing the timeline, so
+        /// all of it can run on a worker thread; <see langword="null"/> when there is none.
+        /// </summary>
+        public PreparedPage? PrepareEarlier() => ReadEarlier() is { } page ? Prepare(page) : null;
+
+        /// <summary>
+        /// Reads the page after the loaded rows and builds its rows, without changing the timeline, so
+        /// all of it can run on a worker thread; <see langword="null"/> when there is none.
+        /// </summary>
+        public PreparedPage? PrepareLater() => ReadLater() is { } page ? Prepare(page) : null;
+
+        /// <summary>
+        /// Builds the rows of <paramref name="page"/> (including the check for each media file) without
+        /// changing the timeline. Safe on a worker thread while the list shows <see cref="Rows"/>.
+        /// </summary>
+        public PreparedPage Prepare(ArchivePage page)
+        {
+            ArgumentNullException.ThrowIfNull(page);
+
+            return new PreparedPage(page, BuildRows(page.Messages, page.Media, previousDay: null));
+        }
+
+        /// <summary>
         /// Adds an earlier page above the loaded rows.
         /// </summary>
         /// <returns>
         /// How far every message row that was loaded before moves down: the rows added, less the
         /// separator taken out when the page ends on the first loaded day.
         /// </returns>
-        public int Prepend(ArchivePage page)
+        public int Prepend(ArchivePage page) => Prepend(Prepare(page));
+
+        /// <summary>
+        /// Adds an earlier page whose rows were built by <see cref="Prepare"/>, so the thread the list is
+        /// bound on only inserts them.
+        /// </summary>
+        /// <returns>
+        /// How far every message row that was loaded before moves down: the rows added, less the
+        /// separator taken out when the page ends on the first loaded day.
+        /// </returns>
+        public int Prepend(PreparedPage prepared)
         {
-            ArgumentNullException.ThrowIfNull(page);
+            ArgumentNullException.ThrowIfNull(prepared);
+
+            var page = prepared.Page;
 
             if (page.Messages.Count == 0)
             {
@@ -135,7 +170,7 @@ namespace Chatcheology.Mobile.Conversation
                 throw new ArgumentException("The page is not before the loaded rows.", nameof(page));
             }
 
-            var rows = BuildRows(page.Messages, page.Media, previousDay: null);
+            var rows = prepared.Rows;
 
             HasEarlier = page.HasEarlier;
             _firstSequenceNumber = page.FirstSequenceNumber;
@@ -157,7 +192,13 @@ namespace Chatcheology.Mobile.Conversation
         }
 
         /// <summary>Adds a later page below the loaded rows.</summary>
-        public void Append(ArchivePage page) => Append(page, first: false);
+        public void Append(ArchivePage page) => Append(Prepare(page), first: false);
+
+        /// <summary>
+        /// Adds a later page whose rows were built by <see cref="Prepare"/>, so the thread the list is
+        /// bound on only inserts them.
+        /// </summary>
+        public void Append(PreparedPage prepared) => Append(prepared, first: false);
 
         /// <summary>The index of the row of the message with this sequence number, or -1.</summary>
         public int IndexOfMessage(int sequenceNumber)
@@ -227,9 +268,13 @@ namespace Chatcheology.Mobile.Conversation
             return rows;
         }
 
-        private void Append(ArchivePage page, bool first)
+        private void Append(ArchivePage page, bool first) => Append(Prepare(page), first);
+
+        private void Append(PreparedPage prepared, bool first)
         {
-            ArgumentNullException.ThrowIfNull(page);
+            ArgumentNullException.ThrowIfNull(prepared);
+
+            var page = prepared.Page;
 
             // Checked before anything changes, so a refused page leaves the timeline as it was.
             if (page.Messages.Count > 0 && _lastSequenceNumber is { } last && page.FirstSequenceNumber <= last)
@@ -249,9 +294,16 @@ namespace Chatcheology.Mobile.Conversation
                 return;
             }
 
-            DateOnly? previousDay = Rows.Count > 0 ? Rows[^1].Day : null;
+            // The rows were built without knowing the last loaded day: when the page starts on that
+            // day, its leading separator is one the loaded rows already have.
+            var rows = prepared.Rows;
 
-            Rows.InsertRange(Rows.Count, BuildRows(page.Messages, page.Media, previousDay));
+            if (Rows.Count > 0 && rows.Count > 0 && rows[0] is DateSeparatorRow separator && separator.Day == Rows[^1].Day)
+            {
+                rows = rows.Skip(1).ToList();
+            }
+
+            Rows.InsertRange(Rows.Count, rows);
 
             _firstSequenceNumber ??= page.FirstSequenceNumber;
             _lastSequenceNumber = page.LastSequenceNumber;
@@ -288,6 +340,24 @@ namespace Chatcheology.Mobile.Conversation
             HasEarlier = false;
             HasLater = false;
         }
+    }
 
+    /// <summary>
+    /// A page read from the archive with its rows already built, ready to be inserted on the thread the
+    /// list is bound on.
+    /// </summary>
+    public sealed class PreparedPage
+    {
+        internal PreparedPage(ArchivePage page, IReadOnlyList<ConversationRow> rows)
+        {
+            Page = page;
+            Rows = rows;
+        }
+
+        /// <summary>The page as read.</summary>
+        public ArchivePage Page { get; }
+
+        /// <summary>Its rows, built as if no day came before it.</summary>
+        public IReadOnlyList<ConversationRow> Rows { get; }
     }
 }

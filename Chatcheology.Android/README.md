@@ -44,6 +44,35 @@ The keystore is the future Play Store upload key: keep it outside the repository
 record where it is, never its passwords. `.gitignore` blocks `*.keystore`, `*.jks` and
 `signing*.props` as a safety net.
 
+## Installing on the phone
+
+`Install-OnPhone.ps1` (beside this file) does it in one go:
+
+```powershell
+.\Chatcheology.Android\Install-OnPhone.ps1
+```
+
+1. `adb devices`: exactly one phone connected by USB with USB debugging allowed (emulators are
+   ignored). If none is, it says what to do and stops. With several, pass `-Serial <serial>`.
+2. Builds the Release APK (signed as above).
+3. Runs `tools\Check-AndroidRelease.ps1` on it and stops if any check fails.
+4. `adb install -r`, which keeps the app's imported archives and settings.
+
+It never pushes files to the phone or reads anything from it. The archive is brought in with the
+app's own "Import archive…": copy the archive folder to the phone (for example into Download), put
+an empty `.nomedia` file in it so the gallery ignores its photos, then pick that folder in the app.
+After the import the copied folder may be deleted. If the install reports a signature mismatch, the
+app on the phone was signed with another key; uninstalling it deletes its imported archives.
+
+## Release checks
+
+`tools\Check-AndroidRelease.ps1` checks a built Release APK (by default
+`bin\Release\net10.0-android\org.chatcheology.viewer-Signed.apk`) with the SDK's aapt2 and
+zipalign: no INTERNET permission; `allowBackup` false; the backup and data-extraction rules present
+and excluding every domain; only the launcher activity exported; every FileProvider not exported,
+with per-URI grants, limited to `files/archives/`; `zipalign -c -P 16` passes. It exits 1 on any
+failure. Run it after every Release build that will be installed or published.
+
 ## Privacy
 
 No permissions in a Release build (the .NET tooling adds INTERNET to Debug builds only, for the
@@ -51,10 +80,19 @@ debugger). `allowBackup` is off, and `backup_rules.xml` and `data_extraction_rul
 domain, so neither cloud backup nor device-to-device transfer copies the archive. The launcher
 activity is the only exported component.
 
+The folder picker (`ACTION_OPEN_DOCUMENT_TREE`) gives the app read access to the picked folder only,
+for as long as it runs; no storage permission is requested. Media is handed to other apps only
+through the app's own FileProvider (`ArchiveFileProvider`): not exported, a read grant for the one
+file opened, and only files under `files/archives/`. MAUI Essentials' own FileProvider is removed
+from the manifest and its paths resource is overridden with the same single folder.
+
+The app logs timings only (tag `Chatcheology`: milliseconds and counts), never message text,
+names, file names or paths.
+
 ## Debug builds
 
 A Debug build compiles in the synthetic archive generator from
 `Chatcheology.Mobile.Tests\Synthetic` and shows development tools on the start page (install a
-synthetic archive, validate) and on the conversation page ("Top", "Load earlier", with the scroll
-log in `adb logcat -s ChatcheologyTrial`). A Release build contains none of it. The conversation
-list is MAUI's CollectionView, as the CH-26 trial chose; the native RecyclerView trial was removed.
+synthetic archive, validate) and in the conversation page's overflow menu ("Top", "Load earlier",
+with the scroll log in `adb logcat -s ChatcheologyTrial`). A Release build contains none of it. A
+Debug build uses fast deployment, so install it with `dotnet build -t:Install`, not `adb install`.

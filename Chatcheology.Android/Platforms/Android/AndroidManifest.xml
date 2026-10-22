@@ -5,7 +5,12 @@
 
      The launcher activity is the only exported component. AndroidX's profile installer brings an
      exported receiver (guarded by the DUMP permission) for baseline profiles of Java code; this app's
-     code is .NET, so the receiver does nothing useful here and is removed. -->
+     code is .NET, so the receiver does nothing useful here and is removed.
+
+     Media is handed to other apps only through the app's own FileProvider (ArchiveFileProvider: not
+     exported, one-file read grants, files/archives/ only). MAUI Essentials' FileProvider, which this app
+     does not use and whose paths cover shared storage and the caches, is removed; its paths resource is
+     also overridden with the archives folder only (Resources/xml), in case it ever comes back. -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
           xmlns:tools="http://schemas.android.com/tools">
 	<application
@@ -16,5 +21,6 @@
 		android:roundIcon="@mipmap/appicon_round"
 		android:supportsRtl="true">
 		<receiver android:name="androidx.profileinstaller.ProfileInstallReceiver" tools:node="remove" />
+		<provider android:name="microsoft.maui.essentials.fileProvider" tools:node="remove" />
 	</application>
 </manifest>

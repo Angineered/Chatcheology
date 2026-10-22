@@ -69,6 +69,49 @@ namespace Chatcheology.Mobile.Tests
         }
 
         [Fact]
+        public void The_rich_synthetic_archive_has_every_card_and_label_the_screens_show_and_is_valid()
+        {
+            var options = new SyntheticArchiveOptions(
+                Messages: 1200, Days: 40, Images: 8, Missing: 2, Unmatched: 2,
+                Audio: 2, Documents: 1, BrokenImages: 1, LowQualityCopies: 3, Forwarded: 12, Links: 6);
+
+            using var folder = new TemporaryFolder();
+            SyntheticArchive.Write(folder.Path, options);
+
+            Assert.True(ArchiveValidator.Validate(folder.Path).Passed);
+
+            using var reader = ArchiveReader.Open(folder.Path);
+            var timeline = new ConversationTimeline(reader, SyntheticArchive.Local);
+            timeline.OpenAt(1);
+
+            while (timeline.ReadLater() is { } page)
+            {
+                timeline.Append(page);
+            }
+
+            var messages = timeline.Rows.OfType<MessageRow>().ToList();
+            var cards = messages.SelectMany(message => message.ShownAttachments).ToList();
+
+            Assert.Equal(2, cards.Count(card => card.Kind == AttachmentCardKind.File && card.MediaType == "Audio" && card.DurationText == "0:01"));
+            Assert.Equal("audio/x-wav", cards.First(card => card.MediaType == "Audio").MimeType);
+            Assert.Equal("application/pdf", Assert.Single(cards, card => card.MediaType == "Document").MimeType);
+
+            // Eight images, the undecodable one (the app finds out when it decodes it) and the shown copy.
+            Assert.Equal(10, cards.Count(card => card.Kind == AttachmentCardKind.Image));
+
+            // Two copies hidden beside their images, one shown with its label beside a Missing card.
+            Assert.Equal(2, cards.Count(card => card.LowQualityNote.Length > 0));
+            var shownCopy = Assert.Single(cards, card => card.LowQualityLabel.Length > 0);
+            Assert.Contains(messages, message => message.ShownAttachments.Contains(shownCopy)
+                && message.ShownAttachments.Any(card => card.Kind == AttachmentCardKind.Missing));
+
+            Assert.Contains(messages, message => message.ForwardedText == "Forwarded");
+            Assert.Contains(messages, message => message.ForwardedText == "Forwarded many times");
+            Assert.Contains(messages, message => message.TextSpans.Any(span => span.Target == "https://www.example.org/synthetic"));
+            Assert.Contains(messages, message => message.TextSpans.Any(span => span.Target == "mailto:someone@example.org"));
+        }
+
+        [Fact]
         public void The_same_options_write_the_same_archive()
         {
             using var first = new TemporaryFolder();

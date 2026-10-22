@@ -43,5 +43,15 @@ namespace Chatcheology.Mobile.Import
     /// <param name="TotalBytes">Bytes to copy in all.</param>
     /// <param name="FilesCopied">Files copied so far.</param>
     /// <param name="TotalFiles">Files to copy in all.</param>
-    public sealed record ImportProgress(ImportStage Stage, long BytesCopied, long TotalBytes, int FilesCopied, int TotalFiles);
+    public sealed record ImportProgress(ImportStage Stage, long BytesCopied, long TotalBytes, int FilesCopied, int TotalFiles)
+    {
+        /// <summary>How much of the copy is done, from 0 to 1, by bytes.</summary>
+        public double Fraction => TotalBytes <= 0 ? (Stage == ImportStage.Checking ? 1 : 0) : Math.Clamp((double)BytesCopied / TotalBytes, 0, 1);
+
+        /// <summary>The progress line under the bar: sizes and file counts only.</summary>
+        public string Text => Stage == ImportStage.Checking
+            ? "Checking…"
+            : $"{ImportResult.Bytes(BytesCopied)} of {ImportResult.Bytes(TotalBytes)} · " +
+              $"{FilesCopied.ToString("N0", System.Globalization.CultureInfo.CurrentCulture)} of {TotalFiles.ToString("N0", System.Globalization.CultureInfo.CurrentCulture)} files";
+    }
 }

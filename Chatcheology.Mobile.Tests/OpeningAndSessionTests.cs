@@ -249,6 +249,58 @@ namespace Chatcheology.Mobile.Tests
         }
 
         [Fact]
+        public void A_stored_position_on_a_hidden_message_opens_at_the_next_shown_message()
+        {
+            // Message 3 has no text and only a hidden low-quality copy: it gets no row.
+            var builder = new ArchiveBuilder();
+            builder.Add("One");
+            builder.Media(new AttachmentSpec(1));
+            builder.Media(new AttachmentSpec(2, LowQualityOf: 1));
+            builder.Add("Four");
+            builder.Add("Five");
+
+            var archive = Install(folder => builder.Write(folder));
+            _settings.SetPosition(archive.ContentsSha256!, 3);
+
+            using var session = ArchiveSession.Open(archive, _settings);
+            var timeline = session.CreateTimeline();
+            var opened = session.OpenTimeline(timeline);
+
+            Assert.DoesNotContain(timeline.Rows.OfType<MessageRow>(), message => message.SequenceNumber == 3);
+            Assert.False(opened.AtLatest);
+            Assert.Equal(4, Assert.IsType<MessageRow>(timeline.Rows[opened.RowIndex]).SequenceNumber);
+        }
+
+        [Fact]
+        public void Opening_a_conversation_loads_its_timeline_where_the_reader_last_was()
+        {
+            var archive = InstallText(1000);
+            _settings.SetPosition(archive.ContentsSha256!, 500);
+
+            var opened = ArchiveSession.OpenConversation(archive, _settings);
+
+            using (opened.Session)
+            {
+                Assert.False(opened.At.AtLatest);
+                Assert.Equal(500, Assert.IsType<MessageRow>(opened.Timeline.Rows[opened.At.RowIndex]).SequenceNumber);
+                Assert.Equal(opened.Session.Me, opened.Timeline.LocalParticipantID);
+            }
+        }
+
+        [Fact]
+        public void Opening_a_conversation_that_cannot_be_read_leaves_nothing_open()
+        {
+            var archive = InstallText(10);
+            var broken = archive with { ContentsSha256 = null };
+
+            Assert.Throws<ArgumentException>(() => ArchiveSession.OpenConversation(broken, _settings));
+
+            // Nothing holds the database: the archive can be removed straight away.
+            _library.Remove(archive, _settings);
+            Assert.Empty(_library.ListInstalled());
+        }
+
+        [Fact]
         public void A_stored_position_past_the_end_opens_at_the_newest_messages()
         {
             var archive = InstallText(10);

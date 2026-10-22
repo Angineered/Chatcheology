@@ -1,3 +1,5 @@
+using Chatcheology.Android.Controls;
+
 namespace Chatcheology.Android
 {
     /// <summary>Builds the MAUI app.</summary>
@@ -9,6 +11,11 @@ namespace Chatcheology.Android
             var builder = MauiApp.CreateBuilder();
 
             builder.UseMauiApp<App>();
+            builder.ConfigureMauiHandlers(handlers =>
+            {
+                handlers.AddHandler<DecodedImage, DecodedImageHandler>();
+                handlers.AddHandler<ZoomImage, ZoomImageHandler>();
+            });
 
             return builder.Build();
         }

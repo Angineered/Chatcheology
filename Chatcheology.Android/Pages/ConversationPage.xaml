@@ -1,7 +1,8 @@
 <?xml version="1.0" encoding="utf-8" ?>
 <!-- The conversation in MAUI's CollectionView (chosen by the CH-26 trial). Rows are separators and
      messages; a selector picks the template. Image heights come from the recorded size, so a row has
-     its final height before its image is decoded. Hidden low-quality copies are not drawn. -->
+     its final height before its image is decoded. Hidden low-quality copies are not drawn. Message
+     text with addresses is drawn by MessageText, whose links open only on a tap. -->
 <ContentPage xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
              xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
              xmlns:conv="clr-namespace:Chatcheology.Mobile.Conversation;assembly=Chatcheology.Mobile"
@@ -36,7 +37,7 @@
                                 </DataTemplate>
                             </BindableLayout.ItemTemplate>
                         </VerticalStackLayout>
-                        <Label Text="{Binding Text}" IsVisible="{Binding HasText}" FontSize="15" TextColor="Black" />
+                        <controls:MessageText />
                         <Label Text="{Binding TimeText}" FontSize="11" HorizontalOptions="End"
                                TextColor="{StaticResource MutedText}" />
                     </VerticalStackLayout>
@@ -58,7 +59,7 @@
                                 </DataTemplate>
                             </BindableLayout.ItemTemplate>
                         </VerticalStackLayout>
-                        <Label Text="{Binding Text}" IsVisible="{Binding HasText}" FontSize="15" TextColor="Black" />
+                        <controls:MessageText />
                         <Label Text="{Binding TimeText}" FontSize="11" HorizontalOptions="End"
                                TextColor="{StaticResource MutedText}" />
                     </VerticalStackLayout>
@@ -83,7 +84,11 @@
                                    System="{StaticResource System}" />
     </ContentPage.Resources>
 
-    <CollectionView x:Name="List"
-                    ItemTemplate="{StaticResource RowTemplates}"
-                    SelectionMode="None" />
+    <Grid>
+        <CollectionView x:Name="List"
+                        ItemTemplate="{StaticResource RowTemplates}"
+                        SelectionMode="None" />
+        <ActivityIndicator x:Name="Busy" IsVisible="False" IsRunning="False"
+                           HorizontalOptions="Center" VerticalOptions="Center" />
+    </Grid>
 </ContentPage>

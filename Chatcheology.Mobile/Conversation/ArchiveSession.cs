@@ -13,6 +13,17 @@ namespace Chatcheology.Mobile.Conversation
     /// </param>
     public readonly record struct OpenedAt(int RowIndex, bool AtLatest);
 
+    /// <summary>An archive opened with its timeline loaded, ready for the conversation screen.</summary>
+    /// <param name="Session">The open session; whoever receives it closes it.</param>
+    /// <param name="Timeline">The timeline, loaded and not yet bound to a list.</param>
+    /// <param name="At">Where it was opened and how to place the list.</param>
+    public sealed record OpenedConversation(ArchiveSession Session, ConversationTimeline Timeline, OpenedAt At);
+
+    /// <summary>One participant Settings offers as "me".</summary>
+    /// <param name="ParticipantID">The participant.</param>
+    /// <param name="Label">The name, marked when it is the archive's own choice.</param>
+    public sealed record MeChoice(long ParticipantID, string Label);
+
     /// <summary>
     /// One opened archive: its reader, who "me" is, where the reader last was, and its search index.
     /// </summary>
@@ -116,6 +127,30 @@ namespace Chatcheology.Mobile.Conversation
             }
         }
 
+        /// <summary>
+        /// Opens <paramref name="archive"/>, builds its timeline with the current "me" and opens it where
+        /// the reader last was, all on the calling thread (call it off the UI thread). The session is
+        /// closed again when any step fails, so nothing is left open.
+        /// </summary>
+        /// <exception cref="ArchiveFormatException">The archive cannot be read.</exception>
+        /// <exception cref="ArgumentException">The archive's identity is not known.</exception>
+        public static OpenedConversation OpenConversation(InstalledArchive archive, ArchiveSettings settings, TimeProvider? clock = null)
+        {
+            var session = Open(archive, settings, clock);
+
+            try
+            {
+                var timeline = session.CreateTimeline();
+
+                return new OpenedConversation(session, timeline, session.OpenTimeline(timeline));
+            }
+            catch
+            {
+                session.Dispose();
+                throw;
+            }
+        }
+
         /// <summary>Chooses "me"; choosing the archive's own returns to it.</summary>
         /// <exception cref="ArgumentException">Not a participant of the archive.</exception>
         public void SetMe(long participantID)
@@ -127,6 +162,23 @@ namespace Chatcheology.Mobile.Conversation
 
             _settings.SetMe(_identity, participantID == DefaultMe ? null : participantID);
         }
+
+        /// <summary>
+        /// The participants Settings offers as "me", in identifier order, the archive's own choice marked;
+        /// system senders are not participants and are not offered.
+        /// </summary>
+        public IReadOnlyList<MeChoice> MeChoices => Participants
+            .OrderBy(p => p.ParticipantID)
+            .Select(p => new MeChoice(
+                p.ParticipantID,
+                p.ParticipantID == DefaultMe ? p.DisplayName + " (the archive's choice)" : p.DisplayName))
+            .ToList();
+
+        /// <summary>The archive's format version, for Settings &gt; About.</summary>
+        public int FormatVersion => Reader.Info.FormatVersion;
+
+        /// <summary>The last validation of this archive as About shows it.</summary>
+        public string ValidationText => ArchiveSettings.DescribeValidation(_settings.GetValidation(_identity));
 
         /// <summary>A timeline with the current "me". After "me" changes, a new one is made and opened.</summary>
         public ConversationTimeline CreateTimeline() => new(Reader, Me, LowQuality);

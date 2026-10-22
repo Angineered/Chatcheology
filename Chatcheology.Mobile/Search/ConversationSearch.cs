@@ -33,6 +33,19 @@ namespace Chatcheology.Mobile.Search
     {
         /// <summary>No results.</summary>
         public static SearchResults None { get; } = new([], 0);
+
+        /// <summary>Whether more messages matched than are listed.</summary>
+        public bool IsCapped => TotalMatches > Hits.Count;
+
+        /// <summary>The line above the results: how many matched, and how many are listed when capped.</summary>
+        public string Summary => TotalMatches switch
+        {
+            0 => "No messages match.",
+            1 => "1 message matches.",
+            _ when IsCapped =>
+                $"{TotalMatches.ToString("N0", CultureInfo.CurrentCulture)} messages match. The newest {Hits.Count.ToString("N0", CultureInfo.CurrentCulture)} are listed.",
+            _ => $"{TotalMatches.ToString("N0", CultureInfo.CurrentCulture)} messages match.",
+        };
     }
 
     /// <summary>
@@ -118,7 +131,9 @@ namespace Chatcheology.Mobile.Search
 
             var needle = query.Trim();
 
-            if (needle.Length == 0)
+            // A query of only characters the comparison ignores (combining marks alone) would match
+            // everywhere with nothing to highlight: it finds nothing.
+            if (needle.Length == 0 || Compare.Compare(needle, string.Empty, Options) == 0)
             {
                 return SearchResults.None;
             }
@@ -176,10 +191,14 @@ namespace Chatcheology.Mobile.Search
                     break;
                 }
 
-                matches.Add(new MatchRange(start + found, length));
+                // An empty match (a needle of ignorable characters only) is no match at all.
+                if (length == 0)
+                {
+                    break;
+                }
 
-                // An empty match (ignorable characters only) still moves on, so the loop always ends.
-                start += found + Math.Max(length, 1);
+                matches.Add(new MatchRange(start + found, length));
+                start += found + length;
             }
 
             return matches;

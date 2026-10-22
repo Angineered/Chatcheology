@@ -82,6 +82,23 @@ namespace Chatcheology.Mobile.Settings
             Set(contentsSha256, "validation", string.Create(CultureInfo.InvariantCulture, $"{passed}/{checks}"));
         }
 
+        /// <summary>
+        /// The last validation as Settings &gt; About shows it: the result, the checks passed of checks run,
+        /// and the local date and time; "Not recorded" when there is none.
+        /// </summary>
+        public static string DescribeValidation((DateTime Utc, int Passed, int Checks)? validation)
+        {
+            if (validation is not { } value)
+            {
+                return "Not recorded";
+            }
+
+            var result = value.Passed == value.Checks && value.Checks > 0 ? "Passed" : "Did not pass";
+            var when = value.Utc.ToLocalTime().ToString("d MMMM yyyy, HH:mm", CultureInfo.CurrentCulture);
+
+            return $"{result}: {value.Passed.ToString(CultureInfo.CurrentCulture)} of {value.Checks.ToString(CultureInfo.CurrentCulture)} checks, {when}";
+        }
+
         /// <summary>Forgets everything stored for the archive.</summary>
         public void Forget(string contentsSha256)
         {

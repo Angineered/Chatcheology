@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Overrides the paths of MAUI Essentials' FileProvider (by default shared storage, the cache and the
+     external cache) with the archives folder only. The app also removes that provider from its
+     manifest (AndroidManifest.xml); this resource keeps it narrow should it ever be declared again. -->
+<paths>
+	<files-path name="archives" path="archives/" />
+</paths>

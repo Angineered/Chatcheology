@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8" ?>
-<!-- The start screen: the installed archives, or a note that there are none yet. Import comes in a
-     later step; Debug builds add tools for installing a synthetic archive and for the trial. -->
+<!-- The start screen: the installed archives (last opened first) or a note that there are none, and
+     "Import archive…". Debug builds add development tools below. -->
 <ContentPage xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
              xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
              x:Class="Chatcheology.Android.Pages.StartPage"
@@ -8,9 +8,13 @@
     <ScrollView>
         <VerticalStackLayout Padding="16" Spacing="12">
             <Label x:Name="Summary" FontSize="16" />
-            <VerticalStackLayout x:Name="Archives" Spacing="8" />
-            <VerticalStackLayout x:Name="DevelopmentTools" Spacing="8" />
+            <VerticalStackLayout x:Name="Archives" Spacing="10" />
+            <Button x:Name="ImportButton" Text="Import archive…" Clicked="OnImportClicked"
+                    BackgroundColor="{StaticResource Primary}" TextColor="White" />
+            <Label FontSize="13" TextColor="{StaticResource MutedText}"
+                   Text="Copy the archive folder to the phone first. Put an empty file named .nomedia in that folder, so the gallery does not show the archive's photos. The app copies the archive into its own storage; afterwards you may delete the folder you copied." />
             <Label x:Name="Status" FontSize="14" TextColor="{StaticResource MutedText}" />
+            <VerticalStackLayout x:Name="DevelopmentTools" Spacing="8" />
         </VerticalStackLayout>
     </ScrollView>
 </ContentPage>
