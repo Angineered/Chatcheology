@@ -34,7 +34,7 @@ namespace Chatcheology.Android
         NotAllowed,
     }
 
-    /// <summary>Hands restored media and tapped addresses to other apps.</summary>
+    /// <summary>Hands restored media, shared text and tapped addresses to other apps.</summary>
     internal static class ExternalOpener
     {
         /// <summary>
@@ -45,26 +45,7 @@ namespace Chatcheology.Android
         {
             var activity = Platform.CurrentActivity;
 
-            if (activity is null)
-            {
-                return OpenResult.NotAllowed;
-            }
-
-            // Only files inside the installed archives, whatever the provider's own paths say.
-            var full = Path.GetFullPath(fullPath);
-
-            if (!full.StartsWith(Path.TrimEndingDirectorySeparator(archivesFolder) + Path.DirectorySeparatorChar, StringComparison.Ordinal))
-            {
-                return OpenResult.NotAllowed;
-            }
-
-            global::Android.Net.Uri uri;
-
-            try
-            {
-                uri = AndroidX.Core.Content.FileProvider.GetUriForFile(activity, ArchiveFileProvider.Authority(activity), new Java.IO.File(full))!;
-            }
-            catch (Java.Lang.IllegalArgumentException)
+            if (activity is null || ArchiveUri(activity, fullPath, archivesFolder) is not { } uri)
             {
                 return OpenResult.NotAllowed;
             }
@@ -74,6 +55,71 @@ namespace Chatcheology.Android
             intent.AddFlags(ActivityFlags.GrantReadUriPermission);
 
             return Start(activity, intent);
+        }
+
+        /// <summary>
+        /// Offers one restored media file to the share sheet (<c>ACTION_SEND</c>) through
+        /// <see cref="ArchiveFileProvider"/>: a read grant for this one URI, not persistable, and the MIME
+        /// type from its extension. The person chooses the app; nothing is sent until she does.
+        /// </summary>
+        internal static OpenResult ShareFile(string fullPath, string mimeType, string archivesFolder)
+        {
+            var activity = Platform.CurrentActivity;
+
+            if (activity is null || ArchiveUri(activity, fullPath, archivesFolder) is not { } uri)
+            {
+                return OpenResult.NotAllowed;
+            }
+
+            var intent = new Intent(Intent.ActionSend);
+            intent.SetType(mimeType);
+            intent.PutExtra(Intent.ExtraStream, uri);
+
+            // The grant travels with the clip, so the chooser passes it to the chosen app (and only it).
+            intent.ClipData = ClipData.NewRawUri(string.Empty, uri);
+            intent.AddFlags(ActivityFlags.GrantReadUriPermission);
+
+            return Start(activity, Intent.CreateChooser(intent, "Share")!);
+        }
+
+        /// <summary>Offers a message's text to the share sheet (<c>ACTION_SEND</c>, plain text).</summary>
+        internal static OpenResult ShareText(string text)
+        {
+            var activity = Platform.CurrentActivity;
+
+            if (activity is null || string.IsNullOrEmpty(text))
+            {
+                return OpenResult.NotAllowed;
+            }
+
+            var intent = new Intent(Intent.ActionSend);
+            intent.SetType("text/plain");
+            intent.PutExtra(Intent.ExtraText, text);
+
+            return Start(activity, Intent.CreateChooser(intent, "Share")!);
+        }
+
+        /// <summary>
+        /// The provider's URI for a file inside the installed archives, or <see langword="null"/> for any
+        /// other file, whatever the provider's own paths say.
+        /// </summary>
+        private static global::Android.Net.Uri? ArchiveUri(Activity activity, string fullPath, string archivesFolder)
+        {
+            var full = Path.GetFullPath(fullPath);
+
+            if (!full.StartsWith(Path.TrimEndingDirectorySeparator(archivesFolder) + Path.DirectorySeparatorChar, StringComparison.Ordinal))
+            {
+                return null;
+            }
+
+            try
+            {
+                return AndroidX.Core.Content.FileProvider.GetUriForFile(activity, ArchiveFileProvider.Authority(activity), new Java.IO.File(full));
+            }
+            catch (Java.Lang.IllegalArgumentException)
+            {
+                return null;
+            }
         }
 
         /// <summary>Opens a tapped web or email address in the app that handles it.</summary>

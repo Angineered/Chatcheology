@@ -107,6 +107,16 @@ namespace Chatcheology.Mobile.Conversation
         /// <summary>Whether there is any text to show.</summary>
         public bool HasText => Text.Length > 0;
 
+        /// <summary>
+        /// What Share hands to the share sheet: the message text exactly as written (links and emoji as
+        /// they are), with no date and no sender. <see langword="null"/> when there is nothing to share: a
+        /// message that is only the media placeholder, or a system line.
+        /// </summary>
+        public string? ShareText => HasText && !IsSystem ? Text : null;
+
+        /// <summary>Whether a long press offers Share.</summary>
+        public bool CanShareText => ShareText is not null;
+
         /// <summary>The text split into plain runs and tappable addresses; joined, it is <see cref="Text"/>.</summary>
         public IReadOnlyList<TextSpan> TextSpans { get; }
 
@@ -217,9 +227,25 @@ namespace Chatcheology.Mobile.Conversation
         /// <summary>The tallest an image is shown, as a multiple of the width it is shown at.</summary>
         public const double MaximumHeightRatio = 4.0 / 3.0;
 
+        private readonly ArchiveAttachment _attachment;
+        private readonly ArchiveMedia? _media;
+        private readonly DateTime _messageTime;
+        private readonly string? _senderName;
+
         internal AttachmentCard(
-            ArchiveAttachment attachment, ArchiveMedia? media, string? fullPath, bool fileExists, LowQualityIndex lowQuality)
+            ArchiveAttachment attachment,
+            ArchiveMedia? media,
+            string? fullPath,
+            bool fileExists,
+            LowQualityIndex lowQuality,
+            DateTime messageTime,
+            string? senderName)
         {
+            _attachment = attachment;
+            _media = media;
+            _messageTime = messageTime;
+            _senderName = senderName;
+
             AttachmentID = attachment.AttachmentID;
             MediaType = media?.MediaType;
 
@@ -280,6 +306,12 @@ namespace Chatcheology.Mobile.Conversation
 
         /// <summary>The MIME type to open the file with, from its extension; <see langword="null"/> without a file.</summary>
         public string? MimeType { get; }
+
+        /// <summary>
+        /// The photo viewer's Info lines, read from the archive's message, attachment and media rows
+        /// (<see cref="MediaDetails"/>). Built when asked for, not for every card.
+        /// </summary>
+        public IReadOnlyList<MediaDetail> Details => MediaDetails.Of(_messageTime, _senderName, _attachment, _media);
 
         /// <summary>Whether a tap may open the file in another app.</summary>
         public bool CanOpen => FullPath is not null;

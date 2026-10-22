@@ -30,10 +30,9 @@ namespace Chatcheology.Android.Pages
         private ConversationPager _pager;
         private OpenedAt _openedAt;
         private readonly ArchiveReadGate _gate = new();
+        private readonly ReadTurn _turn;
         private RecyclerView? _recycler;
         private bool _opened;
-        private bool _busy;
-        private bool _meChangePending;
         private int? _savedPosition;
         private DayCalendar? _calendar;
 
@@ -54,6 +53,7 @@ namespace Chatcheology.Android.Pages
             _openedAt = opened.At;
             _openWatch = openWatch;
             _pager = new ConversationPager(_timeline);
+            _turn = new ReadTurn(_gate);
 
             Title = _session.Title;
             List.ItemsUpdatingScrollMode = ItemsUpdatingScrollMode.KeepItemsInView;
@@ -91,6 +91,7 @@ namespace Chatcheology.Android.Pages
 
             AttachmentCardView.Tapped += OnAttachmentTapped;
             MessageText.LinkTapped += OnLinkTapped;
+            MessageLongPress.Pressed += OnMessageLongPressed;
         }
 
         /// <inheritdoc />
@@ -145,6 +146,7 @@ namespace Chatcheology.Android.Pages
 
             AttachmentCardView.Tapped -= OnAttachmentTapped;
             MessageText.LinkTapped -= OnLinkTapped;
+            MessageLongPress.Pressed -= OnMessageLongPressed;
 
             try
             {
@@ -323,12 +325,11 @@ namespace Chatcheology.Android.Pages
         /// </summary>
         private async Task ReopenAsync(Func<ConversationTimeline, int> open, int? highlightSequenceNumber)
         {
-            if (_busy || _closed)
+            if (!_turn.TryBegin())
             {
                 return;
             }
 
-            _busy = true;
             Busy.IsVisible = Busy.IsRunning = true;
 
             try
@@ -372,12 +373,10 @@ namespace Chatcheology.Android.Pages
             finally
             {
                 Busy.IsVisible = Busy.IsRunning = false;
-                _busy = false;
 
                 // "Me" changed again while this ran: rebuild once more, so the latest choice wins.
-                if (_meChangePending && !_closed)
+                if (_turn.End())
                 {
-                    _meChangePending = false;
                     _ = OnMeChangedAsync();
                 }
             }
@@ -389,14 +388,18 @@ namespace Chatcheology.Android.Pages
 
         private async Task PickDateAsync()
         {
-            if (_busy || _closed)
+            if (_turn.IsBusy || _closed)
             {
                 return;
             }
 
             if (_calendar is null)
             {
-                _busy = true;
+                if (!_turn.TryBegin())
+                {
+                    return;
+                }
+
                 Busy.IsVisible = Busy.IsRunning = true;
 
                 try
@@ -423,11 +426,17 @@ namespace Chatcheology.Android.Pages
                 finally
                 {
                     Busy.IsVisible = Busy.IsRunning = false;
-                    _busy = false;
 
                     if (!_closed)
                     {
                         _pager = new ConversationPager(_timeline) { List = _recycler, Ready = true };
+                    }
+
+                    // "Me" changed while the days were read (CH-29): rebuild now, through the gate like
+                    // every read, after the pager is back so the rebuild stops this one.
+                    if (_turn.End())
+                    {
+                        _ = OnMeChangedAsync();
                     }
                 }
             }
@@ -472,14 +481,8 @@ namespace Chatcheology.Android.Pages
         /// </summary>
         private Task OnMeChangedAsync()
         {
-            if (_closed)
+            if (!_turn.MeChanged())
             {
-                return Task.CompletedTask;
-            }
-
-            if (_busy)
-            {
-                _meChangePending = true;
                 return Task.CompletedTask;
             }
 
@@ -524,7 +527,7 @@ namespace Chatcheology.Android.Pages
 
             if (card.Kind == AttachmentCardKind.Image && !tapped.DecodeFailed)
             {
-                await Navigation.PushAsync(new ImageViewerPage(_state, path, card.MimeType ?? MediaMimeTypes.Fallback));
+                await Navigation.PushAsync(new ImageViewerPage(_state, card));
                 return;
             }
 
@@ -541,6 +544,35 @@ namespace Chatcheology.Android.Pages
             if (ExternalOpener.OpenAddress(target) == OpenResult.NoApp)
             {
                 await DisplayAlertAsync("Link", "No app on this phone can open this link.", "OK");
+            }
+        }
+
+        /// <summary>
+        /// A long press on a message with text (CH-34): Share offers the text only, no date or sender, to
+        /// the share sheet. Nothing leaves the app until she picks Share and then an app.
+        /// </summary>
+        private async void OnMessageLongPressed(object? sender, MessageRow message)
+        {
+            if (_closed || Navigation.NavigationStack.LastOrDefault() != this || message.ShareText is not { } text)
+            {
+                return;
+            }
+
+            try
+            {
+                if (await DisplayActionSheetAsync(null, "Cancel", null, "Share") != "Share")
+                {
+                    return;
+                }
+
+                if (ExternalOpener.ShareText(text) == OpenResult.NoApp)
+                {
+                    await DisplayAlertAsync("Share", "No app on this phone can receive text.", "OK");
+                }
+            }
+            catch (Exception)
+            {
+                // A tap handler: nothing here may end the app.
             }
         }
 

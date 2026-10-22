@@ -17,6 +17,9 @@ namespace Chatcheology.Android.Controls
         {
             FontSize = 15;
             TextColor = Colors.Black;
+
+            // A text with links takes its own touches: the long press for Share is watched here too.
+            MessageLongPress.Watch(this);
         }
 
         /// <inheritdoc />

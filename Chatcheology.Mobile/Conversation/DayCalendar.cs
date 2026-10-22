@@ -18,6 +18,12 @@ namespace Chatcheology.Mobile.Conversation
     public sealed record CalendarMonth(
         int Index, int Year, int Month, string Title, IReadOnlyList<string> WeekdayNames, IReadOnlyList<CalendarCell> Cells);
 
+    /// <summary>One choice of the date picker's month selector.</summary>
+    /// <param name="Index">Its position among the months with messages, for <see cref="DayCalendar.Month"/>.</param>
+    /// <param name="Month">The month, 1 to 12.</param>
+    /// <param name="Name">The month's name.</param>
+    public sealed record CalendarMonthChoice(int Index, int Month, string Name);
+
     /// <summary>
     /// The date picker's calendar: only days that have messages can be picked, and only months that
     /// have messages are shown (design "Date picker: only days that have messages").
@@ -116,6 +122,57 @@ namespace Chatcheology.Mobile.Conversation
                 var distance = Math.Abs(MonthNumber(_months[i].Year, _months[i].Month) - target);
 
                 if (distance < bestDistance)
+                {
+                    best = i;
+                    bestDistance = distance;
+                }
+            }
+
+            return best;
+        }
+
+        /// <summary>The years that have messages, oldest first: the year selector's choices.</summary>
+        public IReadOnlyList<int> Years => _months.Select(month => month.Year).Distinct().ToList();
+
+        /// <summary>
+        /// The months of <paramref name="year"/> that have messages, in calendar order: the month selector's
+        /// choices for that year. Empty when the year has none.
+        /// </summary>
+        public IReadOnlyList<CalendarMonthChoice> MonthsIn(int year)
+        {
+            var choices = new List<CalendarMonthChoice>(12);
+
+            for (var i = 0; i < _months.Count; i++)
+            {
+                if (_months[i].Year == year)
+                {
+                    choices.Add(new CalendarMonthChoice(i, _months[i].Month, _culture.DateTimeFormat.GetMonthName(_months[i].Month)));
+                }
+            }
+
+            return choices;
+        }
+
+        /// <summary>
+        /// Where the year selector moves the grid: the month of <paramref name="year"/> with messages nearest
+        /// to <paramref name="month"/> (the same month when it has messages; the later one on a tie).
+        /// -1 when the year has no messages.
+        /// </summary>
+        public int IndexInYear(int year, int month)
+        {
+            var best = -1;
+            var bestDistance = int.MaxValue;
+
+            for (var i = 0; i < _months.Count; i++)
+            {
+                if (_months[i].Year != year)
+                {
+                    continue;
+                }
+
+                var distance = Math.Abs(_months[i].Month - month);
+
+                if (distance <= bestDistance)
                 {
                     best = i;
                     bestDistance = distance;

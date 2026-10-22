@@ -315,6 +315,9 @@ namespace Chatcheology.Mobile.Conversation
                 ? _names.TryGetValue(id, out var name) ? name : "Unknown sender"
                 : "System";
 
+            // For a photo's Info: the participant's name only, never the bubble's stand-in words.
+            var senderName = message.SenderParticipantID is { } participant && _names.TryGetValue(participant, out var known) ? known : null;
+
             var attachments = message.Attachments
                 .Select(attachment =>
                 {
@@ -325,7 +328,9 @@ namespace Chatcheology.Mobile.Conversation
                         attachment.MediaSha256 is { } sha && media.TryGetValue(sha, out var payload) ? payload : null,
                         path,
                         path is not null && File.Exists(path),
-                        _lowQuality);
+                        _lowQuality,
+                        message.DateTimeLocal,
+                        senderName);
                 })
                 .ToList();
 
