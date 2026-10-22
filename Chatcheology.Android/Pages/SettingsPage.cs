@@ -5,7 +5,8 @@ namespace Chatcheology.Android.Pages
 {
     /// <summary>
     /// Settings for the open archive: Me (a participant, the archive's choice by default, remembered per
-    /// archive), Remove archive (after a confirmation) and About.
+    /// archive), On this day (on unless turned off, per archive; CH-39), Remove archive (after a
+    /// confirmation) and About.
     /// </summary>
     internal sealed class SettingsPage : ContentPage
     {
@@ -16,7 +17,7 @@ namespace Chatcheology.Android.Pages
         private readonly IReadOnlyList<MeChoice> _choices;
         private bool _loading;
 
-        internal SettingsPage(ArchiveSession session, Func<Task> meChanged, Func<Task> removeArchive)
+        internal SettingsPage(ArchiveSession session, Func<Task> meChanged, Func<Task> removeArchive, Action onThisDayChanged)
         {
             _session = session;
             _meChanged = meChanged;
@@ -30,6 +31,23 @@ namespace Chatcheology.Android.Pages
             _me.SelectedIndex = IndexOf(session.Me);
             _loading = false;
             _me.SelectedIndexChanged += OnMeChanged;
+
+            var onThisDay = new Switch { IsToggled = session.OnThisDayEnabled, VerticalOptions = LayoutOptions.Center }
+                .Themed(Switch.OnColorProperty, "Primary");
+            onThisDay.Toggled += (_, e) =>
+            {
+                session.OnThisDayEnabled = e.Value;
+                onThisDayChanged();
+            };
+
+            var onThisDayRow = new Grid
+            {
+                ColumnDefinitions = { new ColumnDefinition(GridLength.Star), new ColumnDefinition(GridLength.Auto) },
+                ColumnSpacing = 12,
+            };
+
+            onThisDayRow.Add(new Label { Text = "Show earlier years' messages from today's date when the conversation opens.", FontSize = 13, VerticalOptions = LayoutOptions.Center }.TextIn("MutedText"), 0);
+            onThisDayRow.Add(onThisDay, 1);
 
             var remove = new Button { Text = "Remove archive…", TextColor = Colors.White, BackgroundColor = Color.FromArgb("#B3261E") };
             remove.Clicked += OnRemoveClicked;
@@ -47,6 +65,9 @@ namespace Chatcheology.Android.Pages
                         Heading("Me"),
                         new Label { Text = "Whose messages are shown on the right.", FontSize = 13 }.TextIn("MutedText"),
                         _me,
+
+                        Heading("On this day"),
+                        onThisDayRow,
 
                         Heading("Remove archive"),
                         new Label { Text = "Deletes the app's copy of this archive. The folder you imported it from is not touched.", FontSize = 13 }.TextIn("MutedText"),

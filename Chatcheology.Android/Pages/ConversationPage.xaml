@@ -4,7 +4,9 @@
      its final height before its image is decoded. Hidden low-quality copies are not drawn. Message
      text with addresses is drawn by MessageText, whose links open only on a tap. A message opened from
      search is highlighted through its own IsHighlighted flag, so the highlight follows the message, not
-     a recycled view. A long press on a bubble with text offers Share (MessageBubble, MessageText). -->
+     a recycled view. A long press on a bubble offers Share for text and Star / Unstar (MessageBubble,
+     MessageText, AttachmentCardView); a starred message, or one with a starred photo, shows a small
+     star beside its time (CH-38). Colours come in light and dark pairs (CH-41). -->
 <ContentPage xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
              xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
              xmlns:conv="clr-namespace:Chatcheology.Mobile.Conversation;assembly=Chatcheology.Mobile"
@@ -45,8 +47,12 @@
                             </BindableLayout.ItemTemplate>
                         </VerticalStackLayout>
                         <controls:MessageText />
-                        <Label Text="{Binding TimeText}" FontSize="11" HorizontalOptions="End"
-                               TextColor="{AppThemeBinding Light={StaticResource MutedTextLight}, Dark={StaticResource MutedTextDark}}" />
+                        <HorizontalStackLayout HorizontalOptions="End" Spacing="4">
+                            <Label Text="★" FontSize="11" IsVisible="{Binding ShowsStar}"
+                                   TextColor="{AppThemeBinding Light={StaticResource StarLight}, Dark={StaticResource StarDark}}" />
+                            <Label Text="{Binding TimeText}" FontSize="11"
+                                   TextColor="{AppThemeBinding Light={StaticResource MutedTextLight}, Dark={StaticResource MutedTextDark}}" />
+                        </HorizontalStackLayout>
                     </VerticalStackLayout>
                 </controls:MessageBubble>
             </Grid>
@@ -72,8 +78,12 @@
                             </BindableLayout.ItemTemplate>
                         </VerticalStackLayout>
                         <controls:MessageText />
-                        <Label Text="{Binding TimeText}" FontSize="11" HorizontalOptions="End"
-                               TextColor="{AppThemeBinding Light={StaticResource MutedTextLight}, Dark={StaticResource MutedTextDark}}" />
+                        <HorizontalStackLayout HorizontalOptions="End" Spacing="4">
+                            <Label Text="★" FontSize="11" IsVisible="{Binding ShowsStar}"
+                                   TextColor="{AppThemeBinding Light={StaticResource StarLight}, Dark={StaticResource StarDark}}" />
+                            <Label Text="{Binding TimeText}" FontSize="11"
+                                   TextColor="{AppThemeBinding Light={StaticResource MutedTextLight}, Dark={StaticResource MutedTextDark}}" />
+                        </HorizontalStackLayout>
                     </VerticalStackLayout>
                 </controls:MessageBubble>
             </Grid>
@@ -107,5 +117,20 @@
                         SelectionMode="None" />
         <ActivityIndicator x:Name="Busy" IsVisible="False" IsRunning="False"
                            HorizontalOptions="Center" VerticalOptions="Center" />
+
+        <!-- On this day (CH-39): earlier years with messages today, each a jump; filled in code. -->
+        <Border x:Name="OnThisDayCard" IsVisible="False" VerticalOptions="Start" Margin="12,8"
+                Padding="14,8,6,8" StrokeThickness="0" StrokeShape="RoundRectangle 10"
+                BackgroundColor="{AppThemeBinding Light={StaticResource SeparatorBackgroundLight}, Dark={StaticResource SeparatorBackgroundDark}}">
+            <Border.Shadow>
+                <Shadow Radius="6" Opacity="0.25" Offset="0,2" Brush="Black" />
+            </Border.Shadow>
+            <Grid ColumnDefinitions="*,Auto" ColumnSpacing="4">
+                <FlexLayout x:Name="OnThisDayYears" Wrap="Wrap" AlignItems="Center" />
+                <Label x:Name="OnThisDayClose" Grid.Column="1" Text="✕" FontSize="16" Padding="10,4"
+                       VerticalOptions="Center" SemanticProperties.Description="Dismiss until tomorrow"
+                       TextColor="{AppThemeBinding Light={StaticResource MutedTextLight}, Dark={StaticResource MutedTextDark}}" />
+            </Grid>
+        </Border>
     </Grid>
 </ContentPage>

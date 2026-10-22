@@ -21,6 +21,16 @@ namespace Chatcheology.Mobile.Synthetic
     /// </param>
     /// <param name="Forwarded">How many messages are marked forwarded; every third of them many times.</param>
     /// <param name="Links">How many messages carry a web or email address.</param>
+    /// <param name="Start">
+    /// The first day, when not <see cref="SyntheticArchive.FirstDay"/>: an earlier start with many days
+    /// spreads the chat over several years, so the same day and month has messages in more than one year
+    /// (On this day, CH-39).
+    /// </param>
+    /// <param name="Videos">How many restored videos, after the undecodable images; needs <paramref name="VideoBytes"/>.</param>
+    /// <param name="VideoBytes">
+    /// A synthetic video (a generated test pattern, never a real recording) used for every video, each
+    /// made distinct by trailing bytes. The generator cannot write a video by hand, so the caller brings it.
+    /// </param>
     internal sealed record SyntheticArchiveOptions(
         int Messages = 3000,
         int Days = 120,
@@ -33,7 +43,10 @@ namespace Chatcheology.Mobile.Synthetic
         int BrokenImages = 0,
         int LowQualityCopies = 0,
         int Forwarded = 0,
-        int Links = 0);
+        int Links = 0,
+        DateOnly? Start = null,
+        int Videos = 0,
+        byte[]? VideoBytes = null);
 
     /// <summary>
     /// Writes a whole portable archive (format v1) of invented conversation through
@@ -74,7 +87,7 @@ namespace Chatcheology.Mobile.Synthetic
             var dayIndex = (int)((long)index * options.Days / options.Messages);
 
             // Every third day is skipped, so the calendar has gaps as a real chat does.
-            return FirstDay.AddDays(dayIndex + dayIndex / 2);
+            return (options.Start ?? FirstDay).AddDays(dayIndex + dayIndex / 2);
         }
 
         /// <summary>Writes the archive into <paramref name="folder"/>, which must be empty.</summary>
@@ -84,7 +97,12 @@ namespace Chatcheology.Mobile.Synthetic
             ArgumentOutOfRangeException.ThrowIfNegative(options.Messages);
             ArgumentOutOfRangeException.ThrowIfNegativeOrZero(options.Days);
 
-            var restoredOthers = options.Audio + options.Documents + options.BrokenImages;
+            if (options.Videos > 0 && options.VideoBytes is not { Length: > 0 })
+            {
+                throw new ArgumentException("Videos need the video bytes.", nameof(options));
+            }
+
+            var restoredOthers = options.Audio + options.Documents + options.BrokenImages + options.Videos;
             var attachmentSlots = options.Images + restoredOthers + options.Missing + options.Unmatched;
 
             if (attachmentSlots > options.Messages / 2)
@@ -142,8 +160,9 @@ namespace Chatcheology.Mobile.Synthetic
                 images.Add((sha, name));
             }
 
-            // Audio, documents and undecodable "images", in that order after the images.
+            // Audio, documents, undecodable "images" and videos, in that order after the images.
             var others = new List<(string Sha, string Name)>();
+            var firstVideo = options.Audio + options.Documents + options.BrokenImages;
 
             for (var i = 0; i < restoredOthers; i++)
             {
@@ -151,7 +170,9 @@ namespace Chatcheology.Mobile.Synthetic
                     ? (SyntheticMedia.Wav(i + 1), $"AUD-SYNTH-{i + 1:D4}.wav", "Audio", (long?)SyntheticMedia.ToneMilliseconds)
                     : i < options.Audio + options.Documents
                         ? (SyntheticMedia.Pdf(i + 1), $"DOC-SYNTH-{i + 1:D4}.pdf", "Document", null)
-                        : (SyntheticMedia.BrokenImage(i + 1), $"IMG-BROKEN-{i + 1:D4}.jpg", "Image", null);
+                        : i < firstVideo
+                            ? (SyntheticMedia.BrokenImage(i + 1), $"IMG-BROKEN-{i + 1:D4}.jpg", "Image", null)
+                            : ([.. options.VideoBytes!, .. new byte[i - firstVideo + 1]], $"VID-SYNTH-{i - firstVideo + 1:D4}.mp4", "Video", (long?)2000);
 
                 var sha = ArchiveHashing.Hex(SHA256.HashData(bytes));
                 File.WriteAllBytes(Path.Combine(mediaFolder, ArchiveFormat.MediaFileName(sha, name)), bytes);
@@ -162,8 +183,8 @@ namespace Chatcheology.Mobile.Synthetic
                     MediaType = type,
                     SizeBytes = bytes.Length,
                     DurationMS = duration,
-                    Width = type == "Image" ? 640 : null,
-                    Height = type == "Image" ? 480 : null,
+                    Width = type is "Image" or "Video" ? 640 : null,
+                    Height = type is "Image" or "Video" ? 480 : null,
                 });
 
                 others.Add((sha, name));

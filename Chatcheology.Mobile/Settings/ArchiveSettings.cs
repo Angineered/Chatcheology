@@ -23,13 +23,22 @@ namespace Chatcheology.Mobile.Settings
     /// path or message text.</para>
     /// <para>Keys: <c>archive.&lt;hash&gt;.me</c> (participant id), <c>.position</c> (sequence number at
     /// the top of the screen), <c>.lastOpenedUtc</c>, <c>.validatedUtc</c>, <c>.validation</c> (checks
-    /// passed, of checks run).</para>
+    /// passed, of checks run), <c>.starredMessages</c> (sequence numbers), <c>.starredAttachments</c>
+    /// (attachment ids, each with its message's sequence number so it can be read without the whole
+    /// conversation), <c>.onThisDay</c> ("off" when turned off) and <c>.onThisDayShown</c> (the last
+    /// day the card was shown).</para>
+    /// <para>Stars (CH-38) are private to the phone and never written into the archive. Removing the
+    /// archive forgets them with everything else; an installed archive with the same hash has them.</para>
     /// </remarks>
     public sealed class ArchiveSettings
     {
         private const string Prefix = "archive.";
 
-        private static readonly string[] Names = ["me", "position", "lastOpenedUtc", "validatedUtc", "validation"];
+        private static readonly string[] Names =
+        [
+            "me", "position", "lastOpenedUtc", "validatedUtc", "validation",
+            "starredMessages", "starredAttachments", "onThisDay", "onThisDayShown",
+        ];
 
         private readonly ISettingsStore _store;
 
@@ -99,6 +108,81 @@ namespace Chatcheology.Mobile.Settings
             return $"{result}: {value.Passed.ToString(CultureInfo.CurrentCulture)} of {value.Checks.ToString(CultureInfo.CurrentCulture)} checks, {when}";
         }
 
+        /// <summary>The starred messages (CH-38), by sequence number, in ascending order.</summary>
+        public IReadOnlyList<int> GetStarredMessages(string contentsSha256) =>
+            (Get(contentsSha256, "starredMessages") ?? string.Empty)
+                .Split(',', StringSplitOptions.RemoveEmptyEntries)
+                .Select(part => Long(part))
+                .OfType<long>()
+                .Where(value => value is >= 1 and <= int.MaxValue)
+                .Select(value => (int)value)
+                .Distinct()
+                .Order()
+                .ToList();
+
+        /// <summary>Stores the starred messages; none removes the key.</summary>
+        public void SetStarredMessages(string contentsSha256, IEnumerable<int> sequenceNumbers)
+        {
+            ArgumentNullException.ThrowIfNull(sequenceNumbers);
+
+            var list = sequenceNumbers.Distinct().Order().ToList();
+
+            Set(
+                contentsSha256,
+                "starredMessages",
+                list.Count == 0 ? null : string.Join(',', list.Select(n => n.ToString(CultureInfo.InvariantCulture))));
+        }
+
+        /// <summary>The starred attachments (CH-38), with their messages' sequence numbers, in that order.</summary>
+        public IReadOnlyList<StarredAttachment> GetStarredAttachments(string contentsSha256)
+        {
+            var stars = new List<StarredAttachment>();
+
+            foreach (var part in (Get(contentsSha256, "starredAttachments") ?? string.Empty).Split(',', StringSplitOptions.RemoveEmptyEntries))
+            {
+                if (part.Split(':') is [var sequence, var attachment]
+                    && int.TryParse(sequence, NumberStyles.None, CultureInfo.InvariantCulture, out var number) && number >= 1
+                    && long.TryParse(attachment, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out var id))
+                {
+                    stars.Add(new StarredAttachment(number, id));
+                }
+            }
+
+            return Ordered(stars);
+        }
+
+        /// <summary>Stores the starred attachments; none removes the key.</summary>
+        public void SetStarredAttachments(string contentsSha256, IEnumerable<StarredAttachment> attachments)
+        {
+            ArgumentNullException.ThrowIfNull(attachments);
+
+            var list = Ordered(attachments);
+
+            Set(
+                contentsSha256,
+                "starredAttachments",
+                list.Count == 0
+                    ? null
+                    : string.Join(',', list.Select(star => string.Create(CultureInfo.InvariantCulture, $"{star.SequenceNumber}:{star.AttachmentID}"))));
+        }
+
+        /// <summary>Whether On this day (CH-39) is on for the archive: it is, unless turned off in Settings.</summary>
+        public bool GetOnThisDayEnabled(string contentsSha256) => Get(contentsSha256, "onThisDay") != "off";
+
+        /// <summary>Turns On this day on or off for the archive.</summary>
+        public void SetOnThisDayEnabled(string contentsSha256, bool enabled) =>
+            Set(contentsSha256, "onThisDay", enabled ? null : "off");
+
+        /// <summary>The last day (by the phone's date) the On this day card was shown, or <see langword="null"/>.</summary>
+        public DateOnly? GetOnThisDayShown(string contentsSha256) =>
+            DateOnly.TryParseExact(Get(contentsSha256, "onThisDayShown"), "yyyy'-'MM'-'dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var day)
+                ? day
+                : null;
+
+        /// <summary>Stores the day the On this day card was shown.</summary>
+        public void SetOnThisDayShown(string contentsSha256, DateOnly day) =>
+            Set(contentsSha256, "onThisDayShown", day.ToString("yyyy'-'MM'-'dd", CultureInfo.InvariantCulture));
+
         /// <summary>Forgets everything stored for the archive.</summary>
         public void Forget(string contentsSha256)
         {
@@ -122,6 +206,9 @@ namespace Chatcheology.Mobile.Settings
         private static long? Long(string? text) =>
             long.TryParse(text, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out var value) ? value : null;
 
+        private static List<StarredAttachment> Ordered(IEnumerable<StarredAttachment> stars) =>
+            stars.Distinct().OrderBy(star => star.SequenceNumber).ThenBy(star => star.AttachmentID).ToList();
+
         private static string Format(DateTime utc) =>
             utc.ToUniversalTime().ToString("yyyy'-'MM'-'dd'T'HH':'mm':'ss'Z'", CultureInfo.InvariantCulture);
 
@@ -135,4 +222,9 @@ namespace Chatcheology.Mobile.Settings
                 ? value
                 : null;
     }
+
+    /// <summary>A starred attachment (CH-38): the attachment, and the message it belongs to.</summary>
+    /// <param name="SequenceNumber">Its message's sequence number, so it is found without reading the whole conversation.</param>
+    /// <param name="AttachmentID">The attachment.</param>
+    public readonly record struct StarredAttachment(int SequenceNumber, long AttachmentID);
 }

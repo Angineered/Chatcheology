@@ -40,6 +40,47 @@ namespace Chatcheology.Mobile.Tests
         }
 
         [Fact]
+        public void An_earlier_start_spreads_the_chat_over_years_with_the_same_day_in_several()
+        {
+            using var folder = new TemporaryFolder();
+            var options = new SyntheticArchiveOptions(Messages: 2000, Days: 1000, Images: 0, Missing: 0, Unmatched: 0, Start: new DateOnly(2016, 1, 6));
+            SyntheticArchive.Write(folder.Path, options);
+
+            using var reader = ArchiveReader.Open(folder.Path);
+            var days = reader.ReadDays();
+
+            Assert.Equal(new DateOnly(2016, 1, 6), days[0]);
+            Assert.True(days[^1].Year >= 2019);
+            Assert.Contains(days, day => OnThisDay.Find(days, new DateOnly(2026, day.Month, day.Day)).Count >= 3);
+            Assert.True(ArchiveValidator.Validate(folder.Path).Passed);
+        }
+
+        [Fact]
+        public void Videos_are_written_with_the_bytes_given_each_distinct_and_valid()
+        {
+            using var folder = new TemporaryFolder();
+            var options = new SyntheticArchiveOptions(Messages: 200, Days: 10, Images: 2, Missing: 0, Unmatched: 0, Videos: 2, VideoBytes: "not a real video, a stand-in"u8.ToArray());
+            SyntheticArchive.Write(folder.Path, options);
+
+            using var reader = ArchiveReader.Open(folder.Path);
+            var timeline = new ConversationTimeline(reader, SyntheticArchive.Local);
+            timeline.OpenAt(1);
+
+            while (timeline.ReadLater() is { } page)
+            {
+                timeline.Append(page);
+            }
+
+            var videos = timeline.Rows.OfType<MessageRow>().SelectMany(message => message.Attachments).Where(card => card.IsVideo).ToList();
+
+            Assert.Equal(2, videos.Count);
+            Assert.Equal(2, videos.Select(card => card.MediaSha256).Distinct().Count());
+            Assert.All(videos, card => Assert.Equal("Video · 0:02", card.Heading));
+            Assert.True(ArchiveValidator.Validate(folder.Path).Passed);
+            Assert.Throws<ArgumentException>(() => SyntheticArchive.Write(Path.Combine(folder.Path, "x"), options with { VideoBytes = null }));
+        }
+
+        [Fact]
         public void The_synthetic_images_have_mixed_aspect_ratios_and_real_png_bytes()
         {
             using var folder = new TemporaryFolder();

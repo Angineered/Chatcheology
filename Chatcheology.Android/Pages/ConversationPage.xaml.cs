@@ -4,6 +4,7 @@ using Chatcheology.Android.Controls;
 using Chatcheology.Android.Conversation;
 using Chatcheology.Archive;
 using Chatcheology.Mobile.Conversation;
+using Chatcheology.Mobile.Gallery;
 using Chatcheology.Mobile.Presentation;
 using Microsoft.Data.Sqlite;
 using Microsoft.Maui.Platform;
@@ -17,6 +18,9 @@ namespace Chatcheology.Android.Pages
     /// <para>Everything that reads the archive runs off the UI thread, one read at a time: the pager's
     /// pages, and the reopen for a date jump, a search hit or a change of "me", which builds a new
     /// timeline on a worker thread and swaps it in only when it is ready.</para>
+    /// <para>The top bar (CH-37 to CH-39) has icons for Photos, Starred, the date picker and search,
+    /// with Settings in the overflow menu; on a day with earlier years to remember, a discreet On this day
+    /// icon reopens that card. Stars live in the app's settings; a toggle updates the loaded bubbles.</para>
     /// </remarks>
     public partial class ConversationPage : ContentPage
     {
@@ -35,6 +39,9 @@ namespace Chatcheology.Android.Pages
         private bool _opened;
         private int? _savedPosition;
         private DayCalendar? _calendar;
+        private IReadOnlyList<DateOnly>? _days;
+        private OnThisDay? _onThisDay;
+        private ToolbarItem? _onThisDayIcon;
 
         /// <summary>Whether the page has begun closing its archive: nothing more is read.</summary>
         private bool _closed => _gate.IsClosed;
@@ -70,17 +77,27 @@ namespace Chatcheology.Android.Pages
                 SavePosition(e.FirstVisibleItemIndex);
             };
 
+            if (!_session.IsEmpty)
+            {
+                ToolbarItems.Add(new ToolbarItem("Photos", "toolbar_photos.png", () => _ = OpenGalleryAsync()));
+                ToolbarItems.Add(new ToolbarItem("Starred", "toolbar_starred.png", () => _ = OpenStarredAsync()));
+            }
+
             if (_session.CanPickDate)
             {
-                ToolbarItems.Add(new ToolbarItem("Date", null, () => _ = PickDateAsync()));
+                ToolbarItems.Add(new ToolbarItem("Date", "toolbar_date.png", () => _ = PickDateAsync()));
             }
 
             if (_session.CanSearch)
             {
-                ToolbarItems.Add(new ToolbarItem("Search", null, () => _ = OpenSearchAsync()));
+                ToolbarItems.Add(new ToolbarItem("Search", "toolbar_search.png", () => _ = OpenSearchAsync()));
             }
 
-            ToolbarItems.Add(new ToolbarItem("Settings", null, () => _ = OpenSettingsAsync()));
+            ToolbarItems.Add(new ToolbarItem("Settings", null, () => _ = OpenSettingsAsync()) { Order = ToolbarItemOrder.Secondary });
+
+            var close = new TapGestureRecognizer();
+            close.Tapped += (_, _) => OnThisDayCard.IsVisible = false;
+            OnThisDayClose.GestureRecognizers.Add(close);
 
 #if DEBUG
             // The trial's controlled step: a page added above with no scrolling under way, so a
@@ -92,6 +109,17 @@ namespace Chatcheology.Android.Pages
             AttachmentCardView.Tapped += OnAttachmentTapped;
             MessageText.LinkTapped += OnLinkTapped;
             MessageLongPress.Pressed += OnMessageLongPressed;
+            AttachmentCardView.PlayFailed += OnPlayFailed;
+            _session.Stars.Changed += OnStarsChanged;
+        }
+
+        /// <inheritdoc />
+        protected override void OnDisappearing()
+        {
+            base.OnDisappearing();
+
+            // Leaving the screen stops a voice note (CH-36), whether another page covers it or it closes.
+            AudioPlayback.Stop();
         }
 
         /// <inheritdoc />
@@ -118,6 +146,8 @@ namespace Chatcheology.Android.Pages
             {
                 AppState.LogTiming("open-shown", watch.Elapsed, $"messages={_session.MessageCount} rows={_timeline.Rows.Count}");
             }
+
+            await PrepareOnThisDayAsync();
         }
 
         /// <inheritdoc />
@@ -147,6 +177,9 @@ namespace Chatcheology.Android.Pages
             AttachmentCardView.Tapped -= OnAttachmentTapped;
             MessageText.LinkTapped -= OnLinkTapped;
             MessageLongPress.Pressed -= OnMessageLongPressed;
+            AttachmentCardView.PlayFailed -= OnPlayFailed;
+            _session.Stars.Changed -= OnStarsChanged;
+            AudioPlayback.Stop();
 
             try
             {
@@ -393,66 +426,244 @@ namespace Chatcheology.Android.Pages
                 return;
             }
 
-            if (_calendar is null)
+            if (_calendar is null && !await ReadCalendarAsync(showBusy: true, reportFailure: true))
             {
-                if (!_turn.TryBegin())
-                {
-                    return;
-                }
-
-                Busy.IsVisible = Busy.IsRunning = true;
-
-                try
-                {
-                    // Between page reads only: the pager is paused while the days are read.
-                    var read = await _gate.RunAsync(() => _pager.StopAsync(), () => new DayCalendar(_session.ReadDays()));
-
-                    if (!read.Ran || _closed)
-                    {
-                        return;
-                    }
-
-                    _calendar = read.Value;
-                }
-                catch (Exception) when (!_closed)
-                {
-                    await DisplayAlertAsync("Go to date", "The days could not be read.", "OK");
-                    return;
-                }
-                catch (Exception)
-                {
-                    return;
-                }
-                finally
-                {
-                    Busy.IsVisible = Busy.IsRunning = false;
-
-                    if (!_closed)
-                    {
-                        _pager = new ConversationPager(_timeline) { List = _recycler, Ready = true };
-                    }
-
-                    // "Me" changed while the days were read (CH-29): rebuild now, through the gate like
-                    // every read, after the pager is back so the rebuild stops this one.
-                    if (_turn.End())
-                    {
-                        _ = OnMeChangedAsync();
-                    }
-                }
+                return;
             }
 
             var near = CurrentSequenceNumber() is { } sequence && _timeline.IndexOfMessage(sequence) is var row and >= 0
                 ? _timeline.Rows[row].Day
                 : DateOnly.FromDateTime(DateTime.Today);
 
-            await Navigation.PushAsync(new DatePickerPage(_calendar!, near, day => ReopenAsync(
-                timeline =>
+            await Navigation.PushAsync(new DatePickerPage(_calendar!, near, GoToDayAsync));
+        }
+
+        /// <summary>
+        /// Opens the conversation at the first message on or after <paramref name="day"/>: the day's
+        /// separator heads the screen, with its first message below it.
+        /// </summary>
+        private Task GoToDayAsync(DateOnly day) => ReopenAsync(
+            timeline =>
+            {
+                var first = timeline.OpenAtDay(day);
+                return first > 0 && timeline.Rows[first - 1] is DateSeparatorRow ? first - 1 : first;
+            },
+            null);
+
+        /// <summary>
+        /// Reads the days that have messages once, for the date picker and On this day. Between page reads
+        /// only: the pager is paused while the days are read, through the gate like every read. False when
+        /// it did not read (another read under way, the page closing, or a failure).
+        /// </summary>
+        private async Task<bool> ReadCalendarAsync(bool showBusy, bool reportFailure)
+        {
+            if (_calendar is not null)
+            {
+                return true;
+            }
+
+            if (!_turn.TryBegin())
+            {
+                return false;
+            }
+
+            Busy.IsVisible = Busy.IsRunning = showBusy;
+
+            try
+            {
+                var read = await _gate.RunAsync(() => _pager.StopAsync(), () => _session.ReadDays());
+
+                if (!read.Ran || _closed || read.Value is not { } days)
                 {
-                    // The day's separator heads the screen, with its first message below it.
-                    var first = timeline.OpenAtDay(day);
-                    return first > 0 && timeline.Rows[first - 1] is DateSeparatorRow ? first - 1 : first;
-                },
-                null)));
+                    return false;
+                }
+
+                _days = days;
+                _calendar = new DayCalendar(days);
+                return true;
+            }
+            catch (Exception) when (!_closed && reportFailure)
+            {
+                await DisplayAlertAsync("Go to date", "The days could not be read.", "OK");
+                return false;
+            }
+            catch (Exception)
+            {
+                return false;
+            }
+            finally
+            {
+                Busy.IsVisible = Busy.IsRunning = false;
+
+                if (!_closed)
+                {
+                    _pager = new ConversationPager(_timeline) { List = _recycler, Ready = true };
+                }
+
+                // "Me" changed while the days were read (CH-29): rebuild now, through the gate like
+                // every read, after the pager is back so the rebuild stops this one.
+                if (_turn.End())
+                {
+                    _ = OnMeChangedAsync();
+                }
+            }
+        }
+
+        // -----------------------------------------------------------------------------------------
+        // On this day (CH-39).
+        // -----------------------------------------------------------------------------------------
+
+        /// <summary>
+        /// Finds the earlier years with messages on today's date (the phone's), shows the discreet icon when
+        /// there are any, and opens the card by itself the first time today. Quietly does nothing when the
+        /// days cannot be read now.
+        /// </summary>
+        private async Task PrepareOnThisDayAsync()
+        {
+            if (_session.IsEmpty || _closed || !await ReadCalendarAsync(showBusy: false, reportFailure: false) || _days is not { } days)
+            {
+                return;
+            }
+
+            _onThisDay = _session.OnThisDayFor(days, OnThisDay.TodayFrom(TimeProvider.System));
+            UpdateOnThisDay(openByItself: true);
+        }
+
+        /// <summary>Shows or hides the icon (and the card) as the setting and the years say.</summary>
+        private void UpdateOnThisDay(bool openByItself)
+        {
+            if (_onThisDay is not { } onThisDay || _closed)
+            {
+                return;
+            }
+
+            if (onThisDay.ShowsIcon && _onThisDayIcon is null)
+            {
+                _onThisDayIcon = new ToolbarItem("On this day", "toolbar_onthisday.png", ShowOnThisDayCard);
+                ToolbarItems.Insert(0, _onThisDayIcon);
+            }
+            else if (!onThisDay.ShowsIcon && _onThisDayIcon is not null)
+            {
+                ToolbarItems.Remove(_onThisDayIcon);
+                _onThisDayIcon = null;
+            }
+
+            if (!onThisDay.ShowsIcon)
+            {
+                OnThisDayCard.IsVisible = false;
+            }
+            else if (openByItself && onThisDay.OpensByItself)
+            {
+                ShowOnThisDayCard();
+            }
+        }
+
+        /// <summary>The card: "On this day:" and each year, a tap on which jumps to that day.</summary>
+        private void ShowOnThisDayCard()
+        {
+            if (_onThisDay is not { ShowsIcon: true } onThisDay || _closed)
+            {
+                return;
+            }
+
+            OnThisDayYears.Children.Clear();
+            OnThisDayYears.Children.Add(new Label { Text = "On this day:", FontSize = 14, Padding = new Thickness(0, 4, 6, 4) });
+
+            for (var i = 0; i < onThisDay.Years.Count; i++)
+            {
+                var year = onThisDay.Years[i];
+
+                if (i > 0)
+                {
+                    OnThisDayYears.Children.Add(new Label { Text = "·", FontSize = 14, Padding = new Thickness(2, 4) }.TextIn("MutedText"));
+                }
+
+                var link = new Label
+                {
+                    Text = year.Text,
+                    FontSize = 14,
+                    FontAttributes = FontAttributes.Bold,
+                    TextDecorations = TextDecorations.Underline,
+                    Padding = new Thickness(6, 4),
+                }.TextIn("LinkText");
+
+                SemanticProperties.SetDescription(link, "Go to " + DateSeparatorRow.DayText(year.Day));
+
+                var tap = new TapGestureRecognizer();
+                tap.Tapped += (_, _) =>
+                {
+                    OnThisDayCard.IsVisible = false;
+                    _ = GoToDayAsync(year.Day);
+                };
+
+                link.GestureRecognizers.Add(tap);
+                OnThisDayYears.Children.Add(link);
+            }
+
+            OnThisDayCard.IsVisible = true;
+            onThisDay.MarkShown();
+        }
+
+        /// <summary>On this day was turned on or off in Settings.</summary>
+        private void OnThisDayChanged() => UpdateOnThisDay(openByItself: false);
+
+        // -----------------------------------------------------------------------------------------
+        // Gallery and stars (CH-37, CH-38).
+        // -----------------------------------------------------------------------------------------
+
+        private async Task OpenGalleryAsync()
+        {
+            if (_closed || Navigation.NavigationStack.LastOrDefault() != this)
+            {
+                return;
+            }
+
+            await Navigation.PushAsync(new GalleryPage(_state, _session, this));
+        }
+
+        private async Task OpenStarredAsync()
+        {
+            if (_closed || Navigation.NavigationStack.LastOrDefault() != this)
+            {
+                return;
+            }
+
+            await Navigation.PushAsync(new StarredPage(_state, _session, this));
+        }
+
+        /// <summary>
+        /// Show in chat, or a starred message tapped: back to this page, and the conversation opened at the
+        /// message, briefly highlighted.
+        /// </summary>
+        internal async Task ShowMessageAsync(int sequenceNumber)
+        {
+            if (_closed)
+            {
+                return;
+            }
+
+            while (Navigation.NavigationStack.Count > 1 && Navigation.NavigationStack[^1] != this)
+            {
+                await Navigation.PopAsync(animated: false);
+            }
+
+            await OpenAtMessageAsync(sequenceNumber);
+        }
+
+        /// <summary>A star was added or removed: the loaded bubbles and a built gallery follow.</summary>
+        private void OnStarsChanged(object? sender, EventArgs e)
+        {
+            if (_closed)
+            {
+                return;
+            }
+
+            _timeline.RefreshStars();
+
+            if (_session.GalleryIfBuilt is { } gallery)
+            {
+                gallery.RefreshStars(_session.Stars);
+            }
         }
 
         private async Task OpenSearchAsync()
@@ -472,7 +683,7 @@ namespace Chatcheology.Android.Pages
                 return;
             }
 
-            await Navigation.PushAsync(new SettingsPage(_session, OnMeChangedAsync, RemoveArchiveAsync));
+            await Navigation.PushAsync(new SettingsPage(_session, OnMeChangedAsync, RemoveArchiveAsync, OnThisDayChanged));
         }
 
         /// <summary>
@@ -527,11 +738,32 @@ namespace Chatcheology.Android.Pages
 
             if (card.Kind == AttachmentCardKind.Image && !tapped.DecodeFailed)
             {
-                await Navigation.PushAsync(new ImageViewerPage(_state, card));
+                await Navigation.PushAsync(new ImageViewerPage(_state, new PhotoBrowser([card], 0), _session.Stars, showInChat: null));
                 return;
             }
 
             await OpenInAnotherAppAsync(this, _state, path, card.MimeType ?? MediaMimeTypes.Fallback);
+        }
+
+        /// <summary>An audio file the app's player cannot play: offered to another app instead.</summary>
+        private async void OnPlayFailed(object? sender, AttachmentCard card)
+        {
+            if (_closed || Navigation.NavigationStack.LastOrDefault() != this || card.FullPath is not { } path)
+            {
+                return;
+            }
+
+            try
+            {
+                if (await DisplayAlertAsync("Play", "This file cannot be played here. Open it in another app?", "Open", "Cancel"))
+                {
+                    await OpenInAnotherAppAsync(this, _state, path, card.MimeType ?? MediaMimeTypes.Fallback);
+                }
+            }
+            catch (Exception)
+            {
+                // A tap handler: nothing here may end the app.
+            }
         }
 
         private async void OnLinkTapped(object? sender, string target)
@@ -548,19 +780,42 @@ namespace Chatcheology.Android.Pages
         }
 
         /// <summary>
-        /// A long press on a message with text (CH-34): Share offers the text only, no date or sender, to
-        /// the share sheet. Nothing leaves the app until she picks Share and then an app.
+        /// A long press on a message: Share (CH-34) offers the text only, no date or sender, to the share
+        /// sheet, and nothing leaves the app until she picks Share and then an app; Star / Unstar (CH-38)
+        /// keeps the message in the Starred list, in the app's settings only.
         /// </summary>
         private async void OnMessageLongPressed(object? sender, MessageRow message)
         {
-            if (_closed || Navigation.NavigationStack.LastOrDefault() != this || message.ShareText is not { } text)
+            if (_closed || Navigation.NavigationStack.LastOrDefault() != this || !message.HasActions)
             {
                 return;
             }
 
+            const string Share = "Share";
+            var star = message.IsStarred ? "Unstar" : "Star";
+            var actions = new List<string>(2);
+
+            if (message.CanShareText)
+            {
+                actions.Add(Share);
+            }
+
+            if (message.CanStar)
+            {
+                actions.Add(star);
+            }
+
             try
             {
-                if (await DisplayActionSheetAsync(null, "Cancel", null, "Share") != "Share")
+                var chosen = await DisplayActionSheetAsync(null, "Cancel", null, [.. actions]);
+
+                if (chosen == star && message.CanStar)
+                {
+                    _session.Stars.SetMessage(message.SequenceNumber, !message.IsStarred);
+                    return;
+                }
+
+                if (chosen != Share || message.ShareText is not { } text)
                 {
                     return;
                 }

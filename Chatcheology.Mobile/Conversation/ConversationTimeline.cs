@@ -32,6 +32,7 @@ namespace Chatcheology.Mobile.Conversation
         private readonly long _localParticipantID;
         private readonly IReadOnlyDictionary<long, string> _names;
         private readonly LowQualityIndex _lowQuality;
+        private readonly Stars? _stars;
 
         private int? _firstSequenceNumber;
         private int? _lastSequenceNumber;
@@ -43,7 +44,8 @@ namespace Chatcheology.Mobile.Conversation
         /// The conversation's low-quality copy links. When none is given it is built here, which reads the
         /// whole conversation once; pass the one an <see cref="ArchiveSession"/> holds to avoid that.
         /// </param>
-        public ConversationTimeline(ArchiveReader reader, long localParticipantID, LowQualityIndex? lowQuality = null)
+        /// <param name="stars">The archive's stars, so rows are built with their star flags; none when not given.</param>
+        public ConversationTimeline(ArchiveReader reader, long localParticipantID, LowQualityIndex? lowQuality = null, Stars? stars = null)
         {
             ArgumentNullException.ThrowIfNull(reader);
 
@@ -51,6 +53,7 @@ namespace Chatcheology.Mobile.Conversation
             _localParticipantID = localParticipantID;
             _names = reader.ReadParticipants().ToDictionary(p => p.ParticipantID, p => p.DisplayName);
             _lowQuality = lowQuality ?? LowQualityIndex.Build(reader);
+            _stars = stars;
         }
 
         /// <summary>Whose messages go on the right.</summary>
@@ -268,6 +271,38 @@ namespace Chatcheology.Mobile.Conversation
             return rows;
         }
 
+        /// <summary>
+        /// Sets the star flags of every loaded row from the stars (after a star is toggled), so the
+        /// bubbles on screen follow at once. Call it on the thread the list is bound on.
+        /// </summary>
+        public void RefreshStars()
+        {
+            if (_stars is null)
+            {
+                return;
+            }
+
+            foreach (var row in Rows)
+            {
+                if (row is MessageRow message)
+                {
+                    _stars.Apply(message);
+                }
+            }
+        }
+
+        /// <summary>
+        /// One message as its bubble would show it, shown or not, with its star flags: for the gallery and
+        /// the starred list, which use the chat's own card rules.
+        /// </summary>
+        public MessageRow BuildMessageRow(ArchiveMessage message, IReadOnlyDictionary<string, ArchiveMedia> media)
+        {
+            ArgumentNullException.ThrowIfNull(message);
+            ArgumentNullException.ThrowIfNull(media);
+
+            return BuildMessage(message, media);
+        }
+
         private void Append(ArchivePage page, bool first) => Append(Prepare(page), first);
 
         private void Append(PreparedPage prepared, bool first)
@@ -330,11 +365,15 @@ namespace Chatcheology.Mobile.Conversation
                         path is not null && File.Exists(path),
                         _lowQuality,
                         message.DateTimeLocal,
-                        senderName);
+                        senderName,
+                        message.SequenceNumber);
                 })
                 .ToList();
 
-            return new MessageRow(message, sender, message.SenderParticipantID == _localParticipantID, attachments);
+            var row = new MessageRow(message, sender, message.SenderParticipantID == _localParticipantID, attachments);
+            _stars?.Apply(row);
+
+            return row;
         }
 
         private void Reset()

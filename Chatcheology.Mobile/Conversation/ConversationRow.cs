@@ -50,6 +50,7 @@ namespace Chatcheology.Mobile.Conversation
     public sealed class MessageRow : ConversationRow, INotifyPropertyChanged
     {
         private bool _isHighlighted;
+        private bool _isStarred;
 
         /// <summary>
         /// The export's placeholder for an omitted media item. The same text as
@@ -81,6 +82,18 @@ namespace Chatcheology.Mobile.Conversation
             Attachments = attachments;
             ShownAttachments = attachments.Where(card => card.IsShown).ToList();
             ForwardedText = ForwardedLabel(message);
+
+            // A photo starred in the viewer shows its star on the bubble too.
+            foreach (var card in ShownAttachments)
+            {
+                card.PropertyChanged += (_, e) =>
+                {
+                    if (e.PropertyName == nameof(AttachmentCard.IsStarred))
+                    {
+                        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ShowsStar)));
+                    }
+                };
+            }
         }
 
         /// <summary>Its position in the chat order.</summary>
@@ -152,6 +165,33 @@ namespace Chatcheology.Mobile.Conversation
             }
         }
 
+        /// <summary>
+        /// Whether the message itself is starred (CH-38). Like <see cref="IsHighlighted"/>, it belongs to the
+        /// message, so a recycled view cannot show another message's star.
+        /// </summary>
+        public bool IsStarred
+        {
+            get => _isStarred;
+            set
+            {
+                if (_isStarred != value)
+                {
+                    _isStarred = value;
+                    PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsStarred)));
+                    PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ShowsStar)));
+                }
+            }
+        }
+
+        /// <summary>Whether the bubble shows a star: the message is starred, or one of its shown photos is.</summary>
+        public bool ShowsStar => _isStarred || ShownAttachments.Any(card => card.IsStarred);
+
+        /// <summary>Whether a long press offers Star / Unstar: any message but a system line.</summary>
+        public bool CanStar => !IsSystem;
+
+        /// <summary>Whether a long press offers anything at all.</summary>
+        public bool HasActions => CanShareText || CanStar;
+
         /// <summary>Whether a forwarded label applies.</summary>
         public bool IsForwarded => ForwardedText.Length > 0;
 
@@ -216,7 +256,7 @@ namespace Chatcheology.Mobile.Conversation
     }
 
     /// <summary>One attachment of a message, as its card shows it.</summary>
-    public sealed class AttachmentCard
+    public sealed class AttachmentCard : INotifyPropertyChanged
     {
         /// <summary>The heading of a restored file that cannot be previewed, also used when an image fails to decode.</summary>
         public const string CannotPreviewHeading = "Can't preview · Open in another app";
@@ -231,6 +271,7 @@ namespace Chatcheology.Mobile.Conversation
         private readonly ArchiveMedia? _media;
         private readonly DateTime _messageTime;
         private readonly string? _senderName;
+        private bool _isStarred;
 
         internal AttachmentCard(
             ArchiveAttachment attachment,
@@ -239,7 +280,8 @@ namespace Chatcheology.Mobile.Conversation
             bool fileExists,
             LowQualityIndex lowQuality,
             DateTime messageTime,
-            string? senderName)
+            string? senderName,
+            int sequenceNumber)
         {
             _attachment = attachment;
             _media = media;
@@ -247,6 +289,10 @@ namespace Chatcheology.Mobile.Conversation
             _senderName = senderName;
 
             AttachmentID = attachment.AttachmentID;
+            SequenceNumber = sequenceNumber;
+            MessageTimeLocal = messageTime;
+            MediaSha256 = attachment.MediaSha256;
+            DurationMS = media?.DurationMS;
             MediaType = media?.MediaType;
 
             Kind = attachment.State switch
@@ -288,6 +334,41 @@ namespace Chatcheology.Mobile.Conversation
 
         /// <summary>The attachment.</summary>
         public long AttachmentID { get; }
+
+        /// <summary>Its message's sequence number, to open the chat at (Show in chat, CH-37).</summary>
+        public int SequenceNumber { get; }
+
+        /// <summary>Its message's stored local time.</summary>
+        public DateTime MessageTimeLocal { get; }
+
+        /// <summary>The media's hash, or <see langword="null"/> when not restored: the key of anything cached for it.</summary>
+        public string? MediaSha256 { get; }
+
+        /// <summary>The recorded duration in milliseconds, or <see langword="null"/>.</summary>
+        public long? DurationMS { get; }
+
+        /// <summary>Whether a restored audio file plays in the app (CH-36).</summary>
+        public bool IsAudio => Kind == AttachmentCardKind.File && MediaType == "Audio";
+
+        /// <summary>Whether a restored video shows a preview frame (CH-40).</summary>
+        public bool IsVideo => Kind == AttachmentCardKind.File && MediaType == "Video";
+
+        /// <summary>Raised when <see cref="IsStarred"/> changes.</summary>
+        public event PropertyChangedEventHandler? PropertyChanged;
+
+        /// <summary>Whether the photo is starred (CH-38). It belongs to the card, not to a view.</summary>
+        public bool IsStarred
+        {
+            get => _isStarred;
+            set
+            {
+                if (_isStarred != value)
+                {
+                    _isStarred = value;
+                    PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsStarred)));
+                }
+            }
+        }
 
         /// <summary>Which card it is.</summary>
         public AttachmentCardKind Kind { get; }

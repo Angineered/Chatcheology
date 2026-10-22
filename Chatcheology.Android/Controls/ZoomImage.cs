@@ -28,6 +28,14 @@ namespace Chatcheology.Android.Controls
         public event EventHandler<bool>? Decoded;
 
         internal void RaiseDecoded(bool ok) => Decoded?.Invoke(this, ok);
+
+        /// <summary>
+        /// Raised on the UI thread when the picture, not zoomed in, is swiped sideways (CH-37): +1 for a
+        /// swipe to the left (the next photo), -1 for a swipe to the right (the previous one).
+        /// </summary>
+        public event EventHandler<int>? Swiped;
+
+        internal void RaiseSwiped(int direction) => Swiped?.Invoke(this, direction);
     }
 
     /// <summary>Draws a <see cref="ZoomImage"/> with <see cref="ZoomImageView"/>.</summary>
@@ -44,7 +52,7 @@ namespace Chatcheology.Android.Controls
         {
         }
 
-        protected override ZoomImageView CreatePlatformView() => new(Context);
+        protected override ZoomImageView CreatePlatformView() => new(Context) { Swiped = direction => VirtualView?.RaiseSwiped(direction) };
 
         private int _generation;
 
@@ -108,6 +116,9 @@ namespace Chatcheology.Android.Controls
         private readonly GestureDetector _gestures;
         private float _baseScale = 1f;
         private float _zoom = 1f;
+
+        /// <summary>Called with +1 (left) or -1 (right) when the picture, not zoomed in, is swiped sideways.</summary>
+        internal Action<int>? Swiped { get; set; }
 
         public ZoomImageView(Context context)
             : base(context)
@@ -257,6 +268,18 @@ namespace Chatcheology.Android.Controls
                 }
 
                 return true;
+            }
+
+            public override bool OnFling(MotionEvent? e1, MotionEvent e2, float velocityX, float velocityY)
+            {
+                // Only at 1x: zoomed in, a drag pans the picture instead. Mostly sideways and quick.
+                if (view._zoom <= 1.01f && Math.Abs(velocityX) > 2 * Math.Abs(velocityY) && Math.Abs(velocityX) > 600)
+                {
+                    view.Swiped?.Invoke(velocityX < 0 ? 1 : -1);
+                    return true;
+                }
+
+                return false;
             }
 
             public override bool OnDoubleTap(MotionEvent e)

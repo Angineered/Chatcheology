@@ -43,6 +43,7 @@ namespace Chatcheology.Mobile.Conversation
         private readonly CancellationTokenSource _closing = new();
         private readonly object _searchLock = new();
         private Task<ConversationSearch>? _search;
+        private Task<Gallery.PhotoGallery>? _gallery;
 
         private ArchiveSession(InstalledArchive archive, ArchiveReader reader, ArchiveSettings settings, string identity)
         {
@@ -55,7 +56,11 @@ namespace Chatcheology.Mobile.Conversation
             DefaultMe = Participants.FirstOrDefault(p => p.IsLocal)?.ParticipantID ?? reader.Info.LocalParticipantID;
             MessageCount = reader.ReadMessageCount();
             LowQuality = LowQualityIndex.Build(reader, _closing.Token);
+            Stars = new Stars(settings, identity);
         }
+
+        /// <summary>The archive's starred messages and photos (CH-38), kept in the app's settings.</summary>
+        public Stars Stars { get; }
 
         /// <summary>The archive.</summary>
         public InstalledArchive Archive { get; }
@@ -181,7 +186,7 @@ namespace Chatcheology.Mobile.Conversation
         public string ValidationText => ArchiveSettings.DescribeValidation(_settings.GetValidation(_identity));
 
         /// <summary>A timeline with the current "me". After "me" changes, a new one is made and opened.</summary>
-        public ConversationTimeline CreateTimeline() => new(Reader, Me, LowQuality);
+        public ConversationTimeline CreateTimeline() => new(Reader, Me, LowQuality, Stars);
 
         /// <summary>
         /// Opens <paramref name="timeline"/> where the reader last was, or at the newest messages the
@@ -228,6 +233,78 @@ namespace Chatcheology.Mobile.Conversation
 
                 return _search ??= Task.Run(() => ConversationSearch.Build(folder, token), token);
             }
+        }
+
+        /// <summary>
+        /// The photo gallery (CH-37), built in the background the first time it is asked for, with a reader
+        /// of its own like the search index. Later calls return the same task.
+        /// </summary>
+        public Task<Gallery.PhotoGallery> GetGalleryAsync()
+        {
+            lock (_searchLock)
+            {
+                ObjectDisposedException.ThrowIf(_closing.IsCancellationRequested, this);
+
+                var token = _closing.Token;
+                var folder = Reader.FolderPath;
+                var me = Me;
+
+                return _gallery ??= Task.Run(
+                    () =>
+                    {
+                        using var reader = ArchiveReader.Open(folder);
+
+                        return Gallery.PhotoGallery.Build(reader, me, LowQuality, Stars, token);
+                    },
+                    token);
+            }
+        }
+
+        /// <summary>The gallery when it has been built, so a star toggle can update it; otherwise <see langword="null"/>.</summary>
+        public Gallery.PhotoGallery? GalleryIfBuilt
+        {
+            get
+            {
+                lock (_searchLock)
+                {
+                    return _gallery is { IsCompletedSuccessfully: true } built ? built.Result : null;
+                }
+            }
+        }
+
+        /// <summary>
+        /// The Starred list (CH-38), read afresh each time with a reader of its own, so it reflects the
+        /// latest stars and runs beside the page reads.
+        /// </summary>
+        public Task<IReadOnlyList<StarredEntry>> ReadStarredAsync()
+        {
+            lock (_searchLock)
+            {
+                ObjectDisposedException.ThrowIf(_closing.IsCancellationRequested, this);
+
+                var token = _closing.Token;
+                var folder = Reader.FolderPath;
+                var me = Me;
+
+                return Task.Run(
+                    () =>
+                    {
+                        using var reader = ArchiveReader.Open(folder);
+
+                        return StarredList.Build(reader, me, LowQuality, Stars, token);
+                    },
+                    token);
+            }
+        }
+
+        /// <summary>On this day (CH-39) for <paramref name="days"/> (from <see cref="ReadDays"/>) on <paramref name="today"/>.</summary>
+        public OnThisDay OnThisDayFor(IEnumerable<DateOnly> days, DateOnly today) => OnThisDay.For(_settings, _identity, days, today);
+
+        /// <summary>Whether On this day is on for this archive (Settings).</summary>
+        public bool OnThisDayEnabled
+        {
+            get => _settings.GetOnThisDayEnabled(_identity);
+            set => _settings.SetOnThisDayEnabled(_identity, value);
         }
 
         /// <summary>Stops a search index being built and closes the reader.</summary>
