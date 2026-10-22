@@ -1,6 +1,8 @@
 using System.Globalization;
 using Chatcheology.Archive;
+using Chatcheology.Mobile.Conversation;
 using Chatcheology.Mobile.Library;
+using Microsoft.Data.Sqlite;
 #if DEBUG
 using Chatcheology.Mobile.Synthetic;
 using AndroidLog = global::Android.Util.Log;
@@ -54,9 +56,19 @@ namespace Chatcheology.Android.Pages
         {
             Archives.Children.Clear();
 
-            var installed = await Task.Run(() => _library.ListInstalled()
-                .Select(folder => (Folder: folder, Summary: Describe(folder)))
-                .ToList());
+            List<(string Folder, string Summary)> installed;
+
+            try
+            {
+                installed = await Task.Run(() => _library.ListInstalled()
+                    .Select(folder => (Folder: folder, Summary: Describe(folder)))
+                    .ToList());
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                Summary.Text = "The installed archives could not be listed.";
+                return;
+            }
 
             Summary.Text = installed.Count == 0
                 ? "No archive is installed yet."
@@ -92,23 +104,43 @@ namespace Chatcheology.Android.Pages
 
         private async Task OpenAsync(string folder, ConversationListKind kind)
         {
-            ArchiveReader reader;
+            ArchiveReader? reader = null;
+            ConversationTimeline timeline;
 
             try
             {
-                reader = await Task.Run(() => ArchiveReader.Open(folder));
+                // Opening and the participant read both touch the database: off the UI thread.
+                (reader, timeline) = await Task.Run(() =>
+                {
+                    var opened = ArchiveReader.Open(folder);
+
+                    try
+                    {
+                        return (opened, new ConversationTimeline(opened, opened.Info.LocalParticipantID));
+                    }
+                    catch
+                    {
+                        opened.Dispose();
+                        throw;
+                    }
+                });
             }
             catch (ArchiveFormatException exception)
             {
                 Status.Text = exception.Message;
                 return;
             }
+            catch (SqliteException)
+            {
+                Status.Text = "The archive database could not be read.";
+                return;
+            }
 
             Page page = kind switch
             {
-                ConversationListKind.RecyclerView => new NativeConversationPage(reader),
-                ConversationListKind.CollectionViewKeepScrollOffset => new ConversationPage(reader, ItemsUpdatingScrollMode.KeepScrollOffset),
-                _ => new ConversationPage(reader, ItemsUpdatingScrollMode.KeepItemsInView),
+                ConversationListKind.RecyclerView => new NativeConversationPage(reader, timeline),
+                ConversationListKind.CollectionViewKeepScrollOffset => new ConversationPage(reader, timeline, ItemsUpdatingScrollMode.KeepScrollOffset),
+                _ => new ConversationPage(reader, timeline, ItemsUpdatingScrollMode.KeepItemsInView),
             };
 
             await Navigation.PushAsync(page);
@@ -121,9 +153,14 @@ namespace Chatcheology.Android.Pages
             {
                 using var reader = ArchiveReader.Open(folder);
 
-                return $"{reader.Info.ConversationTitle} · {reader.ReadMessageCount().ToString("N0", CultureInfo.CurrentCulture)} messages";
+                var text = $"{reader.Info.ConversationTitle} · {reader.ReadMessageCount().ToString("N0", CultureInfo.CurrentCulture)} messages";
+#if DEBUG
+                // Tells the two synthetic archives apart.
+                text += $" · {reader.ReadDays().Count.ToString(CultureInfo.CurrentCulture)} days";
+#endif
+                return text;
             }
-            catch (ArchiveFormatException)
+            catch (Exception exception) when (exception is ArchiveFormatException or SqliteException)
             {
                 return "An archive that cannot be opened";
             }
@@ -151,8 +188,13 @@ namespace Chatcheology.Android.Pages
             DevelopmentTools.Children.Add(new Label { Text = "Development (Debug build only)", FontAttributes = FontAttributes.Bold });
 
             var install = new Button { Text = "Install synthetic archive" };
-            install.Clicked += async (_, _) => await InstallSyntheticAsync();
+            install.Clicked += async (_, _) => await InstallSyntheticAsync(new SyntheticArchiveOptions());
             DevelopmentTools.Children.Add(install);
+
+            // 130 days for 3,000 messages: about 23 a day, so 150-message pages join inside a day.
+            var midDay = new Button { Text = "Install synthetic archive (mid-day joins)" };
+            midDay.Clicked += async (_, _) => await InstallSyntheticAsync(new SyntheticArchiveOptions(Days: 130));
+            DevelopmentTools.Children.Add(midDay);
 
             var validate = new Button { Text = "Validate installed archives" };
             validate.Clicked += async (_, _) => await ValidateInstalledAsync();
@@ -163,7 +205,7 @@ namespace Chatcheology.Android.Pages
         /// Writes the synthetic archive into staging with Microsoft.Data.Sqlite, validates it there and
         /// installs it, exactly as an import will once the copy is made.
         /// </summary>
-        private async Task InstallSyntheticAsync()
+        private async Task InstallSyntheticAsync(SyntheticArchiveOptions options)
         {
             Status.Text = "Writing the synthetic archive…";
 
@@ -171,7 +213,7 @@ namespace Chatcheology.Android.Pages
             {
                 var watch = System.Diagnostics.Stopwatch.StartNew();
                 var staging = _library.CreateStagingFolder();
-                SyntheticArchive.Write(staging, new SyntheticArchiveOptions());
+                SyntheticArchive.Write(staging, options);
 
                 return (_library.Install(staging), watch.Elapsed.TotalSeconds);
             });

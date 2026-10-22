@@ -13,10 +13,14 @@ namespace Chatcheology.Mobile.Conversation
     /// thread the list is bound on. One read at a time: the reader's connection is not shared
     /// between threads.</para>
     /// <para><strong>Separators are right where pages join.</strong> A day's separator sits before its
-    /// first loaded message. When an earlier page ends on the day the loaded rows begin with, that
-    /// day's separator stays where it is and the page's messages of that day go below it, so the day
-    /// is neither shown twice nor lost. The rows always equal what <see cref="BuildRows"/> gives for
-    /// the loaded messages in one go.</para>
+    /// first loaded message. When an earlier page ends on the day the loaded rows begin with, the
+    /// separator at the top is taken out and the page, which brings that day's separator at the start
+    /// of its own run of the day, goes in above, so the day is neither shown twice nor lost. The rows
+    /// always equal what <see cref="BuildRows"/> gives for the loaded messages in one go.</para>
+    /// <para>Taking the separator out, rather than slipping the page's messages of that day in below it,
+    /// is what keeps the screen still: every message that was loaded keeps the rows directly above it,
+    /// so a list that holds its first visible row in place holds the message too, even when that
+    /// separator was the top row on screen (CH-26 trial).</para>
     /// <para>Page size is presentation only; it never changes what the archive holds.</para>
     /// </remarks>
     public sealed class ConversationTimeline
@@ -90,8 +94,8 @@ namespace Chatcheology.Mobile.Conversation
         /// Adds an earlier page above the loaded rows.
         /// </summary>
         /// <returns>
-        /// How many rows were added. Every message row that was loaded before moves down by exactly
-        /// this many, so the list can keep the message on screen at the same place.
+        /// How far every message row that was loaded before moves down: the rows added, less the
+        /// separator taken out when the page ends on the first loaded day.
         /// </returns>
         public int Prepend(ArchivePage page)
         {
@@ -115,23 +119,18 @@ namespace Chatcheology.Mobile.Conversation
             _lastSequenceNumber ??= page.LastSequenceNumber;
 
             // Rows[0] is the separator of the first loaded day. When the page ends on that day, the
-            // page's last run of rows is the start of that same day: it goes below the separator
-            // already there, instead of bringing a second one.
+            // page brings that day's separator itself, at the start of its last run: the old one goes.
+            var removed = 0;
+
             if (Rows.Count > 0 && Rows[0] is DateSeparatorRow existing && rows[^1].Day == existing.Day)
             {
-                var split = LastSeparatorIndex(rows);
-                var above = rows.Take(split).ToList();
-                var continuation = rows.Skip(split + 1).ToList();
-
-                Rows.InsertRange(0, above);
-                Rows.InsertRange(above.Count + 1, continuation);
-
-                return above.Count + continuation.Count;
+                Rows.RemoveAt(0);
+                removed = 1;
             }
 
             Rows.InsertRange(0, rows);
 
-            return rows.Count;
+            return rows.Count - removed;
         }
 
         /// <summary>Adds a later page below the loaded rows.</summary>
@@ -190,6 +189,12 @@ namespace Chatcheology.Mobile.Conversation
         {
             ArgumentNullException.ThrowIfNull(page);
 
+            // Checked before anything changes, so a refused page leaves the timeline as it was.
+            if (page.Messages.Count > 0 && _lastSequenceNumber is { } last && page.FirstSequenceNumber <= last)
+            {
+                throw new ArgumentException("The page is not after the loaded rows.", nameof(page));
+            }
+
             if (first)
             {
                 HasEarlier = page.HasEarlier;
@@ -200,11 +205,6 @@ namespace Chatcheology.Mobile.Conversation
             if (page.Messages.Count == 0)
             {
                 return;
-            }
-
-            if (_lastSequenceNumber is { } last && page.FirstSequenceNumber <= last)
-            {
-                throw new ArgumentException("The page is not after the loaded rows.", nameof(page));
             }
 
             DateOnly? previousDay = Rows.Count > 0 ? Rows[^1].Day : null;
@@ -240,18 +240,5 @@ namespace Chatcheology.Mobile.Conversation
             HasLater = false;
         }
 
-        private static int LastSeparatorIndex(List<ConversationRow> rows)
-        {
-            for (var i = rows.Count - 1; i >= 0; i--)
-            {
-                if (rows[i] is DateSeparatorRow)
-                {
-                    return i;
-                }
-            }
-
-            // BuildRows with no previous day always starts with a separator.
-            throw new InvalidOperationException("A page's rows begin with a separator.");
-        }
     }
 }

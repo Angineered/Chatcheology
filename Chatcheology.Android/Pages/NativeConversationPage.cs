@@ -3,6 +3,7 @@ using Chatcheology.Android.Controls;
 using Chatcheology.Android.Conversation;
 using Chatcheology.Archive;
 using Chatcheology.Mobile.Conversation;
+using Microsoft.Data.Sqlite;
 
 namespace Chatcheology.Android.Pages
 {
@@ -15,10 +16,14 @@ namespace Chatcheology.Android.Pages
         private readonly NativeConversationList _list;
         private bool _opened;
 
-        internal NativeConversationPage(ArchiveReader reader)
+        /// <summary>
+        /// A page over an open reader and its timeline, which the caller builds off the UI thread. The
+        /// page owns the reader from here on and closes it when it is closed.
+        /// </summary>
+        internal NativeConversationPage(ArchiveReader reader, ConversationTimeline timeline)
         {
             _reader = reader;
-            _timeline = new ConversationTimeline(reader, reader.Info.LocalParticipantID);
+            _timeline = timeline;
             _pager = new ConversationPager(_timeline, "RecyclerView");
             _list = new NativeConversationList(_timeline, _pager);
 
@@ -26,6 +31,8 @@ namespace Chatcheology.Android.Pages
             BackgroundColor = (Color)Application.Current!.Resources["ChatBackground"];
 
 #if DEBUG
+            ToolbarItems.Add(new ToolbarItem("Top", null, () =>
+                ((_list.Handler?.PlatformView as RecyclerView)?.GetLayoutManager() as LinearLayoutManager)?.ScrollToPositionWithOffset(0, 0)));
             ToolbarItems.Add(new ToolbarItem("Load earlier", null, () =>
             {
                 (_list.Handler?.PlatformView as RecyclerView)?.StopScroll();
@@ -46,8 +53,18 @@ namespace Chatcheology.Android.Pages
 
             _opened = true;
 
-            // The rows are complete before the list exists, so its adapter starts with them.
-            var last = await Task.Run(_timeline.OpenAtLatest);
+            int last;
+
+            try
+            {
+                // The rows are complete before the list exists, so its adapter starts with them.
+                last = await _pager.OpenAtLatestAsync();
+            }
+            catch (Exception exception) when (exception is ArchiveFormatException or SqliteException)
+            {
+                Content = new Label { Text = "This archive could not be read.", Margin = new Thickness(16) };
+                return;
+            }
 
             // Placed when its handler connects, before the first layout.
             _list.InitialRow = last;
@@ -58,7 +75,7 @@ namespace Chatcheology.Android.Pages
         }
 
         /// <inheritdoc />
-        protected override void OnNavigatedFrom(NavigatedFromEventArgs args)
+        protected override async void OnNavigatedFrom(NavigatedFromEventArgs args)
         {
             base.OnNavigatedFrom(args);
 
@@ -67,7 +84,8 @@ namespace Chatcheology.Android.Pages
                 return;
             }
 
-            _pager.Ready = false;
+            // A page read may still be running on the reader's connection: let it finish first.
+            await _pager.StopAsync();
             _reader.Dispose();
         }
     }

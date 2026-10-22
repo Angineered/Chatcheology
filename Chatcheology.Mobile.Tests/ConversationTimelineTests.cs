@@ -94,7 +94,7 @@ namespace Chatcheology.Mobile.Tests
         }
 
         [Fact]
-        public void A_join_inside_a_day_keeps_the_one_separator_above_the_days_first_loaded_message()
+        public void A_join_inside_a_day_keeps_one_separator_above_the_days_first_loaded_message()
         {
             using var folder = new TemporaryFolder();
             TestArchives.Write(folder.Path, Count, Layout("join inside a day"));
@@ -103,7 +103,7 @@ namespace Chatcheology.Mobile.Tests
             var timeline = new ConversationTimeline(reader, TestArchives.Local);
 
             timeline.OpenAtLatest();
-            var separator = Assert.IsType<DateSeparatorRow>(timeline.Rows[0]);
+            Assert.Equal("D 2025-03-02", TestArchives.Describe(timeline.Rows)[0]);
 
             timeline.Prepend(timeline.ReadEarlier()!);
 
@@ -113,9 +113,29 @@ namespace Chatcheology.Mobile.Tests
             Assert.Single(rows, row => row == "D 2025-03-02");
             Assert.Equal(rows.IndexOf("M 241") - 1, rows.IndexOf("D 2025-03-02"));
             Assert.Equal(rows.IndexOf("M 250") + 1, rows.IndexOf("M 251"));
+        }
 
-            // The separator already on screen is the one that stays, so nothing on screen is replaced.
-            Assert.Same(separator, timeline.Rows[rows.IndexOf("D 2025-03-02")]);
+        [Fact]
+        public void A_join_inside_a_day_keeps_the_row_above_every_loaded_message_the_same()
+        {
+            using var folder = new TemporaryFolder();
+            TestArchives.Write(folder.Path, Count, Layout("join inside a day"));
+
+            using var reader = ArchiveReader.Open(folder.Path);
+            var timeline = new ConversationTimeline(reader, TestArchives.Local);
+
+            timeline.OpenAtLatest();
+            var before = timeline.Rows.OfType<MessageRow>().ToDictionary(m => m, m => timeline.Rows[timeline.Rows.IndexOf(m) - 1]);
+
+            timeline.Prepend(timeline.ReadEarlier()!);
+
+            // Only the first loaded message's row above changes (the old top separator gave way to
+            // message 250); every other loaded message keeps the very same row object above it.
+            var changed = before.Where(pair => !ReferenceEquals(timeline.Rows[timeline.Rows.IndexOf(pair.Key) - 1], pair.Value))
+                .Select(pair => pair.Key.SequenceNumber)
+                .ToList();
+
+            Assert.Equal([251], changed);
         }
 
         [Fact]
@@ -140,7 +160,7 @@ namespace Chatcheology.Mobile.Tests
         [Theory]
         [InlineData("join inside a day", 2)]
         [InlineData("join at a day start", 1)]
-        [InlineData("page all one day", 1)]
+        [InlineData("page all one day", 2)]
         public void An_earlier_page_moves_every_loaded_message_down_by_the_count_returned_in_few_notifications(
             string layout, int notifications)
         {
@@ -159,9 +179,18 @@ namespace Chatcheology.Mobile.Tests
             var added = timeline.Prepend(timeline.ReadEarlier()!);
 
             Assert.Equal(before + added, timeline.IndexOfMessage(300));
+            // A join inside a day takes the top separator out (one notification), then adds the page
+            // (one more); otherwise the page goes in with a single notification.
             Assert.Equal(notifications, events.Count);
-            Assert.All(events, e => Assert.Equal(NotifyCollectionChangedAction.Add, e.Action));
-            Assert.Equal(added, events.Sum(e => e.NewItems!.Count));
+            Assert.Equal(NotifyCollectionChangedAction.Add, events[^1].Action);
+            Assert.Equal(0, events[^1].NewStartingIndex);
+            Assert.Equal(added, events.Sum(e => e.NewItems?.Count ?? 0) - events.Sum(e => e.OldItems?.Count ?? 0));
+
+            if (notifications == 2)
+            {
+                Assert.Equal(NotifyCollectionChangedAction.Remove, events[0].Action);
+                Assert.Equal(0, events[0].OldStartingIndex);
+            }
         }
 
         [Fact]
@@ -246,6 +275,47 @@ namespace Chatcheology.Mobile.Tests
             // TestArchives gives even sequence numbers to the local participant.
             Assert.Equal([false, true, false, true], messages.Select(m => m.IsMine));
             Assert.Equal(["Sam", "Alex", "Sam", "Alex"], messages.Select(m => m.SenderText));
+        }
+
+        [Fact]
+        public void A_page_that_is_not_after_the_loaded_rows_is_refused_and_changes_nothing()
+        {
+            using var folder = new TemporaryFolder();
+            TestArchives.Write(folder.Path, Count, Layout("join inside a day"));
+
+            using var reader = ArchiveReader.Open(folder.Path);
+            var timeline = new ConversationTimeline(reader, TestArchives.Local);
+
+            timeline.OpenAt(1);
+            var rows = TestArchives.Describe(timeline.Rows);
+
+            // The first page again: it overlaps what is loaded, and it says there is more after it.
+            var overlapping = reader.ReadPageFrom(1, ConversationTimeline.PageSize);
+
+            Assert.Throws<ArgumentException>(() => timeline.Append(overlapping));
+            Assert.Equal(rows, TestArchives.Describe(timeline.Rows));
+            Assert.True(timeline.HasLater);
+            Assert.False(timeline.HasEarlier);
+        }
+
+        [Fact]
+        public void A_refused_append_keeps_has_later_as_it_was()
+        {
+            using var folder = new TemporaryFolder();
+            TestArchives.Write(folder.Path, Count, Layout("join inside a day"));
+
+            using var reader = ArchiveReader.Open(folder.Path);
+            var timeline = new ConversationTimeline(reader, TestArchives.Local);
+
+            timeline.OpenAtLatest();
+            Assert.False(timeline.HasLater);
+
+            // An earlier page, which says there is more after it.
+            var earlier = reader.ReadPageBefore(Count - 10, ConversationTimeline.PageSize);
+            Assert.True(earlier.HasLater);
+
+            Assert.Throws<ArgumentException>(() => timeline.Append(earlier));
+            Assert.False(timeline.HasLater);
         }
 
         /// <summary>Every message, built into rows in one go.</summary>
