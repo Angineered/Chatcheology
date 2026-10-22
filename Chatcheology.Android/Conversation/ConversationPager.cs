@@ -10,11 +10,13 @@ namespace Chatcheology.Android.Conversation
     /// </summary>
     /// <remarks>
     /// The page is read on a worker thread and applied on the UI thread as one range insert. The CH-26
-    /// trial found both lists (MAUI's CollectionView, and a native RecyclerView, which is what the
-    /// CollectionView is underneath) keep the message on screen exactly in place through such an
+    /// trial found MAUI's CollectionView keeps the message on screen exactly in place through such an
     /// insert, so nothing here moves the list.
     /// <para>Every read of the archive goes through here, one at a time, so <see cref="StopAsync"/> can
     /// wait for the one under way before the page closes the reader.</para>
+    /// <para>After each page it asks <see cref="PagingRule"/> again with the rows on screen (moved by
+    /// what a page above added), so a list shorter than the screen fills both ways without waiting for a
+    /// scroll that may never come.</para>
     /// </remarks>
     internal sealed class ConversationPager
     {
@@ -23,6 +25,8 @@ namespace Chatcheology.Android.Conversation
         private Task _running = Task.CompletedTask;
         private bool _loading;
         private bool _stopped;
+        private int _first = -1;
+        private int _last = -1;
 
         internal ConversationPager(ConversationTimeline timeline, string listName)
         {
@@ -36,14 +40,14 @@ namespace Chatcheology.Android.Conversation
         /// <summary>Whether loading may start; off until the list has been placed at its first position.</summary>
         internal bool Ready { get; set; }
 
-        /// <summary>Loads the newest page. Returns the index of the last row, or -1 when there is none.</summary>
-        internal async Task<int> OpenAtLatestAsync()
+        /// <summary>Opens the timeline off the UI thread, before the list is bound to its rows.</summary>
+        internal async Task<T> OpenAsync<T>(Func<T> open)
         {
             _loading = true;
 
             try
             {
-                var read = Task.Run(_timeline.OpenAtLatest);
+                var read = Task.Run(open);
                 _running = read;
 
                 return await read;
@@ -73,7 +77,16 @@ namespace Chatcheology.Android.Conversation
             }
         }
 
-        /// <summary>Loads the page before the loaded rows, unless one is loading or there is none.</summary>
+        /// <summary>Records the rows on screen and loads whatever the paging rule wants, one page at a time.</summary>
+        internal void OnVisibleRange(int first, int last)
+        {
+            _first = first;
+            _last = last;
+
+            _ = PumpAsync();
+        }
+
+        /// <summary>Loads the page before the loaded rows now, unless a read is under way (the trial's controlled step).</summary>
         internal async Task LoadEarlierAsync()
         {
             if (!Ready || _stopped || _loading || !_timeline.HasEarlier)
@@ -85,30 +98,7 @@ namespace Chatcheology.Android.Conversation
 
             try
             {
-                var read = Task.Run(_timeline.ReadEarlier);
-                _running = read;
-                var page = await read;
-
-                if (_stopped)
-                {
-                    return;
-                }
-
-                if (page is null)
-                {
-                    return;
-                }
-
-#if DEBUG
-                var join = _timeline.Rows.Count > 0 && page.Messages.Count > 0 && DateOnly.FromDateTime(page.Messages[^1].DateTimeLocal) == _timeline.Rows[0].Day
-                    ? "inside-day" : "day-start";
-                var top = ScrollAnchor.TopRowKind(List, _timeline.Rows);
-                var anchor = ScrollAnchor.Capture(List, _timeline.Rows);
-                var added = _timeline.Prepend(page);
-                ScrollTrialLog.AfterPrepend($"{_listName} join={join} topRow={top}", List, _timeline.Rows, anchor, added);
-#else
-                _timeline.Prepend(page);
-#endif
+                await LoadEarlierCoreAsync();
             }
             finally
             {
@@ -116,10 +106,9 @@ namespace Chatcheology.Android.Conversation
             }
         }
 
-        /// <summary>Loads the page after the loaded rows, unless one is loading or there is none.</summary>
-        internal async Task LoadLaterAsync()
+        private async Task PumpAsync()
         {
-            if (!Ready || _stopped || _loading || !_timeline.HasLater)
+            if (!Ready || _stopped || _loading)
             {
                 return;
             }
@@ -128,13 +117,32 @@ namespace Chatcheology.Android.Conversation
 
             try
             {
-                var read = Task.Run(_timeline.ReadLater);
-                _running = read;
-
-                if (await read is { } page && !_stopped)
+                while (Ready && !_stopped)
                 {
-                    _timeline.Append(page);
+                    var want = PagingRule.Wanted(_first, _last, _timeline.Rows.Count, _timeline.HasEarlier, _timeline.HasLater);
+
+                    if (want.Earlier)
+                    {
+                        var added = await LoadEarlierCoreAsync();
+
+                        if (added is not { } moved)
+                        {
+                            break;
+                        }
+
+                        // Everything on screen moved down by the rows added above it.
+                        _first += moved;
+                        _last += moved;
+                    }
+                    else if (!want.Later || !await LoadLaterCoreAsync())
+                    {
+                        break;
+                    }
                 }
+            }
+            catch (Exception exception) when (exception is ArchiveFormatException or SqliteException)
+            {
+                // The archive could not be read further; what is loaded stays.
             }
             finally
             {
@@ -142,19 +150,47 @@ namespace Chatcheology.Android.Conversation
             }
         }
 
-        /// <summary>Asks for a page when the visible rows come within a few rows of either end.</summary>
-        internal void OnVisibleRange(int first, int last)
+        /// <summary>Reads and adds the page above; how far the loaded rows moved, or null when nothing was added.</summary>
+        private async Task<int?> LoadEarlierCoreAsync()
         {
-            const int Margin = 15;
+            var read = Task.Run(_timeline.ReadEarlier);
+            _running = read;
+            var page = await read;
 
-            if (first >= 0 && first <= Margin)
+            if (_stopped || page is null)
             {
-                _ = LoadEarlierAsync();
+                return null;
             }
-            else if (last >= 0 && last >= _timeline.Rows.Count - 1 - Margin)
+
+#if DEBUG
+            var join = _timeline.Rows.Count > 0 && page.Messages.Count > 0 && DateOnly.FromDateTime(page.Messages[^1].DateTimeLocal) == _timeline.Rows[0].Day
+                ? "inside-day" : "day-start";
+            var top = ScrollAnchor.TopRowKind(List, _timeline.Rows);
+            var anchor = ScrollAnchor.Capture(List, _timeline.Rows);
+            var added = _timeline.Prepend(page);
+            ScrollTrialLog.AfterPrepend($"{_listName} join={join} topRow={top}", List, _timeline.Rows, anchor, added);
+
+            return added;
+#else
+            return _timeline.Prepend(page);
+#endif
+        }
+
+        /// <summary>Reads and adds the page below; false when there was none.</summary>
+        private async Task<bool> LoadLaterCoreAsync()
+        {
+            var read = Task.Run(_timeline.ReadLater);
+            _running = read;
+            var page = await read;
+
+            if (_stopped || page is null)
             {
-                _ = LoadLaterAsync();
+                return false;
             }
+
+            _timeline.Append(page);
+
+            return true;
         }
     }
 

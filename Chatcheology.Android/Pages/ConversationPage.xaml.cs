@@ -7,30 +7,39 @@ using Microsoft.Data.Sqlite;
 namespace Chatcheology.Android.Pages
 {
     /// <summary>The conversation in MAUI's CollectionView.</summary>
+    /// <remarks>
+    /// Opens where the reader last was (the sequence number at the top of the screen, stored per
+    /// archive), or at the newest messages the first time. The position is stored as she scrolls.
+    /// </remarks>
     public partial class ConversationPage : ContentPage
     {
-        private readonly ArchiveReader _reader;
+        private readonly ArchiveSession _session;
         private readonly ConversationTimeline _timeline;
         private readonly ConversationPager _pager;
         private bool _opened;
+        private int? _savedPosition;
 
         /// <summary>
-        /// A page over an open reader and its timeline, which the caller builds off the UI thread. The
-        /// page owns the reader from here on and closes it when it is closed.
+        /// A page over an open session, which the caller opens off the UI thread. The page owns the
+        /// session from here on and closes it when it is closed.
         /// </summary>
-        internal ConversationPage(ArchiveReader reader, ConversationTimeline timeline, ItemsUpdatingScrollMode mode)
+        internal ConversationPage(ArchiveSession session)
         {
             InitializeComponent();
 
-            _reader = reader;
-            _timeline = timeline;
-            _pager = new ConversationPager(_timeline, $"CollectionView-{mode}");
+            _session = session;
+            _timeline = session.CreateTimeline();
+            _pager = new ConversationPager(_timeline, "CollectionView");
 
-            Title = reader.Info.ConversationTitle;
-            List.ItemsUpdatingScrollMode = mode;
+            Title = session.Title;
+            List.ItemsUpdatingScrollMode = ItemsUpdatingScrollMode.KeepItemsInView;
 
             List.HandlerChanged += (_, _) => _pager.List = List.Handler?.PlatformView as RecyclerView;
-            List.Scrolled += (_, e) => _pager.OnVisibleRange(e.FirstVisibleItemIndex, e.LastVisibleItemIndex);
+            List.Scrolled += (_, e) =>
+            {
+                _pager.OnVisibleRange(e.FirstVisibleItemIndex, e.LastVisibleItemIndex);
+                SavePosition(e.FirstVisibleItemIndex);
+            };
 
 #if DEBUG
             // The trial's controlled step: a page added above with no scrolling under way, so a
@@ -52,12 +61,18 @@ namespace Chatcheology.Android.Pages
 
             _opened = true;
 
-            int last;
+            if (_session.IsEmpty)
+            {
+                List.EmptyView = "This archive has no messages.";
+                return;
+            }
+
+            OpenedAt opened;
 
             try
             {
                 // Built before the list is bound, so nothing is observing the rows yet.
-                last = await _pager.OpenAtLatestAsync();
+                opened = await _pager.OpenAsync(() => _session.OpenTimeline(_timeline));
             }
             catch (Exception exception) when (exception is ArchiveFormatException or SqliteException)
             {
@@ -67,12 +82,15 @@ namespace Chatcheology.Android.Pages
 
             List.ItemsSource = _timeline.Rows;
 
-            if (last >= 0)
+            if (opened.RowIndex >= 0)
             {
-                List.ScrollTo(last, position: ScrollToPosition.End, animate: false);
+                List.ScrollTo(
+                    opened.RowIndex,
+                    position: opened.AtLatest ? ScrollToPosition.End : ScrollToPosition.Start,
+                    animate: false);
             }
 
-            // Let the first placement settle before scrolling may load more.
+            // Let the first placement settle before scrolling may load more or move the stored position.
             await Task.Delay(500);
             _pager.Ready = true;
         }
@@ -89,7 +107,30 @@ namespace Chatcheology.Android.Pages
 
             // A page read may still be running on the reader's connection: let it finish first.
             await _pager.StopAsync();
-            _reader.Dispose();
+            _session.Dispose();
+        }
+
+        /// <summary>Stores the first message at or below the top row as the reader's position.</summary>
+        private void SavePosition(int firstVisible)
+        {
+            if (!_pager.Ready || firstVisible < 0)
+            {
+                return;
+            }
+
+            for (var i = firstVisible; i < _timeline.Rows.Count; i++)
+            {
+                if (_timeline.Rows[i] is MessageRow message)
+                {
+                    if (_savedPosition != message.SequenceNumber)
+                    {
+                        _savedPosition = message.SequenceNumber;
+                        _session.SavePosition(message.SequenceNumber);
+                    }
+
+                    return;
+                }
+            }
         }
 
 #if DEBUG

@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8" ?>
-<!-- The conversation in MAUI's CollectionView (the trial's first candidate). Rows are separators and
+<!-- The conversation in MAUI's CollectionView (chosen by the CH-26 trial). Rows are separators and
      messages; a selector picks the template. Image heights come from the recorded size, so a row has
-     its final height before its image is decoded. -->
+     its final height before its image is decoded. Hidden low-quality copies are not drawn. -->
 <ContentPage xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
              xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
              xmlns:conv="clr-namespace:Chatcheology.Mobile.Conversation;assembly=Chatcheology.Mobile"
@@ -27,7 +27,9 @@
                     <VerticalStackLayout Spacing="2">
                         <Label Text="{Binding SenderText}" FontSize="13" FontAttributes="Bold"
                                TextColor="{StaticResource SenderText}" />
-                        <VerticalStackLayout Spacing="4" BindableLayout.ItemsSource="{Binding Attachments}">
+                        <Label Text="{Binding ForwardedText}" IsVisible="{Binding IsForwarded}" FontSize="12"
+                               FontAttributes="Italic" TextColor="{StaticResource MutedText}" />
+                        <VerticalStackLayout Spacing="4" BindableLayout.ItemsSource="{Binding ShownAttachments}">
                             <BindableLayout.ItemTemplate>
                                 <DataTemplate x:DataType="conv:AttachmentCard">
                                     <controls:AttachmentCardView />
@@ -47,7 +49,9 @@
                 <Border HorizontalOptions="End" BackgroundColor="{StaticResource BubbleMine}"
                         StrokeThickness="0" Padding="8,6" StrokeShape="RoundRectangle 8">
                     <VerticalStackLayout Spacing="2">
-                        <VerticalStackLayout Spacing="4" BindableLayout.ItemsSource="{Binding Attachments}">
+                        <Label Text="{Binding ForwardedText}" IsVisible="{Binding IsForwarded}" FontSize="12"
+                               FontAttributes="Italic" TextColor="{StaticResource MutedText}" />
+                        <VerticalStackLayout Spacing="4" BindableLayout.ItemsSource="{Binding ShownAttachments}">
                             <BindableLayout.ItemTemplate>
                                 <DataTemplate x:DataType="conv:AttachmentCard">
                                     <controls:AttachmentCardView />

@@ -31,19 +31,30 @@ namespace Chatcheology.Mobile.Conversation
         private readonly ArchiveReader _reader;
         private readonly long _localParticipantID;
         private readonly IReadOnlyDictionary<long, string> _names;
+        private readonly LowQualityIndex _lowQuality;
 
         private int? _firstSequenceNumber;
         private int? _lastSequenceNumber;
 
         /// <summary>A timeline over <paramref name="reader"/>, with "me" as <paramref name="localParticipantID"/>.</summary>
-        public ConversationTimeline(ArchiveReader reader, long localParticipantID)
+        /// <param name="reader">The open archive. The timeline reads through it; one read at a time.</param>
+        /// <param name="localParticipantID">Whose messages go on the right.</param>
+        /// <param name="lowQuality">
+        /// The conversation's low-quality copy links. When none is given it is built here, which reads the
+        /// whole conversation once; pass the one an <see cref="ArchiveSession"/> holds to avoid that.
+        /// </param>
+        public ConversationTimeline(ArchiveReader reader, long localParticipantID, LowQualityIndex? lowQuality = null)
         {
             ArgumentNullException.ThrowIfNull(reader);
 
             _reader = reader;
             _localParticipantID = localParticipantID;
             _names = reader.ReadParticipants().ToDictionary(p => p.ParticipantID, p => p.DisplayName);
+            _lowQuality = lowQuality ?? LowQualityIndex.Build(reader);
         }
+
+        /// <summary>Whose messages go on the right.</summary>
+        public long LocalParticipantID => _localParticipantID;
 
         /// <summary>The rows the list shows.</summary>
         public ConversationRows Rows { get; } = new();
@@ -65,8 +76,12 @@ namespace Chatcheology.Mobile.Conversation
 
         /// <summary>
         /// Loads the page before <paramref name="sequenceNumber"/> and the page from it. Returns the
-        /// index of the row of the first message at or after it, or -1 when there is none.
+        /// index of the row of the first shown message at or after it, or -1 when there is none.
         /// </summary>
+        /// <remarks>
+        /// The message at <paramref name="sequenceNumber"/> may be hidden (a bubble of hidden low-quality
+        /// copies only); the next shown message stands in for it.
+        /// </remarks>
         public int OpenAt(int sequenceNumber)
         {
             Reset();
@@ -77,8 +92,16 @@ namespace Chatcheology.Mobile.Conversation
             Append(before, first: true);
             Append(from, first: before.Messages.Count == 0);
 
-            return from.FirstSequenceNumber is { } target ? IndexOfMessage(target) : -1;
+            return from.FirstSequenceNumber is { } target ? IndexOfMessageAtOrAfter(target) : -1;
         }
+
+        /// <summary>
+        /// Loads the conversation around the first message on or after <paramref name="day"/> (the
+        /// date picker's jump). Returns that message's row, or -1 when no message is that late, in which
+        /// case nothing is loaded.
+        /// </summary>
+        public int OpenAtDay(DateOnly day) =>
+            _reader.FindFirstSequenceNumberOnOrAfter(day) is { } sequenceNumber ? OpenAt(sequenceNumber) : -1;
 
         /// <summary>The page before the loaded rows, or <see langword="null"/> when there is none.</summary>
         public ArchivePage? ReadEarlier() =>
@@ -150,13 +173,29 @@ namespace Chatcheology.Mobile.Conversation
             return -1;
         }
 
+        /// <summary>The index of the row of the first shown message at or after <paramref name="sequenceNumber"/>, or -1.</summary>
+        public int IndexOfMessageAtOrAfter(int sequenceNumber)
+        {
+            for (var i = 0; i < Rows.Count; i++)
+            {
+                if (Rows[i] is MessageRow message && message.SequenceNumber >= sequenceNumber)
+                {
+                    return i;
+                }
+            }
+
+            return -1;
+        }
+
         /// <summary>
         /// The rows for a run of messages: a separator before each message whose day differs from the
-        /// one before it (<paramref name="previousDay"/> for the first), then the message.
+        /// one before it (<paramref name="previousDay"/> for the first), then the message if it is shown.
         /// </summary>
         /// <remarks>
-        /// Chat order decides, never time order: nothing here assumes the stored times rise with the
-        /// sequence numbers, the same rule as the desktop's page.
+        /// <para>Chat order decides, never time order: nothing here assumes the stored times rise with the
+        /// sequence numbers, the same rule as the desktop's page.</para>
+        /// <para>A message that is not shown (<see cref="MessageRow.IsShown"/>) gets no row, but still
+        /// counts for its day, so its day keeps its separator, as the desktop does it.</para>
         /// </remarks>
         public List<ConversationRow> BuildRows(
             IReadOnlyList<ArchiveMessage> messages,
@@ -179,7 +218,10 @@ namespace Chatcheology.Mobile.Conversation
                     day = row.Day;
                 }
 
-                rows.Add(row);
+                if (row.IsShown)
+                {
+                    rows.Add(row);
+                }
             }
 
             return rows;
@@ -222,10 +264,17 @@ namespace Chatcheology.Mobile.Conversation
                 : "System";
 
             var attachments = message.Attachments
-                .Select(attachment => new AttachmentCard(
-                    attachment,
-                    attachment.MediaSha256 is { } sha && media.TryGetValue(sha, out var payload) ? payload : null,
-                    _reader.MediaFullPath(attachment)))
+                .Select(attachment =>
+                {
+                    var path = _reader.MediaFullPath(attachment);
+
+                    return new AttachmentCard(
+                        attachment,
+                        attachment.MediaSha256 is { } sha && media.TryGetValue(sha, out var payload) ? payload : null,
+                        path,
+                        path is not null && File.Exists(path),
+                        _lowQuality);
+                })
                 .ToList();
 
             return new MessageRow(message, sender, message.SenderParticipantID == _localParticipantID, attachments);

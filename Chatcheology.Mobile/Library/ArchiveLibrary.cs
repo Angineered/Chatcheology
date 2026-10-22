@@ -1,4 +1,7 @@
+using System.Security.Cryptography;
 using Chatcheology.Archive;
+using Chatcheology.Mobile.Settings;
+using Microsoft.Data.Sqlite;
 
 namespace Chatcheology.Mobile.Library
 {
@@ -63,6 +66,94 @@ namespace Chatcheology.Mobile.Library
             Directory.Exists(ArchivesFolder)
                 ? Directory.EnumerateDirectories(ArchivesFolder).Order(StringComparer.Ordinal).ToList()
                 : [];
+
+        /// <summary>
+        /// The installed archives with what the start screen shows: title, created date, message count
+        /// and when each was last opened. Reads each archive's database; call it off the UI thread.
+        /// </summary>
+        /// <remarks>An archive that cannot be read is still listed, so it can be removed.</remarks>
+        public IReadOnlyList<InstalledArchive> ListArchives(ArchiveSettings settings)
+        {
+            ArgumentNullException.ThrowIfNull(settings);
+
+            return ListInstalled().Select(folder => Describe(folder, settings)).ToList();
+        }
+
+        /// <summary>The installed archive whose <c>CONTENTS.sha256</c> hashes to <paramref name="contentsSha256"/>, or <see langword="null"/>.</summary>
+        public string? FindInstalled(string contentsSha256)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(contentsSha256);
+
+            return ListInstalled().FirstOrDefault(folder =>
+                string.Equals(ContentsSha256Of(folder), contentsSha256, StringComparison.Ordinal));
+        }
+
+        /// <summary>
+        /// Deletes the app's copy of an installed archive and forgets what the app stored about it. The
+        /// source the archive was imported from is not touched. The caller closes any reader on it first.
+        /// </summary>
+        /// <exception cref="ArgumentException">The folder is not directly inside the installed archives.</exception>
+        public void Remove(InstalledArchive archive, ArchiveSettings settings)
+        {
+            ArgumentNullException.ThrowIfNull(archive);
+            ArgumentNullException.ThrowIfNull(settings);
+
+            var folder = Path.TrimEndingDirectorySeparator(Path.GetFullPath(archive.Folder));
+
+            if (!string.Equals(Path.GetDirectoryName(folder), ArchivesFolder, StringComparison.Ordinal))
+            {
+                throw new ArgumentException("Only a folder directly inside the installed archives can be removed.", nameof(archive));
+            }
+
+            // A reader's pooled handle would keep the database open on Windows; the reader does not pool,
+            // and this makes sure nothing else does either.
+            SqliteConnection.ClearAllPools();
+
+            if (Directory.Exists(folder))
+            {
+                Directory.Delete(folder, recursive: true);
+            }
+
+            if (archive.ContentsSha256 is { } hash)
+            {
+                settings.Forget(hash);
+            }
+        }
+
+        /// <summary>
+        /// The archive's identity: the SHA-256 (lower-case hex) of its <c>CONTENTS.sha256</c> file's bytes,
+        /// or <see langword="null"/> when the file cannot be read.
+        /// </summary>
+        public static string? ContentsSha256Of(string archiveFolder)
+        {
+            try
+            {
+                return ArchiveHashing.Hex(SHA256.HashData(File.ReadAllBytes(Path.Combine(archiveFolder, ArchiveContents.FileName))));
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                return null;
+            }
+        }
+
+        private static InstalledArchive Describe(string folder, ArchiveSettings settings)
+        {
+            var hash = ContentsSha256Of(folder);
+            var lastOpened = hash is null ? null : settings.GetLastOpenedUtc(hash);
+
+            try
+            {
+                using var reader = ArchiveReader.Open(folder);
+
+                return new InstalledArchive(
+                    Path.GetFileName(folder), folder, hash, reader.Info.ConversationTitle, reader.Info.CreatedUtc,
+                    reader.ReadMessageCount(), lastOpened, IsReadable: hash is not null);
+            }
+            catch (Exception exception) when (exception is ArchiveFormatException or SqliteException or IOException or UnauthorizedAccessException)
+            {
+                return new InstalledArchive(Path.GetFileName(folder), folder, hash, null, null, 0, lastOpened, IsReadable: false);
+            }
+        }
 
         /// <summary>
         /// Validates a staging folder. When it passes, it is moved into the installed archives under

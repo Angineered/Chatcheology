@@ -1,0 +1,199 @@
+using Chatcheology.Archive;
+using Chatcheology.Mobile.Library;
+using Chatcheology.Mobile.Search;
+using Chatcheology.Mobile.Settings;
+
+namespace Chatcheology.Mobile.Conversation
+{
+    /// <summary>Where a timeline was opened, and how the list should be placed.</summary>
+    /// <param name="RowIndex">The row to place, or -1 when there are no rows.</param>
+    /// <param name="AtLatest">
+    /// True when opened at the newest messages (first open, or a stored position no longer valid): place
+    /// the row at the bottom. False when opened at a stored position: place the row at the top.
+    /// </param>
+    public readonly record struct OpenedAt(int RowIndex, bool AtLatest);
+
+    /// <summary>
+    /// One opened archive: its reader, who "me" is, where the reader last was, and its search index.
+    /// </summary>
+    /// <remarks>
+    /// <para><strong>Me.</strong> The archive's choice (<c>Participant.IsLocal</c>) unless one was stored
+    /// for this archive's identity; a stored choice that is not a participant of the archive is ignored.</para>
+    /// <para><strong>Position.</strong> The sequence number at the top of the screen, stored per archive.
+    /// Opening loads the page before it and the page from it; the first time, the newest page.</para>
+    /// <para><strong>Threads.</strong> <see cref="Open"/> reads the whole conversation once (the
+    /// low-quality links), so it runs off the UI thread. The reader is used by one thread at a time; the
+    /// search index has a reader of its own, so it can be built while pages load.</para>
+    /// </remarks>
+    public sealed class ArchiveSession : IDisposable
+    {
+        private readonly ArchiveSettings _settings;
+        private readonly string _identity;
+        private readonly CancellationTokenSource _closing = new();
+        private readonly object _searchLock = new();
+        private Task<ConversationSearch>? _search;
+
+        private ArchiveSession(InstalledArchive archive, ArchiveReader reader, ArchiveSettings settings, string identity)
+        {
+            Archive = archive;
+            Reader = reader;
+            _settings = settings;
+            _identity = identity;
+
+            Participants = reader.ReadParticipants();
+            DefaultMe = Participants.FirstOrDefault(p => p.IsLocal)?.ParticipantID ?? reader.Info.LocalParticipantID;
+            MessageCount = reader.ReadMessageCount();
+            LowQuality = LowQualityIndex.Build(reader, _closing.Token);
+        }
+
+        /// <summary>The archive.</summary>
+        public InstalledArchive Archive { get; }
+
+        /// <summary>The open reader. One read at a time.</summary>
+        public ArchiveReader Reader { get; }
+
+        /// <summary>The conversation's title, for the conversation screen's heading.</summary>
+        public string Title => Reader.Info.ConversationTitle;
+
+        /// <summary>Every participant, by identifier.</summary>
+        public IReadOnlyList<ArchiveParticipant> Participants { get; }
+
+        /// <summary>The archive's own "me".</summary>
+        public long DefaultMe { get; }
+
+        /// <summary>"Me": the stored choice when there is a valid one, otherwise <see cref="DefaultMe"/>.</summary>
+        public long Me => _settings.GetMe(_identity) is { } chosen && Participants.Any(p => p.ParticipantID == chosen)
+            ? chosen
+            : DefaultMe;
+
+        /// <summary>Whether "me" is a choice made in Settings rather than the archive's.</summary>
+        public bool IsMeChanged => Me != DefaultMe;
+
+        /// <summary>How many messages the archive holds.</summary>
+        public int MessageCount { get; }
+
+        /// <summary>Whether the archive holds no messages: an empty state, with no date picker and no search.</summary>
+        public bool IsEmpty => MessageCount == 0;
+
+        /// <summary>Whether the date picker is offered.</summary>
+        public bool CanPickDate => !IsEmpty;
+
+        /// <summary>Whether search is offered.</summary>
+        public bool CanSearch => !IsEmpty;
+
+        /// <summary>The conversation's low-quality copy links.</summary>
+        public LowQualityIndex LowQuality { get; }
+
+        /// <summary>
+        /// Opens <paramref name="archive"/> and records that it was opened now. Reads the whole
+        /// conversation once; call it off the UI thread.
+        /// </summary>
+        /// <exception cref="ArchiveFormatException">The archive cannot be read.</exception>
+        /// <exception cref="ArgumentException">The archive's identity is not known.</exception>
+        public static ArchiveSession Open(InstalledArchive archive, ArchiveSettings settings, TimeProvider? clock = null)
+        {
+            ArgumentNullException.ThrowIfNull(archive);
+            ArgumentNullException.ThrowIfNull(settings);
+
+            if (archive.ContentsSha256 is not { } identity)
+            {
+                throw new ArgumentException("The archive's contents list cannot be read, so it cannot be opened.", nameof(archive));
+            }
+
+            var reader = ArchiveReader.Open(archive.Folder);
+
+            try
+            {
+                var session = new ArchiveSession(archive, reader, settings, identity);
+                settings.SetLastOpenedUtc(identity, (clock ?? TimeProvider.System).GetUtcNow().UtcDateTime);
+
+                return session;
+            }
+            catch
+            {
+                reader.Dispose();
+                throw;
+            }
+        }
+
+        /// <summary>Chooses "me"; choosing the archive's own returns to it.</summary>
+        /// <exception cref="ArgumentException">Not a participant of the archive.</exception>
+        public void SetMe(long participantID)
+        {
+            if (Participants.All(p => p.ParticipantID != participantID))
+            {
+                throw new ArgumentException("Only a participant of the conversation can be me.", nameof(participantID));
+            }
+
+            _settings.SetMe(_identity, participantID == DefaultMe ? null : participantID);
+        }
+
+        /// <summary>A timeline with the current "me". After "me" changes, a new one is made and opened.</summary>
+        public ConversationTimeline CreateTimeline() => new(Reader, Me, LowQuality);
+
+        /// <summary>
+        /// Opens <paramref name="timeline"/> where the reader last was, or at the newest messages the
+        /// first time (or when the stored position is past the end).
+        /// </summary>
+        public OpenedAt OpenTimeline(ConversationTimeline timeline)
+        {
+            ArgumentNullException.ThrowIfNull(timeline);
+
+            if (_settings.GetPosition(_identity) is { } anchor)
+            {
+                var index = timeline.OpenAt(anchor);
+
+                if (index >= 0)
+                {
+                    return new OpenedAt(index, AtLatest: false);
+                }
+            }
+
+            return new OpenedAt(timeline.OpenAtLatest(), AtLatest: true);
+        }
+
+        /// <summary>The stored position: the sequence number at the top of the screen, or <see langword="null"/>.</summary>
+        public int? Position => _settings.GetPosition(_identity);
+
+        /// <summary>Stores the sequence number at the top of the screen.</summary>
+        public void SavePosition(int sequenceNumber) => _settings.SetPosition(_identity, sequenceNumber);
+
+        /// <summary>The days that have messages, for the date picker.</summary>
+        public IReadOnlyList<DateOnly> ReadDays() => Reader.ReadDays();
+
+        /// <summary>
+        /// The search index, built in the background the first time it is asked for, with a reader of its
+        /// own. Later calls return the same task.
+        /// </summary>
+        public Task<ConversationSearch> GetSearchAsync()
+        {
+            lock (_searchLock)
+            {
+                ObjectDisposedException.ThrowIf(_closing.IsCancellationRequested, this);
+
+                var token = _closing.Token;
+                var folder = Reader.FolderPath;
+
+                return _search ??= Task.Run(() => ConversationSearch.Build(folder, token), token);
+            }
+        }
+
+        /// <summary>Stops a search index being built and closes the reader.</summary>
+        public void Dispose()
+        {
+            lock (_searchLock)
+            {
+                if (_closing.IsCancellationRequested)
+                {
+                    return;
+                }
+
+                _closing.Cancel();
+            }
+
+            // The token source is not disposed: a search build still running reads its token, and a
+            // source without timers holds nothing that needs releasing.
+            Reader.Dispose();
+        }
+    }
+}

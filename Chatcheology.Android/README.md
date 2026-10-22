@@ -55,5 +55,6 @@ activity is the only exported component.
 
 A Debug build compiles in the synthetic archive generator from
 `Chatcheology.Mobile.Tests\Synthetic` and shows development tools on the start page (install a
-synthetic archive, validate, open with each list of the scrolling trial). A Release build contains
-none of it.
+synthetic archive, validate) and on the conversation page ("Top", "Load earlier", with the scroll
+log in `adb logcat -s ChatcheologyTrial`). A Release build contains none of it. The conversation
+list is MAUI's CollectionView, as the CH-26 trial chose; the native RecyclerView trial was removed.

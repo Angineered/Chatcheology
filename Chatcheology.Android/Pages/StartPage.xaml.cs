@@ -2,6 +2,7 @@ using System.Globalization;
 using Chatcheology.Archive;
 using Chatcheology.Mobile.Conversation;
 using Chatcheology.Mobile.Library;
+using Chatcheology.Mobile.Settings;
 using Microsoft.Data.Sqlite;
 #if DEBUG
 using Chatcheology.Mobile.Synthetic;
@@ -10,35 +11,22 @@ using AndroidLog = global::Android.Util.Log;
 
 namespace Chatcheology.Android.Pages
 {
-    /// <summary>Which list shows the conversation.</summary>
-    internal enum ConversationListKind
-    {
-        /// <summary>MAUI CollectionView, with its default <see cref="ItemsUpdatingScrollMode.KeepItemsInView"/>.</summary>
-        CollectionViewKeepItemsInView,
-
-        /// <summary>MAUI CollectionView with <see cref="ItemsUpdatingScrollMode.KeepScrollOffset"/>.</summary>
-        CollectionViewKeepScrollOffset,
-
-        /// <summary>A native Android RecyclerView.</summary>
-        RecyclerView,
-    }
-
-    /// <summary>The start screen.</summary>
+    /// <summary>
+    /// The start screen, following the opening rule: no archive, a note (import comes in step 3);
+    /// exactly one, straight into its conversation; several, the list with the last opened first.
+    /// </summary>
     public partial class StartPage : ContentPage
     {
-        /// <summary>
-        /// The list a Release build uses. The CH-26 trial found MAUI's CollectionView steady when a page
-        /// is added above, so the design's default stands; the other lists stay selectable in Debug.
-        /// </summary>
-        internal const ConversationListKind ReleaseList = ConversationListKind.CollectionViewKeepItemsInView;
-
         private readonly ArchiveLibrary _library;
+        private readonly ArchiveSettings _settings;
+        private bool _started;
 
-        internal StartPage(ArchiveLibrary library)
+        internal StartPage(ArchiveLibrary library, ArchiveSettings settings)
         {
             InitializeComponent();
 
             _library = library;
+            _settings = settings;
 
 #if DEBUG
             AddDevelopmentTools();
@@ -49,81 +37,64 @@ namespace Chatcheology.Android.Pages
         protected override async void OnAppearing()
         {
             base.OnAppearing();
-            await RefreshAsync();
+
+            var opening = await RefreshAsync();
+            var starting = !_started;
+            _started = true;
+
+            // Only when the app starts: coming back from the conversation shows this screen.
+            if (starting && opening is { Screen: StartScreen.OpenConversation, Archive: { IsReadable: true } only })
+            {
+                await OpenAsync(only);
+            }
         }
 
-        private async Task RefreshAsync()
+        private async Task<Opening?> RefreshAsync()
         {
             Archives.Children.Clear();
 
-            List<(string Folder, string Summary)> installed;
+            Opening opening;
 
             try
             {
-                installed = await Task.Run(() => _library.ListInstalled()
-                    .Select(folder => (Folder: folder, Summary: Describe(folder)))
-                    .ToList());
+                opening = await Task.Run(() => OpeningRule.Decide(_library.ListArchives(_settings)));
             }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
             {
                 Summary.Text = "The installed archives could not be listed.";
-                return;
+                return null;
             }
 
-            Summary.Text = installed.Count == 0
-                ? "No archive is installed yet."
-                : installed.Count == 1 ? "One archive is installed." : $"{installed.Count} archives are installed.";
-
-            foreach (var (folder, summary) in installed)
+            Summary.Text = opening.Screen switch
             {
-                Archives.Children.Add(new Label { Text = summary, FontAttributes = FontAttributes.Bold });
+                StartScreen.NoArchive => "No archive is installed yet.",
+                StartScreen.OpenConversation => "One archive is installed.",
+                _ => $"{opening.Archives.Count.ToString(CultureInfo.CurrentCulture)} archives are installed.",
+            };
 
-#if DEBUG
-                foreach (var kind in Enum.GetValues<ConversationListKind>())
+            foreach (var archive in opening.Archives)
+            {
+                Archives.Children.Add(new Label { Text = Describe(archive), FontAttributes = FontAttributes.Bold });
+
+                if (archive.IsReadable)
                 {
-                    Archives.Children.Add(OpenButton(folder, kind));
+                    var button = new Button { Text = "Open" };
+                    button.Clicked += async (_, _) => await OpenAsync(archive);
+                    Archives.Children.Add(button);
                 }
-#else
-                Archives.Children.Add(OpenButton(folder, ReleaseList));
-#endif
             }
+
+            return opening;
         }
 
-        private Button OpenButton(string folder, ConversationListKind kind)
+        private async Task OpenAsync(InstalledArchive archive)
         {
-#if DEBUG
-            var text = $"Open: {kind}";
-#else
-            var text = "Open";
-#endif
-            var button = new Button { Text = text };
-            button.Clicked += async (_, _) => await OpenAsync(folder, kind);
-
-            return button;
-        }
-
-        private async Task OpenAsync(string folder, ConversationListKind kind)
-        {
-            ArchiveReader? reader = null;
-            ConversationTimeline timeline;
+            ArchiveSession session;
 
             try
             {
-                // Opening and the participant read both touch the database: off the UI thread.
-                (reader, timeline) = await Task.Run(() =>
-                {
-                    var opened = ArchiveReader.Open(folder);
-
-                    try
-                    {
-                        return (opened, new ConversationTimeline(opened, opened.Info.LocalParticipantID));
-                    }
-                    catch
-                    {
-                        opened.Dispose();
-                        throw;
-                    }
-                });
+                // Opening reads the whole conversation once (its low-quality links): off the UI thread.
+                session = await Task.Run(() => ArchiveSession.Open(archive, _settings));
             }
             catch (ArchiveFormatException exception)
             {
@@ -136,44 +107,20 @@ namespace Chatcheology.Android.Pages
                 return;
             }
 
-            Page page = kind switch
-            {
-                ConversationListKind.RecyclerView => new NativeConversationPage(reader, timeline),
-                ConversationListKind.CollectionViewKeepScrollOffset => new ConversationPage(reader, timeline, ItemsUpdatingScrollMode.KeepScrollOffset),
-                _ => new ConversationPage(reader, timeline, ItemsUpdatingScrollMode.KeepItemsInView),
-            };
-
-            await Navigation.PushAsync(page);
+            await Navigation.PushAsync(new ConversationPage(session));
         }
 
-        /// <summary>The conversation title and message count; never a path.</summary>
-        private static string Describe(string folder)
+        /// <summary>The conversation title, created date and message count; never a path.</summary>
+        private static string Describe(InstalledArchive archive)
         {
-            try
-            {
-                using var reader = ArchiveReader.Open(folder);
-
-                var text = $"{reader.Info.ConversationTitle} · {reader.ReadMessageCount().ToString("N0", CultureInfo.CurrentCulture)} messages";
-#if DEBUG
-                // Tells the two synthetic archives apart.
-                text += $" · {reader.ReadDays().Count.ToString(CultureInfo.CurrentCulture)} days";
-#endif
-                return text;
-            }
-            catch (Exception exception) when (exception is ArchiveFormatException or SqliteException)
+            if (!archive.IsReadable)
             {
                 return "An archive that cannot be opened";
             }
-        }
 
-        /// <summary>The validator's result by check name and count only.</summary>
-        private static string DescribeValidation(ArchiveValidationResult result)
-        {
-            var passed = result.Checks.Count(check => check.Passed);
-            var lines = result.Checks.Select(check =>
-                $"{check.Check}: {(check.Passed ? "passed" : "FAILED")} ({check.Examined} examined, {check.Problems} problems)");
+            var created = archive.CreatedUtc?.ToLocalTime().ToString("d MMMM yyyy", CultureInfo.CurrentCulture);
 
-            return $"Validation {(result.Passed ? "passed" : "FAILED")}: {passed} of {result.Checks.Count} checks.\n" + string.Join("\n", lines);
+            return $"{archive.ConversationTitle} · {archive.MessageCount.ToString("N0", CultureInfo.CurrentCulture)} messages · made {created}";
         }
 
 #if DEBUG
@@ -201,9 +148,19 @@ namespace Chatcheology.Android.Pages
             DevelopmentTools.Children.Add(validate);
         }
 
+        /// <summary>The validator's result by check name and count only.</summary>
+        private static string DescribeValidation(ArchiveValidationResult result)
+        {
+            var passed = result.Checks.Count(check => check.Passed);
+            var lines = result.Checks.Select(check =>
+                $"{check.Check}: {(check.Passed ? "passed" : "FAILED")} ({check.Examined} examined, {check.Problems} problems)");
+
+            return $"Validation {(result.Passed ? "passed" : "FAILED")}: {passed} of {result.Checks.Count} checks.\n" + string.Join("\n", lines);
+        }
+
         /// <summary>
         /// Writes the synthetic archive into staging with Microsoft.Data.Sqlite, validates it there and
-        /// installs it, exactly as an import will once the copy is made.
+        /// installs it, exactly as an import does once the copy is made.
         /// </summary>
         private async Task InstallSyntheticAsync(SyntheticArchiveOptions options)
         {
