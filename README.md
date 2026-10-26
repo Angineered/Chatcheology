@@ -9,7 +9,8 @@ unnecessary WhatsApp-specific assumptions where practical.
 ## Development status
 
 **Foundation, plus a read-only viewer.** The repository contains the solution structure, a
-synthetic test fixture, a text parser for one pinned WhatsApp Android export layout,
+synthetic test fixture, a text parser for the pinned WhatsApp Android export layout and two older layouts (one
+layout per file),
 version 3 of the workspace SQLite database, the media inventory, hashing and deduplication
 services described below, the evidence and reconstruction path that records what an
 attachment currently is or why it is not anything yet, and a desktop application that

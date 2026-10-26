@@ -88,13 +88,45 @@ namespace Chatcheology.Data.Workspace
 
             using var transaction = connection.BeginTransaction();
 
+            var rows = ImportWithin(connection, transaction, request);
+
+            // Anything thrown above leaves this uncalled, and disposing an uncommitted transaction
+            // rolls it back. The exception is deliberately not caught: a failed import must be
+            // visible to the caller, not silently reported as an empty one.
+            transaction.Commit();
+
+            return rows.Result;
+        }
+
+        /// <summary>
+        /// Writes one import inside a transaction the caller owns, without committing it, and
+        /// returns the generated identifiers a caller writing further rows needs.
+        /// </summary>
+        /// <remarks>
+        /// The same rows <see cref="Import"/> writes, by the same code. Exists so a caller that adds
+        /// rows of its own to the same import (the older-exports importer) can keep everything in
+        /// one transaction. The caller is responsible for what <see cref="Import"/> does around
+        /// this: the request is validated here, but opening the database, the schema guard,
+        /// committing and rolling back are the caller's.
+        /// </remarks>
+        internal static WorkspaceImportRows ImportWithin(
+            SqliteConnection connection,
+            SqliteTransaction transaction,
+            WorkspaceImportRequest request)
+        {
+            ArgumentNullException.ThrowIfNull(connection);
+            ArgumentNullException.ThrowIfNull(transaction);
+            ArgumentNullException.ThrowIfNull(request);
+
+            ValidateRequest(request);
+
             var importSourceID = InsertImportSource(connection, transaction, request);
             var conversationID = InsertConversation(connection, transaction, request);
 
             var participantIDsBySender =
                 InsertParticipants(connection, transaction, conversationID, request.Messages);
 
-            InsertMessages(
+            var messageIDsBySequenceNumber = InsertMessages(
                 connection,
                 transaction,
                 conversationID,
@@ -102,17 +134,17 @@ namespace Chatcheology.Data.Workspace
                 participantIDsBySender,
                 request.Messages);
 
-            // Anything thrown above leaves this uncalled, and disposing an uncommitted transaction
-            // rolls it back. The exception is deliberately not caught: a failed import must be
-            // visible to the caller, not silently reported as an empty one.
-            transaction.Commit();
-
-            return new WorkspaceImportResult
+            return new WorkspaceImportRows
             {
-                ImportSourceID = importSourceID,
-                ConversationID = conversationID,
-                ParticipantCount = participantIDsBySender.Count,
-                MessageCount = request.Messages.Count,
+                Result = new WorkspaceImportResult
+                {
+                    ImportSourceID = importSourceID,
+                    ConversationID = conversationID,
+                    ParticipantCount = participantIDsBySender.Count,
+                    MessageCount = request.Messages.Count,
+                },
+                ParticipantIDsBySender = participantIDsBySender,
+                MessageIDsBySequenceNumber = messageIDsBySequenceNumber,
             };
         }
 
@@ -347,7 +379,7 @@ namespace Chatcheology.Data.Workspace
 
         /// <summary>
         /// Inserts the messages, and one unresolved attachment for each that is an exact media
-        /// placeholder.
+        /// placeholder, and returns each message's generated identifier by its sequence number.
         /// </summary>
         /// <remarks>
         /// One command per statement is prepared once and its parameters rebound per message, rather
@@ -360,7 +392,7 @@ namespace Chatcheology.Data.Workspace
         /// failure anywhere leaves neither.
         /// </para>
         /// </remarks>
-        private static void InsertMessages(
+        private static Dictionary<int, long> InsertMessages(
             SqliteConnection connection,
             SqliteTransaction transaction,
             long conversationID,
@@ -439,6 +471,8 @@ namespace Chatcheology.Data.Workspace
 
             attachmentCommand.Prepare();
 
+            var messageIDsBySequenceNumber = new Dictionary<int, long>(messages.Count);
+
             foreach (var message in messages)
             {
                 // Persisted exactly as the parser produced it. The unique constraint on
@@ -460,6 +494,8 @@ namespace Chatcheology.Data.Workspace
 
                 var messageID = (long)command.ExecuteScalar()!;
 
+                messageIDsBySequenceNumber.Add(message.SequenceNumber, messageID);
+
                 if (!message.IsMediaPlaceholder)
                 {
                     continue;
@@ -468,6 +504,8 @@ namespace Chatcheology.Data.Workspace
                 attachmentMessageID.Value = messageID;
                 attachmentCommand.ExecuteNonQuery();
             }
+
+            return messageIDsBySequenceNumber;
         }
 
         /// <summary>
