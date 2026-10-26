@@ -442,12 +442,127 @@ namespace Chatcheology.Core.Tests.Importing
         [Theory]
         [InlineData("20:29, 22 Mar works for me")]
         [InlineData("20:29, 22 Mar-ish - fine")]
-        [InlineData("20:29, 22 Mar 15 - short year")]
-        public void TextThatOnlyResemblesAYearlessHeader_StaysContinuation(string line)
+        [InlineData("10:00 works for me")]
+        [InlineData("10:00, see you")]
+        [InlineData("10:00, 5 - 6 people")]
+        [InlineData("10/04 - the day after")]
+        [InlineData("2015/04/10 was the day")]
+        public void TextThatOnlyResemblesAHeader_StaysContinuation(string line)
         {
             var messages = ParseExport($"07:18, 31 Dec 2014 - Alex Example: x\n{line}").Messages;
 
             Assert.Equal($"x\n{line}", Assert.Single(messages).MessageContent);
+        }
+
+        /// <summary>
+        /// Shape A near-misses from review, each after a dated header. Characters that are not
+        /// plain ASCII are built from their code points so the source holds none of them.
+        /// </summary>
+        public static TheoryData<string> ShapeANearMisses => new()
+        {
+            "11:00, 6 Jan 26 - A: y",
+            "11:00, 6 Jan 20266 - A: y",
+            "11:00, 106 Jan 2026 - A: y",
+            "11:00, 106 Jan - A: y",
+            "11:00, 6 Ja - A: y",
+            "11:00, 6 Jan. - A: y",
+            "11:00, 6 Jan. 2026 - A: y",
+            $"11:00, 6 Jan {(char)0x2013} A: y",
+            $"11:00, 6 Jan 2026 {(char)0x2014} A: y",
+            $"11:00, 6 Jan 2026 {(char)0x2212} A: y",
+            "11:00, 6 Jan- A: y",
+            "11:00, 6 Jan 2026- A: y",
+            "11:00, 6 Jan 2026 -  A: y".Replace("-  ", "-\t", StringComparison.Ordinal),
+            $"11:00, 6 Jan 2026{(char)0x00A0}- A: y",
+            $"11:00, 6 Jan 2026 -{(char)0x00A0}A: y",
+            $"11:00, 6{(char)0x00A0}Jan 2026 - A: y",
+            $"11:00,{(char)0x202F}6 Jan 2026 - A: y",
+            "11:00, 6Jan 2026 - A: y",
+            "11:00, 6 Jan  2026 - A: y",
+            "11:00,  6 Jan 2026 - A: y",
+            "11:00, 6 Jan 2026  - A: y",
+            "11:00, 6 January 2026 - A: y",
+        };
+
+        [Theory]
+        [MemberData(nameof(ShapeANearMisses))]
+        public void ShapeANearMiss_AfterADatedHeader_StopsWithTheLineNumber(string line)
+        {
+            var exception = Assert.Throws<FormatException>(
+                () => ParseExport($"10:00, 5 Mar 2025 - A: dated\n{line}"));
+
+            Assert.Contains("Line 2", exception.Message, StringComparison.Ordinal);
+            Assert.Contains("not a valid", exception.Message, StringComparison.Ordinal);
+        }
+
+        [Fact]
+        public void YearlessThenNearMissDatedHeader_StopsAtTheNearMiss()
+        {
+            // The review's worst case: before the fix the third line was absorbed, so a dated
+            // header after a yearless one went unnoticed.
+            var exception = Assert.Throws<FormatException>(
+                () => ParseExport("10:00, 5 Mar 2025 - A: dated\n11:00, 6 Jan - A: y\n12:00, 7 Jan 26 - A: z"));
+
+            Assert.Contains("Line 3", exception.Message, StringComparison.Ordinal);
+        }
+
+        [Fact]
+        public void AValidDatedHeaderAfterADatedHeader_IsStillAccepted()
+        {
+            var messages = ParseExport("10:00, 5 Mar 2025 - A: dated\n11:00, 6 Jan 2026 - A: y").Messages;
+
+            Assert.Equal(2, messages.Count);
+            Assert.Equal(new DateTime(2026, 1, 6, 11, 0, 0), messages[1].MessageDateTime);
+        }
+
+        [Fact]
+        public void ExtraSpacesAfterTheSeparator_StayWithTheSender_AsBefore()
+        {
+            var messages = ParseExport("10/04/2015, 08:01 -  Alex Example: x").Messages;
+
+            Assert.Equal(" Alex Example", messages[0].Sender);
+        }
+
+        public static TheoryData<string> NumericNearMisses => new()
+        {
+            "10/04/15, 08:02 - Sam Sample: y",
+            "10/04/20155, 08:02 - Sam Sample: y",
+            $"10/04/2015, 08:02 {(char)0x2013} Sam Sample: y",
+            $"10/04/2015,{(char)0x00A0}08:02 - Sam Sample: y",
+            "10/04/2015, 08:02- Sam Sample: y",
+            $"10/04/2015, 08:02 -{(char)0x202F}Sam Sample: y",
+            "10/04/2015,  08:02 - Sam Sample: y",
+        };
+
+        [Theory]
+        [MemberData(nameof(NumericNearMisses))]
+        public void ShapeBNearMiss_StopsWithTheLineNumber(string line)
+        {
+            var exception = Assert.Throws<FormatException>(
+                () => ParseExport($"10/04/2015, 08:01 - Alex Example: x\n{line}"));
+
+            Assert.Contains("Line 2", exception.Message, StringComparison.Ordinal);
+            Assert.Contains("not a valid", exception.Message, StringComparison.Ordinal);
+        }
+
+        public static TheoryData<string> YearFirstNearMisses => new()
+        {
+            "202/01/05, 14:04 - Sam: y",
+            "20266/01/05, 14:04 - Sam: y",
+            $"2026/01/05, 14:04 {(char)0x2014} Sam: y",
+            $"2026/01/05,{(char)0x00A0}14:04 - Sam: y",
+            "2026/01/05, 14:04- Sam: y",
+        };
+
+        [Theory]
+        [MemberData(nameof(YearFirstNearMisses))]
+        public void ShapeCNearMiss_StopsWithTheLineNumber(string line)
+        {
+            var exception = Assert.Throws<FormatException>(
+                () => ParseExport($"2026/01/05, 14:03 - Alex: x\n{line}"));
+
+            Assert.Contains("Line 2", exception.Message, StringComparison.Ordinal);
+            Assert.Contains("not a valid", exception.Message, StringComparison.Ordinal);
         }
 
         [Theory]

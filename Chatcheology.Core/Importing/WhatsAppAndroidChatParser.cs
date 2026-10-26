@@ -19,7 +19,8 @@ namespace Chatcheology.Core.Importing
     /// different supported layout later in the same file stops the parse with its line number;
     /// it is never read as continuation text and never as a message of its own. A line that is
     /// recognisably a header but not in an accepted format (a one-digit hour, <c>Sept</c>, a
-    /// one-digit day or month in a numeric layout) stops the parse in the same way, rather than
+    /// one-digit day or month in a numeric layout, a two- or five-digit year, an en dash or a
+    /// no-break space in the separator) stops the parse in the same way, rather than
     /// being absorbed into the previous message.
     /// <para>
     /// Time-first exports write their final year's headers without a year
@@ -79,6 +80,21 @@ namespace Chatcheology.Core.Importing
         /// abbreviation is checked ordinally before this format is applied.
         /// </summary>
         private const string TimeFirstTimestampFormat = "HH':'mm', 'd' 'MMM' 'yyyy";
+
+        /// <summary>EN DASH, written as its code point so the source holds no look-alike character.</summary>
+        private const char EnDash = (char)0x2013;
+
+        /// <summary>EM DASH, written as its code point for the same reason.</summary>
+        private const char EmDash = (char)0x2014;
+
+        /// <summary>MINUS SIGN, written as its code point for the same reason.</summary>
+        private const char MinusSign = (char)0x2212;
+
+        /// <summary>NO-BREAK SPACE, written as its code point because it is invisible.</summary>
+        private const char NoBreakSpace = (char)0x00A0;
+
+        /// <summary>NARROW NO-BREAK SPACE, written as its code point because it is invisible.</summary>
+        private const char NarrowNoBreakSpace = (char)0x202F;
 
         /// <summary>Separates the timestamp from the rest of the line.</summary>
         private const string HeaderSeparator = " - ";
@@ -249,24 +265,31 @@ namespace Chatcheology.Core.Importing
 
         /// <summary>
         /// Tests whether a line begins with the header shape of one of the supported layouts, and
-        /// if so which one, how long its timestamp is, and whether every field has exactly the
-        /// width the layout's accepted format requires. This is a shape test only;
+        /// if so which one, how long its timestamp is, and whether it is written exactly as the
+        /// layout's accepted format requires. This is a shape test only;
         /// <see cref="ReadHeader"/> decides whether the shape is a valid header.
         /// </summary>
         /// <remarks>
-        /// The shapes are deliberately wider than the accepted formats: hours, minutes, days and
-        /// months may have one or two digits, and the time-first month may be any run of three or
-        /// more letters. A line that is recognisably a header but not an accepted one — a one-digit
-        /// hour, <c>Sept</c> for <c>Sep</c>, a one-digit day in a numeric layout — therefore reaches
-        /// <see cref="ReadHeader"/> and stops the parse with its line number, instead of being
-        /// absorbed as continuation text and credited to the previous message's sender. What is
-        /// accepted is unchanged: <see cref="TryParseTimestamp"/> requires the exact widths.
+        /// The shapes are deliberately much wider than the accepted formats, so that a line that is
+        /// recognisably a header but not an accepted one reaches <see cref="ReadHeader"/> and stops
+        /// the parse with its line number, instead of being absorbed as continuation text and
+        /// credited to the previous message's sender. Widened: hours, minutes, days and months of
+        /// one or two digits; years and time-first days of any number of digits; a time-first
+        /// month of any run of letters, optionally followed by <c>.</c>; any whitespace (including
+        /// no-break spaces) around the parts; and a dash separator that may be a hyphen, en dash,
+        /// em dash or minus sign, with any whitespace before it and at least one whitespace
+        /// character after it.
         /// <para>
-        /// Digits are matched as ASCII <c>'0'</c>–<c>'9'</c> rather than as any Unicode decimal
-        /// digit, and month letters as ASCII letters, so the shape test agrees with what the
-        /// invariant timestamp parse accepts. The three shapes cannot both match one line: after
-        /// its first run of digits, a time-first header has <c>:</c>, a year-first header has
-        /// four digits then <c>/</c>, and a day-first header has one or two digits then <c>/</c>.
+        /// What is accepted is unchanged: a match is exact only when every field has the accepted
+        /// width and every separator is exactly the accepted ASCII text (<c>", "</c>, a single
+        /// space, <c>" - "</c>), and <see cref="TryParseTimestamp"/> refuses anything inexact.
+        /// </para>
+        /// <para>
+        /// Digits are matched as ASCII <c>'0'</c>–<c>'9'</c> and month letters as ASCII letters, so
+        /// the shape test agrees with what the invariant timestamp parse accepts. The three shapes
+        /// cannot both match one line: after its first run of digits, a time-first header has
+        /// <c>:</c>, a year-first header has three or more digits then <c>/</c>, and a day-first
+        /// header has one or two digits then <c>/</c>.
         /// </para>
         /// </remarks>
         private static bool TryMatchHeaderShape(string line, out HeaderShapeMatch match)
@@ -283,16 +306,16 @@ namespace Chatcheology.Core.Importing
         }
 
         /// <summary>
-        /// The shape <c>dddd/d[d]/d[d], d[d]:d[d] - </c>. Exact when month, day, hour and minute
-        /// all have two digits.
+        /// The shape <c>ddd…/d[d]/d[d], d[d]:d[d] - </c>. Exact when the year has four digits,
+        /// month, day, hour and minute have two, and the separators are exact.
         /// </summary>
         private static bool TryMatchYearFirstShape(string line, out HeaderShapeMatch match)
         {
             match = default;
             var position = 0;
 
-            var year = ReadAsciiDigits(line, ref position, 4);
-            if (year != 4 || !ReadLiteral(line, ref position, "/"))
+            var year = ReadAsciiDigits(line, ref position, int.MaxValue);
+            if (year < 3 || !ReadLiteral(line, ref position, "/"))
             {
                 return false;
             }
@@ -304,7 +327,7 @@ namespace Chatcheology.Core.Importing
             }
 
             var day = ReadAsciiDigits(line, ref position, 2);
-            if (day == 0 || !ReadLiteral(line, ref position, ", "))
+            if (day == 0 || !TryReadComma(line, ref position, out var exactComma))
             {
                 return false;
             }
@@ -318,13 +341,14 @@ namespace Chatcheology.Core.Importing
                 line,
                 position,
                 WhatsAppHeaderShape.YearFirst,
-                exactWidths: month == 2 && day == 2 && hour == 2 && minute == 2,
+                exact: year == 4 && month == 2 && day == 2 && hour == 2 && minute == 2 && exactComma,
+                isMissingYear: false,
                 out match);
         }
 
         /// <summary>
-        /// The shape <c>d[d]/d[d]/dddd, d[d]:d[d] - </c>. Exact when day, month, hour and minute
-        /// all have two digits.
+        /// The shape <c>d[d]/d[d]/d…, d[d]:d[d] - </c>. Exact when day, month, hour and minute
+        /// have two digits, the year has four, and the separators are exact.
         /// </summary>
         private static bool TryMatchDayFirstShape(string line, out HeaderShapeMatch match)
         {
@@ -343,8 +367,8 @@ namespace Chatcheology.Core.Importing
                 return false;
             }
 
-            var year = ReadAsciiDigits(line, ref position, 4);
-            if (year != 4 || !ReadLiteral(line, ref position, ", "))
+            var year = ReadAsciiDigits(line, ref position, int.MaxValue);
+            if (year == 0 || !TryReadComma(line, ref position, out var exactComma))
             {
                 return false;
             }
@@ -358,70 +382,76 @@ namespace Chatcheology.Core.Importing
                 line,
                 position,
                 WhatsAppHeaderShape.DayFirst,
-                exactWidths: day == 2 && month == 2 && hour == 2 && minute == 2,
+                exact: day == 2 && month == 2 && year == 4 && hour == 2 && minute == 2 && exactComma,
+                isMissingYear: false,
                 out match);
         }
 
         /// <summary>
-        /// The shape <c>d[d]:d[d], d[d] LLL… dddd - </c>, with a month of three or more letters.
-        /// Exact when hour and minute have two digits and the month has three letters; the day
-        /// may have one or two digits in the accepted format too. The same shape with no year,
-        /// <c>d[d]:d[d], d[d] LLL… - </c>, is also matched, with the same exact widths; whether
-        /// it is accepted is the year rule's decision.
+        /// The shape <c>d[d]:d[d], d… L…[.][ d…] - </c>: a time, a day of any digits, a month of
+        /// any letters with an optional full stop, and an optional year of any digits. Exact when
+        /// hour and minute have two digits, the day one or two, the month three letters with no
+        /// full stop, the year (if present) four digits, and the separators are exact.
         /// </summary>
+        /// <remarks>
+        /// A match with no year at all is the yearless form old exports use for their final
+        /// year. It is matched with <see cref="HeaderShapeMatch.IsMissingYear"/> set; whether it is
+        /// accepted is the year rule's decision (see <see cref="YearRule"/>), not the shape test's.
+        /// </remarks>
         private static bool TryMatchTimeFirstShape(string line, out HeaderShapeMatch match)
         {
             match = default;
             var position = 0;
 
             if (!TryReadTime(line, ref position, out var hour, out var minute)
-                || !ReadLiteral(line, ref position, ", "))
+                || !TryReadComma(line, ref position, out var exactComma))
             {
                 return false;
             }
 
-            var day = ReadAsciiDigits(line, ref position, 2);
-            if (day == 0 || !ReadLiteral(line, ref position, " "))
+            var day = ReadAsciiDigits(line, ref position, int.MaxValue);
+            if (day == 0)
             {
                 return false;
             }
+
+            var exactDaySpace = ReadSpaces(line, ref position) == 1 && line[position - 1] == ' ';
 
             var month = ReadAsciiLetters(line, ref position);
-            if (month < 3)
+            if (month == 0)
             {
                 return false;
             }
 
-            // Old exports write current-year lines with no year at all ("HH:mm, d MMM - "). The
-            // same widths are exact as for the dated form; whether a year can be supplied is the
-            // year rule's decision (see YearRule), not the shape test's.
-            if (line.Length >= position + HeaderSeparator.Length
-                && string.CompareOrdinal(line, position, HeaderSeparator, 0, HeaderSeparator.Length) == 0)
+            var hasFullStop = ReadLiteral(line, ref position, ".");
+
+            // An optional year: whitespace, then digits. Without digits nothing is consumed, so
+            // the whitespace is read again as part of the separator.
+            var beforeYear = position;
+            var yearSpaces = ReadSpaces(line, ref position);
+            var exactYearSpace = yearSpaces == 1 && line[position - 1] == ' ';
+            var year = ReadAsciiDigits(line, ref position, int.MaxValue);
+
+            if (year == 0)
             {
-                match = new HeaderShapeMatch(
-                    WhatsAppHeaderShape.TimeFirst,
-                    position,
-                    HasExactWidths: hour == 2 && minute == 2 && month == 3,
-                    IsMissingYear: true);
-                return true;
+                position = beforeYear;
             }
 
-            if (!ReadLiteral(line, ref position, " "))
-            {
-                return false;
-            }
-
-            var year = ReadAsciiDigits(line, ref position, 4);
-            if (year != 4)
-            {
-                return false;
-            }
+            var exact = hour == 2
+                && minute == 2
+                && exactComma
+                && day <= 2
+                && exactDaySpace
+                && month == 3
+                && !hasFullStop
+                && (year == 0 || (year == 4 && exactYearSpace));
 
             return Complete(
                 line,
                 position,
                 WhatsAppHeaderShape.TimeFirst,
-                exactWidths: hour == 2 && minute == 2 && month == 3,
+                exact,
+                isMissingYear: year == 0,
                 out match);
         }
 
@@ -442,25 +472,87 @@ namespace Chatcheology.Core.Importing
         }
 
         /// <summary>
-        /// Requires the header separator right after the timestamp, which ends at
-        /// <paramref name="position"/>.
+        /// Reads a comma followed by at least one whitespace character. Exact when that is the
+        /// accepted <c>", "</c>.
         /// </summary>
+        private static bool TryReadComma(string line, ref int position, out bool exact)
+        {
+            exact = false;
+
+            if (!ReadLiteral(line, ref position, ","))
+            {
+                return false;
+            }
+
+            var spaces = ReadSpaces(line, ref position);
+            exact = spaces == 1 && line[position - 1] == ' ';
+
+            return spaces > 0;
+        }
+
+        /// <summary>
+        /// Requires a dash separator where the timestamp ends, at <paramref name="position"/>:
+        /// any whitespace, one dash-like character, then at least one whitespace character.
+        /// </summary>
+        /// <remarks>
+        /// The whitespace required after the dash is what keeps ordinary text such as
+        /// <c>Mar-ish</c> out of the shape. The match is exact only when the separator begins with
+        /// the accepted <c>" - "</c>; any further spaces after it belong to the sender, as before.
+        /// </remarks>
         private static bool Complete(
             string line,
             int position,
             WhatsAppHeaderShape shape,
-            bool exactWidths,
+            bool exact,
+            bool isMissingYear,
             out HeaderShapeMatch match)
         {
-            if (line.Length < position + HeaderSeparator.Length
-                || string.CompareOrdinal(line, position, HeaderSeparator, 0, HeaderSeparator.Length) != 0)
+            match = default;
+            var cursor = position;
+
+            ReadSpaces(line, ref cursor);
+
+            if (cursor >= line.Length || !IsDash(line[cursor]))
             {
-                match = default;
                 return false;
             }
 
-            match = new HeaderShapeMatch(shape, position, exactWidths);
+            cursor++;
+
+            if (ReadSpaces(line, ref cursor) == 0)
+            {
+                return false;
+            }
+
+            var exactSeparator =
+                string.CompareOrdinal(line, position, HeaderSeparator, 0, HeaderSeparator.Length) == 0;
+
+            match = new HeaderShapeMatch(shape, position, exact && exactSeparator, isMissingYear);
             return true;
+        }
+
+        /// <summary>
+        /// Whether <paramref name="character"/> is one of the dash-like characters a near-miss
+        /// separator may use: hyphen-minus, en dash, em dash or minus sign.
+        /// </summary>
+        private static bool IsDash(char character) =>
+            character is '-' or EnDash or EmDash or MinusSign;
+
+        /// <summary>
+        /// Reads a run of whitespace a near-miss header may use — space, tab, no-break space and
+        /// narrow no-break space — and returns its length.
+        /// </summary>
+        private static int ReadSpaces(string line, ref int position)
+        {
+            var start = position;
+
+            while (position < line.Length
+                && line[position] is ' ' or '\t' or NoBreakSpace or NarrowNoBreakSpace)
+            {
+                position++;
+            }
+
+            return position - start;
         }
 
         /// <summary>
@@ -509,15 +601,15 @@ namespace Chatcheology.Core.Importing
         }
 
         /// <summary>
-        /// A header-shaped line: its layout, the length of its timestamp, whether every field has
-        /// the width the accepted format requires, and whether it is the time-first shape written
-        /// without a year (recognised, never accepted).
+        /// A header-shaped line: its layout, the length of its timestamp, whether it is written
+        /// exactly as the accepted format requires (fields and separators), and whether it is the
+        /// time-first shape written without a year.
         /// </summary>
         private readonly record struct HeaderShapeMatch(
             WhatsAppHeaderShape Shape,
             int TimestampLength,
             bool HasExactWidths,
-            bool IsMissingYear = false);
+            bool IsMissingYear);
 
         /// <summary>
         /// Reads a header-shaped line as a user or system message header, or throws if it does not
