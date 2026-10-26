@@ -130,6 +130,7 @@ namespace Chatcheology.Data.Tests.OlderExports
             Assert.Equal(1, summary.FileAttachedAbsentButInFallbackCount);
             Assert.Equal(1, summary.MediaOmittedCount);
             Assert.Equal(2, summary.DistinctSenderCount);
+            Assert.Equal(2, summary.LargestMessageLineCount);
         }
 
         [Fact]

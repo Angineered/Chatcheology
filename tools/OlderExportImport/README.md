@@ -20,7 +20,9 @@ Run with `dotnet run --project tools\OlderExportImport\OlderExportImport.csproj 
 
 `dry-run` (the default; writes nothing). Counts per export, labelled by command-line position:
 layout, first/last timestamp, messages per year, system lines, `(file attached)` lines with the
-file present/absent in the export's own folder, `<Media omitted>` lines, distinct sender count.
+file present/absent in the export's own folder, `<Media omitted>` lines, distinct sender count,
+and the largest number of source lines one message spans (a large value means header lines the
+parser did not recognise were absorbed as continuation text).
 
 ```
 dry-run <export-folder>... [--fallback-folder <folder>] [--overlap <inner-folder> <outer-folder>]
@@ -29,7 +31,12 @@ dry-run <export-folder>... [--fallback-folder <folder>] [--overlap <inner-folder
 - `--fallback-folder`: also count absent `(file attached)` names that a file of exactly that name
   in this folder would resolve (meant for the superset export).
 - `--overlap`: count the lines of the inner export not found exactly (timestamp, sender, text) in
-  the outer export. A non-zero count is reviewed before anything is shown (D2).
+  the outer export. A non-zero count is reviewed before anything is shown (D2). The unmatched
+  lines are broken down (counts only): file attached where the outer has media omitted at the same
+  time and sender; identical line repeated more often than in the outer; same time and sender with
+  text differing only in leading/trailing whitespace; differing otherwise; no outer line at that
+  time and sender. The reverse count is the outer lines within the inner's period that are not
+  found in the inner.
 
 `senders` (prints sender names with counts; personal data, only on this explicit command):
 

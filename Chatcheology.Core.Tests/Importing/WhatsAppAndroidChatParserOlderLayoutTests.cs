@@ -310,6 +310,52 @@ namespace Chatcheology.Core.Tests.Importing
         }
 
         [Theory]
+        [InlineData("20:29, 22 Mar - Sam Sample: y")]
+        [InlineData("9:05, 1 Jan - Sam Sample: y")]
+        [InlineData("20:29, 22 March - Sam Sample: y")]
+        [InlineData("20:29, 22 Mar - Messages to this chat are now secured.")]
+        public void YearlessShapeA_AfterAFullHeader_StopsWithTheLineNumber(string second)
+        {
+            var exception = Assert.Throws<FormatException>(
+                () => ParseExport($"07:18, 31 Dec 2014 - Alex Example: x\nmore of x\n{second}"));
+
+            Assert.Contains("Line 3", exception.Message, StringComparison.Ordinal);
+            Assert.Contains("no year", exception.Message, StringComparison.Ordinal);
+            Assert.DoesNotContain("Sam", exception.Message, StringComparison.Ordinal);
+            Assert.DoesNotContain("secured", exception.Message, StringComparison.Ordinal);
+        }
+
+        [Fact]
+        public void YearlessShapeA_AsTheFirstLine_StopsAtLineOne()
+        {
+            var exception = Assert.Throws<FormatException>(
+                () => ParseExport("20:29, 22 Mar - Sam Sample: y"));
+
+            Assert.Contains("Line 1", exception.Message, StringComparison.Ordinal);
+            Assert.Contains("no year", exception.Message, StringComparison.Ordinal);
+        }
+
+        [Fact]
+        public void YearlessShapeA_InAShapeBFile_StopsAsAMixedLayout()
+        {
+            var exception = Assert.Throws<FormatException>(
+                () => ParseExport("10/04/2015, 08:01 - Alex Example: a\n20:29, 22 Mar - Sam Sample: y"));
+
+            Assert.Contains("Line 2", exception.Message, StringComparison.Ordinal);
+        }
+
+        [Theory]
+        [InlineData("20:29, 22 Mar works for me")]
+        [InlineData("20:29, 22 Mar-ish - fine")]
+        [InlineData("20:29, 22 Mar 15 - short year")]
+        public void TextThatOnlyResemblesAYearlessHeader_StaysContinuation(string line)
+        {
+            var messages = ParseExport($"07:18, 31 Dec 2014 - Alex Example: x\n{line}").Messages;
+
+            Assert.Equal($"x\n{line}", Assert.Single(messages).MessageContent);
+        }
+
+        [Theory]
         [InlineData("9:00, 4 Aug 2014 - Sam Sample: y")]
         [InlineData("1/05/2015, 08:02 - Sam Sample: y")]
         [InlineData("2026/1/05, 14:04 - Sam: y")]

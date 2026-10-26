@@ -136,18 +136,38 @@ namespace Chatcheology.Tools.OlderExportImport
 
                 output.WriteLine($"  Media omitted: {summary.MediaOmittedCount}");
                 output.WriteLine($"  Distinct senders: {summary.DistinctSenderCount}");
+                output.WriteLine($"  Largest message, source lines: {summary.LargestMessageLineCount}");
             }
 
-            if (parsed.OverlapFolders is { } overlap)
+            if (parsed.OverlapFolders is { } overlapFolders)
             {
-                var inner = OlderExportSource.Load(overlap.Inner);
-                var outer = OlderExportSource.Load(overlap.Outer);
-                var notFound = OlderExportOverlap.CountNotFoundIn(inner.Messages, outer.Messages);
+                var inner = OlderExportSource.Load(overlapFolders.Inner);
+                var outer = OlderExportSource.Load(overlapFolders.Outer);
+                var overlap = OlderExportOverlap.Analyse(inner.Messages, outer.Messages);
 
                 output.WriteLine();
                 output.WriteLine(
-                    $"Overlap: {notFound} of {inner.Messages.Count} lines of the first --overlap " +
-                    $"export are not found exactly in the second.");
+                    $"Overlap: {overlap.NotFoundCount} of {overlap.InnerCount} lines of the first " +
+                    $"--overlap export are not found exactly in the second.");
+                output.WriteLine(
+                    $"  file attached where the second has media omitted (same time and sender): " +
+                    $"{overlap.FileAttachedWhereOuterHasMediaOmittedCount}");
+                output.WriteLine(
+                    $"  identical line, repeated more often than in the second: " +
+                    $"{overlap.RepeatedMoreOftenThanInOuterCount}");
+                output.WriteLine(
+                    $"  same time and sender, text differs only in leading/trailing whitespace: " +
+                    $"{overlap.WhitespaceOnlyDifferenceCount}");
+                output.WriteLine(
+                    $"  same time and sender, text differs otherwise: " +
+                    $"{overlap.OtherContentDifferenceCount}");
+                output.WriteLine(
+                    $"  no line in the second with the same time and sender: " +
+                    $"{overlap.NoOuterLineAtTimestampAndSenderCount}");
+                output.WriteLine(
+                    $"Reverse: {overlap.OuterInInnerPeriodNotFoundInInnerCount} of " +
+                    $"{overlap.OuterInInnerPeriodCount} lines of the second export within the " +
+                    $"first's period are not found exactly in the first.");
             }
 
             return Success;

@@ -49,6 +49,16 @@ namespace Chatcheology.Data.OlderExports
         public required int DistinctSenderCount { get; init; }
 
         /// <summary>
+        /// The most physical source lines any one logical message spans
+        /// (<c>SourceLineEnd - SourceLineStart + 1</c>), or 0 when there are no messages.
+        /// </summary>
+        /// <remarks>
+        /// A guard against silent absorption: header lines the parser does not recognise become
+        /// continuation text, so an unexpectedly large value here is the visible sign of them.
+        /// </remarks>
+        public required int LargestMessageLineCount { get; init; }
+
+        /// <summary>
         /// Summarises <paramref name="export"/>. With <paramref name="fallbackFolder"/>, also
         /// counts the absent file names a file of exactly that name in that folder would resolve.
         /// </summary>
@@ -113,6 +123,9 @@ namespace Chatcheology.Data.OlderExports
                 FileAttachedAbsentButInFallbackCount = fallbackNames is null ? null : inFallback,
                 MediaOmittedCount = messages.Count(message => message.IsMediaPlaceholder),
                 DistinctSenderCount = OlderExportImporter.DistinctSenders(messages).Count,
+                LargestMessageLineCount = messages.Count == 0
+                    ? 0
+                    : messages.Max(message => message.SourceLineEnd - message.SourceLineStart + 1),
             };
         }
 

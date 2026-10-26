@@ -19,8 +19,8 @@ namespace Chatcheology.Core.Importing
     /// different supported layout later in the same file stops the parse with its line number;
     /// it is never read as continuation text and never as a message of its own. A line that is
     /// recognisably a header but not in an accepted format (a one-digit hour, <c>Sept</c>, a
-    /// one-digit day or month in a numeric layout) stops the parse in the same way, rather than
-    /// being absorbed into the previous message.
+    /// one-digit day or month in a numeric layout, a time-first header written without a year)
+    /// stops the parse in the same way, rather than being absorbed into the previous message.
     /// <para>
     /// The three layouts cannot be confused with one another: <see cref="WhatsAppHeaderShape.TimeFirst"/>
     /// starts with <c>dd:</c>, <see cref="WhatsAppHeaderShape.YearFirst"/> with <c>dddd/</c> and
@@ -355,7 +355,8 @@ namespace Chatcheology.Core.Importing
         /// <summary>
         /// The shape <c>d[d]:d[d], d[d] LLL… dddd - </c>, with a month of three or more letters.
         /// Exact when hour and minute have two digits and the month has three letters; the day
-        /// may have one or two digits in the accepted format too.
+        /// may have one or two digits in the accepted format too. The same shape with no year,
+        /// <c>d[d]:d[d], d[d] LLL… - </c>, is also matched, as a header that is never accepted.
         /// </summary>
         private static bool TryMatchTimeFirstShape(string line, out HeaderShapeMatch match)
         {
@@ -375,7 +376,24 @@ namespace Chatcheology.Core.Importing
             }
 
             var month = ReadAsciiLetters(line, ref position);
-            if (month < 3 || !ReadLiteral(line, ref position, " "))
+            if (month < 3)
+            {
+                return false;
+            }
+
+            // Old exports appear to write current-year lines with no year at all
+            // ("HH:mm, d MMM - "). That is recognised as a header so that it stops the parse with
+            // its line number, but never accepted: which year it means is a rule still to be
+            // approved, and guessing it would date messages wrongly.
+            if (line.Length >= position + HeaderSeparator.Length
+                && string.CompareOrdinal(line, position, HeaderSeparator, 0, HeaderSeparator.Length) == 0)
+            {
+                match = new HeaderShapeMatch(
+                    WhatsAppHeaderShape.TimeFirst, position, HasExactWidths: false, IsMissingYear: true);
+                return true;
+            }
+
+            if (!ReadLiteral(line, ref position, " "))
             {
                 return false;
             }
@@ -478,13 +496,15 @@ namespace Chatcheology.Core.Importing
         }
 
         /// <summary>
-        /// A header-shaped line: its layout, the length of its timestamp, and whether every field
-        /// has the width the accepted format requires.
+        /// A header-shaped line: its layout, the length of its timestamp, whether every field has
+        /// the width the accepted format requires, and whether it is the time-first shape written
+        /// without a year (recognised, never accepted).
         /// </summary>
         private readonly record struct HeaderShapeMatch(
             WhatsAppHeaderShape Shape,
             int TimestampLength,
-            bool HasExactWidths);
+            bool HasExactWidths,
+            bool IsMissingYear = false);
 
         /// <summary>
         /// Reads a header-shaped line as a user or system message header, or throws if it does not
@@ -495,6 +515,14 @@ namespace Chatcheology.Core.Importing
             int lineNumber,
             HeaderShapeMatch match)
         {
+            if (match.IsMissingYear)
+            {
+                throw new FormatException(
+                    $"Line {lineNumber}: the line has the {Describe(match.Shape)} message header " +
+                    $"shape but its timestamp has no year ('HH:mm, d MMM'). A header without a year " +
+                    $"is not accepted, because which year it means has not been decided.");
+            }
+
             if (!TryParseTimestamp(line.Substring(0, match.TimestampLength), match, out var timestamp))
             {
                 throw new FormatException(

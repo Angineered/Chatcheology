@@ -72,8 +72,28 @@ namespace Chatcheology.Tools.OlderExportImport.Tests
             Assert.Contains("File attached, file absent: 1", output, StringComparison.Ordinal);
             Assert.Contains("Media omitted: 1", output, StringComparison.Ordinal);
             Assert.Contains("Distinct senders: 2", output, StringComparison.Ordinal);
+            Assert.Contains("Largest message, source lines: 2", output, StringComparison.Ordinal);
             Assert.Contains("Overlap: 5 of 5 lines", output, StringComparison.Ordinal);
+            Assert.Contains("media omitted (same time and sender): 0", output, StringComparison.Ordinal);
+            Assert.Contains("no line in the second with the same time and sender: 5", output, StringComparison.Ordinal);
+            Assert.Contains("Reverse: 0 of 0 lines", output, StringComparison.Ordinal);
             AssertNoSecrets(output);
+        }
+
+        [Fact]
+        public void DryRun_YearlessHeader_StopsWithTheLineNumberOnly()
+        {
+            CreateExport(
+                "yearlesszz",
+                "07:18, 31 Dec 2014 - Alex Example: zorbly\n20:29, 22 Mar - Sam Sample: wibble");
+
+            var (code, output, error) = Run(Folder("yearlesszz"));
+
+            Assert.Equal(1, code);
+            Assert.Contains("Line 2", error, StringComparison.Ordinal);
+            Assert.Contains("no year", error, StringComparison.Ordinal);
+            AssertNoSecrets(error);
+            Assert.DoesNotContain("yearlesszz", output + error, StringComparison.Ordinal);
         }
 
         [Fact]
@@ -222,9 +242,11 @@ namespace Chatcheology.Tools.OlderExportImport.Tests
 
         private static void AssertNoSecrets(string text)
         {
+            // Case-sensitive: the invented names are capitalised, and ignoring case would flag
+            // ordinary words in the tool's own labels ("same" contains "sam").
             foreach (var secret in Secrets)
             {
-                Assert.DoesNotContain(secret, text, StringComparison.OrdinalIgnoreCase);
+                Assert.DoesNotContain(secret, text, StringComparison.Ordinal);
             }
         }
 
