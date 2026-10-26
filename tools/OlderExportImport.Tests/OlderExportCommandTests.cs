@@ -205,6 +205,74 @@ namespace Chatcheology.Tools.OlderExportImport.Tests
         }
 
         [Fact]
+        public void CutAndShownAfter_ReportAndImportCountsOnly()
+        {
+            CreateExport(
+                "innerzz",
+                "10/04/2015, 08:01 - Alex Example: zorbly\n10/04/2015, 08:02 - Sam Sample: wibble");
+            CreateExport(
+                "outerzz",
+                """
+                10/04/2015, 08:01 - Alex Example: zorbly
+                10/04/2015, 08:02 - Sam Sample: wibble
+                10/04/2015, 08:03 - Sam Sample: blorp
+                11/04/2015, 09:00 - Alex Example: snapzz
+                """);
+
+            var (code, output, _) = Run("--cut", Folder("innerzz"), Folder("outerzz"));
+
+            Assert.Equal(0, code);
+            Assert.Contains("occurs 1 time(s) exactly", output, StringComparison.Ordinal);
+            Assert.Contains("messages hidden (up to and including the match): 2", output, StringComparison.Ordinal);
+            Assert.Contains("messages shown: 2", output, StringComparison.Ordinal);
+            Assert.Contains("shown part first: 2015-04-10 08:03", output, StringComparison.Ordinal);
+            Assert.Contains("shown part last: 2015-04-11 09:00", output, StringComparison.Ordinal);
+            AssertNoSecrets(output);
+
+            var workspace = Path.Combine(_root, "workspace");
+            string[] common = ["--workspace-folder", workspace, "--local", "Alex Example", "--other", "Sam Sample"];
+
+            // Order matters: the outer cannot be shown after an inner that is not imported yet.
+            var (earlyCode, _, earlyError) = Run(
+                ["import", Folder("outerzz"), .. common, "--position", "5", "--shown", "yes",
+                 "--shown-after", Folder("innerzz"), "--create"]);
+            Assert.Equal(1, earlyCode);
+            Assert.Contains("not been imported yet", earlyError, StringComparison.Ordinal);
+            Assert.False(File.Exists(Path.Combine(workspace, "older-exports.db")));
+
+            Assert.Equal(0, Run(["import", Folder("innerzz"), .. common, "--position", "4", "--shown", "yes", "--create"]).Code);
+
+            var (importCode, importOutput, importError) = Run(
+                ["import", Folder("outerzz"), .. common, "--position", "5", "--shown", "yes",
+                 "--shown-after", Folder("innerzz")]);
+
+            Assert.Equal(string.Empty, importError);
+            Assert.Equal(0, importCode);
+            Assert.Contains("Messages: 4", importOutput, StringComparison.Ordinal);
+            Assert.Contains("Messages shown: 2", importOutput, StringComparison.Ordinal);
+            Assert.Contains("Shown from message: 3 (after the cut)", importOutput, StringComparison.Ordinal);
+            AssertNoSecrets(importOutput);
+        }
+
+        [Fact]
+        public void Cut_NotFound_StopsWithACountOnly()
+        {
+            CreateExport("innerzz", "10/04/2015, 08:01 - Alex Example: zorbly\n10/04/2015, 08:02 - Sam Sample: wibble");
+
+            var (code, output, _) = Run("--cut", Folder("innerzz"), Folder("supersetzz"));
+
+            // supersetzz holds the same line at the same time, so it is found once; olderzz has none.
+            Assert.Equal(0, code);
+
+            var (missCode, missOutput, _) = Run("--cut", Folder("innerzz"), Folder("olderzz"));
+
+            Assert.Equal(1, missCode);
+            Assert.Contains("occurs 0 time(s)", missOutput, StringComparison.Ordinal);
+            Assert.Contains("Cut: Stopped", missOutput, StringComparison.Ordinal);
+            AssertNoSecrets(output + missOutput);
+        }
+
+        [Fact]
         public void OverlapLines_WithoutOverlap_IsAUsageError()
         {
             var (code, _, error) = Run(Folder("olderzz"), "--overlap-lines");

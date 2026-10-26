@@ -15,6 +15,18 @@ namespace Chatcheology.Data.OlderExports
         public required int MessageCount { get; init; }
 
         /// <summary>
+        /// How many of them are shown: all for a shown export, those after the cut for one shown
+        /// after another export, none for an export kept as evidence.
+        /// </summary>
+        public required int ShownMessageCount { get; init; }
+
+        /// <summary>
+        /// The first shown sequence number when the export is shown after another (the cut), or
+        /// null when there is no cut.
+        /// </summary>
+        public required int? ShownFromSequenceNumber { get; init; }
+
+        /// <summary>
         /// Attachments created for <c>&lt;Media omitted&gt;</c> messages, all unresolved.
         /// </summary>
         public required int MediaOmittedAttachmentCount { get; init; }

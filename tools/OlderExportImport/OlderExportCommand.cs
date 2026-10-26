@@ -97,7 +97,7 @@ namespace Chatcheology.Tools.OlderExportImport
 
         private static int RunDryRun(ParsedArguments parsed, TextWriter output)
         {
-            if (parsed.ExportFolders.Count == 0 && parsed.OverlapFolders is null)
+            if (parsed.ExportFolders.Count == 0 && parsed.OverlapFolders is null && parsed.CutFolders is null)
             {
                 throw new UsageException("dry-run needs at least one export folder or --overlap.");
             }
@@ -152,6 +152,47 @@ namespace Chatcheology.Tools.OlderExportImport
                 output.WriteLine($"  Distinct senders: {summary.DistinctSenderCount}");
                 output.WriteLine($"  Largest message, source lines: {summary.LargestMessageLineCount}");
                 output.WriteLine($"  Year supplied by rule: {summary.YearSuppliedByRuleCount}");
+            }
+
+            if (parsed.CutFolders is { } cutFolders)
+            {
+                output.WriteLine();
+
+                try
+                {
+                    var inner = LoadForOverlap(cutFolders.Inner, "first");
+                    var outer = LoadForOverlap(cutFolders.Outer, "second");
+                    var cut = OlderExportCut.Find(inner.Messages, outer.Messages);
+
+                    output.WriteLine(
+                        $"Cut: the first --cut export's last line occurs {cut.MatchCount} time(s) " +
+                        $"exactly in the second (must be 1).");
+
+                    if (cut.IsFound)
+                    {
+                        output.WriteLine($"  second export messages hidden (up to and including the match): {cut.HiddenCount}");
+                        output.WriteLine($"  second export messages shown: {cut.ShownCount}");
+                        output.WriteLine($"  shown part first: {FormatDate(cut.ShownFirst)}");
+                        output.WriteLine($"  shown part last: {FormatDate(cut.ShownLast)}");
+                    }
+                    else
+                    {
+                        anyStopped = true;
+                        output.WriteLine("Cut: Stopped: no cut can be made unless the match count is 1.");
+                    }
+                }
+                catch (OverlapStoppedException exception)
+                {
+                    anyStopped = true;
+                    output.WriteLine(
+                        $"Cut: Stopped ({exception.Which} --cut export): " +
+                        $"{DescribeStop(exception.InnerException!)}");
+                }
+                catch (ArgumentException exception)
+                {
+                    anyStopped = true;
+                    output.WriteLine($"Cut: Stopped: {DescribeStop(exception)}");
+                }
             }
 
             if (parsed.OverlapFolders is { } overlapFolders)
@@ -328,6 +369,9 @@ namespace Chatcheology.Tools.OlderExportImport
                 Position = position,
                 Shown = shown,
                 FallbackMediaFolder = parsed.FallbackFolder,
+                ShownAfter = parsed.ShownAfterFolder is null
+                    ? null
+                    : OlderExportSource.Load(parsed.ShownAfterFolder),
                 ImportedDateTimeUtc = now,
             };
 
@@ -374,6 +418,13 @@ namespace Chatcheology.Tools.OlderExportImport
             output.WriteLine($"  Conversation: {result.ConversationID}");
             output.WriteLine($"  Position: {position}, shown: {(shown ? "yes" : "no")}");
             output.WriteLine($"  Messages: {result.MessageCount}");
+            output.WriteLine($"  Messages shown: {result.ShownMessageCount}");
+
+            if (result.ShownFromSequenceNumber is { } shownFrom)
+            {
+                output.WriteLine($"  Shown from message: {shownFrom} (after the cut)");
+            }
+
             output.WriteLine($"  Media omitted attachments (unresolved): {result.MediaOmittedAttachmentCount}");
             output.WriteLine($"  File attached attachments: {result.FileAttachedAttachmentCount}");
             output.WriteLine($"    resolved in own folder: {result.ResolvedInOwnFolderCount}");
@@ -399,9 +450,10 @@ namespace Chatcheology.Tools.OlderExportImport
             output.WriteLine("OlderExportImport: dry run, sender listing and import of older WhatsApp exports.");
             output.WriteLine();
             output.WriteLine("  [dry-run] <export-folder>... [--fallback-folder <folder>] [--overlap <inner-folder> <outer-folder> [--overlap-lines]]");
+            output.WriteLine("            [--cut <inner-folder> <outer-folder>]");
             output.WriteLine("  senders <export-folder>");
             output.WriteLine("  import <export-folder> --workspace-folder <folder> --local <name> --other <name>");
-            output.WriteLine("         --position <n> --shown yes|no [--fallback-folder <folder>] [--create]");
+            output.WriteLine("         --position <n> --shown yes|no [--fallback-folder <folder>] [--shown-after <inner-folder>] [--create]");
             output.WriteLine();
             output.WriteLine("  --parent <folder>  export folders (and --overlap/--fallback-folder) are names under this folder.");
             output.WriteLine();
@@ -424,6 +476,10 @@ namespace Chatcheology.Tools.OlderExportImport
             internal string? FallbackFolder { get; private set; }
 
             internal (string Inner, string Outer)? OverlapFolders { get; private set; }
+
+            internal (string Inner, string Outer)? CutFolders { get; private set; }
+
+            internal string? ShownAfterFolder { get; private set; }
 
             internal string? WorkspaceFolder { get; private set; }
 
@@ -478,6 +534,15 @@ namespace Chatcheology.Tools.OlderExportImport
 
                         case "--fallback-folder":
                             parsed.FallbackFolder = NextValue(argument);
+                            break;
+
+                        case "--cut":
+                            var cutInner = NextValue(argument);
+                            parsed.CutFolders = (cutInner, NextValue(argument));
+                            break;
+
+                        case "--shown-after":
+                            parsed.ShownAfterFolder = NextValue(argument);
                             break;
 
                         case "--overlap":
@@ -554,6 +619,16 @@ namespace Chatcheology.Tools.OlderExportImport
                     throw new UsageException("--overlap-lines needs --overlap.");
                 }
 
+                if (parsed.Command != "import" && parsed.ShownAfterFolder is not null)
+                {
+                    throw new UsageException("--shown-after belongs to import only.");
+                }
+
+                if (parsed.Command == "import" && parsed.CutFolders is not null)
+                {
+                    throw new UsageException("--cut belongs to dry-run only.");
+                }
+
                 if (parent is not null)
                 {
                     for (var i = 0; i < parsed.ExportFolders.Count; i++)
@@ -570,6 +645,17 @@ namespace Chatcheology.Tools.OlderExportImport
                     {
                         parsed.OverlapFolders =
                             (Path.Combine(parent, overlap.Inner), Path.Combine(parent, overlap.Outer));
+                    }
+
+                    if (parsed.CutFolders is { } cut)
+                    {
+                        parsed.CutFolders =
+                            (Path.Combine(parent, cut.Inner), Path.Combine(parent, cut.Outer));
+                    }
+
+                    if (parsed.ShownAfterFolder is not null)
+                    {
+                        parsed.ShownAfterFolder = Path.Combine(parent, parsed.ShownAfterFolder);
                     }
                 }
 

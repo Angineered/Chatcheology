@@ -39,7 +39,12 @@ namespace Chatcheology.Data.OlderExports
         internal const string MarkerPurpose = "OlderExports";
 
         /// <summary>The older-exports table layout this build creates and accepts.</summary>
-        internal const int MarkerFormatVersion = 1;
+        /// <remarks>
+        /// Version 2 adds <c>ExportOrder.ShownFromSequenceNumber</c> (the revised D2 cut). A
+        /// version-1 file is refused with a clear reason rather than migrated: it can only hold
+        /// imports made before the cut existed, and re-importing into a new file is the safe path.
+        /// </remarks>
+        internal const int MarkerFormatVersion = 2;
 
         /// <summary>The tables this file adds to the workspace schema, in creation order.</summary>
         internal static readonly string[] AddedTableNames =
@@ -55,7 +60,8 @@ namespace Chatcheology.Data.OlderExports
         /// </summary>
         /// <remarks>
         /// Vocabularies and invariants are <c>CHECK</c> constraints so the file states its own
-        /// rules: one marker row only, roles <c>Local</c>/<c>Other</c> with at most one of each per
+        /// rules: one marker row only, a shown-from sequence number only on a shown export and
+        /// only positive, roles <c>Local</c>/<c>Other</c> with at most one of each per
         /// conversation, a positive unique timeline position, a 0/1 shown flag, and an attachment
         /// name that is non-empty and carries no path separator.
         /// <para>
@@ -96,14 +102,17 @@ namespace Chatcheology.Data.OlderExports
 
             """
             CREATE TABLE ExportOrder (
-                ConversationID INTEGER PRIMARY KEY,
-                Position       INTEGER NOT NULL,
-                Shown          INTEGER NOT NULL,
+                ConversationID          INTEGER PRIMARY KEY,
+                Position                INTEGER NOT NULL,
+                Shown                   INTEGER NOT NULL,
+                ShownFromSequenceNumber INTEGER NULL,
 
                 UNIQUE (Position),
 
                 CHECK (Position > 0),
                 CHECK (Shown IN (0, 1)),
+                CHECK (ShownFromSequenceNumber IS NULL OR ShownFromSequenceNumber > 0),
+                CHECK (Shown = 1 OR ShownFromSequenceNumber IS NULL),
 
                 FOREIGN KEY (ConversationID) REFERENCES Conversation (ConversationID)
             );
@@ -302,6 +311,23 @@ namespace Chatcheology.Data.OlderExports
             command.Parameters.Clear();
 
             var allRows = Convert.ToInt64(command.ExecuteScalar(), CultureInfo.InvariantCulture);
+
+            if (allRows == 1 && validRows == 0)
+            {
+                command.CommandText =
+                    "SELECT COUNT(*) FROM OlderExportsInfo WHERE Purpose = $purpose AND FormatVersion < $formatVersion;";
+                command.Parameters.AddWithValue("$purpose", MarkerPurpose);
+                command.Parameters.AddWithValue("$formatVersion", MarkerFormatVersion);
+
+                if (Convert.ToInt64(command.ExecuteScalar(), CultureInfo.InvariantCulture) == 1)
+                {
+                    throw new InvalidOperationException(
+                        $"The older-exports file is an earlier format than this build's version " +
+                        $"{MarkerFormatVersion}, which added the shown-after cut. It is not migrated: " +
+                        $"move it aside and import the exports again into a new file. Nothing has " +
+                        $"been written.");
+                }
+            }
 
             if (validRows != 1 || allRows != 1)
             {

@@ -66,8 +66,10 @@ namespace Chatcheology.Data.OlderExports
         /// <exception cref="FileNotFoundException">There is no older-exports file at the path.</exception>
         /// <exception cref="InvalidOperationException">
         /// The file is not an older-exports file, the same chat file (by SHA-256) is already
-        /// imported, the position is taken, or the export is to be shown and its period overlaps a
-        /// shown export. Nothing has been written.
+        /// imported, the position is taken, the export is to be shown and its shown period
+        /// overlaps a shown export, or (with <see cref="OlderExportImportRequest.ShownAfter"/>) the
+        /// cut line does not occur exactly once or the inner export is not imported and shown.
+        /// Nothing has been written.
         /// </exception>
         /// <exception cref="SqliteException">
         /// The database rejected a row. The whole import is rolled back.
@@ -91,9 +93,22 @@ namespace Chatcheology.Data.OlderExports
             RefuseDuplicate(connection, transaction, export.SHA256);
             RefuseTakenPosition(connection, transaction, request.Position);
 
-            if (request.Shown)
+            // The revised D2 cut: found in ValidateRequest, so it is known to exist exactly once.
+            OlderExportCut? cut = null;
+            long? cutAfterConversationID = null;
+            var shownMessages = export.Messages;
+
+            if (request.ShownAfter is { } shownAfter)
             {
-                RefuseOverlapWithShownExports(connection, transaction, export.Messages);
+                cutAfterConversationID = FindShownConversation(connection, transaction, shownAfter.SHA256);
+                cut = OlderExportCut.Find(shownAfter.Messages, export.Messages);
+                shownMessages = cut.ShownMessages(export.Messages);
+            }
+
+            // Only the shown part can overlap anything; a cut that shows nothing overlaps nothing.
+            if (request.Shown && shownMessages.Count > 0)
+            {
+                RefuseOverlapWithShownExports(connection, transaction, shownMessages, cutAfterConversationID);
             }
 
             var rows = WorkspaceImporter.ImportWithin(
@@ -114,7 +129,13 @@ namespace Chatcheology.Data.OlderExports
             var conversationID = rows.Result.ConversationID;
 
             InsertRoles(connection, transaction, conversationID, rows.ParticipantIDsBySender, request.Roles);
-            InsertOrder(connection, transaction, conversationID, request.Position, request.Shown);
+            InsertOrder(
+                connection,
+                transaction,
+                conversationID,
+                request.Position,
+                request.Shown,
+                cut?.ShownFromSequenceNumber);
 
             var media = new MediaWriter(connection, transaction, request.ImportedDateTimeUtc);
             var fallbackNames = fallbackFolder is null
@@ -174,6 +195,8 @@ namespace Chatcheology.Data.OlderExports
                 ImportSourceID = rows.Result.ImportSourceID,
                 ConversationID = conversationID,
                 MessageCount = rows.Result.MessageCount,
+                ShownMessageCount = request.Shown ? shownMessages.Count : 0,
+                ShownFromSequenceNumber = cut?.ShownFromSequenceNumber,
                 MediaOmittedAttachmentCount = mediaOmitted,
                 FileAttachedAttachmentCount = fileAttached,
                 ResolvedInOwnFolderCount = ownFolder,
@@ -209,6 +232,10 @@ namespace Chatcheology.Data.OlderExports
         /// </summary>
         /// <exception cref="ArgumentNullException"><paramref name="request"/> is null.</exception>
         /// <exception cref="ArgumentException">As for <see cref="Import"/>.</exception>
+        /// <exception cref="InvalidOperationException">
+        /// With <see cref="OlderExportImportRequest.ShownAfter"/>: the cut line does not occur
+        /// exactly once in this export.
+        /// </exception>
         public static void ValidateRequest(OlderExportImportRequest request)
         {
             ArgumentNullException.ThrowIfNull(request);
@@ -292,6 +319,41 @@ namespace Chatcheology.Data.OlderExports
                         nameof(request));
                 }
             }
+
+            if (request.ShownAfter is { } shownAfter)
+            {
+                if (!request.Shown)
+                {
+                    throw new ArgumentException(
+                        "An export shown after another must itself be shown. Nothing has been " +
+                        "written.",
+                        nameof(request));
+                }
+
+                if (string.Equals(shownAfter.SHA256, request.Export.SHA256, StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new ArgumentException(
+                        "An export cannot be shown after itself. Nothing has been written.",
+                        nameof(request));
+                }
+
+                if (shownAfter.Messages.Count == 0)
+                {
+                    throw new ArgumentException(
+                        "The export to show this one after has no messages. Nothing has been written.",
+                        nameof(request));
+                }
+
+                var cut = OlderExportCut.Find(shownAfter.Messages, request.Export.Messages);
+
+                if (!cut.IsFound)
+                {
+                    throw new InvalidOperationException(
+                        $"The last line of the export to show this one after occurs " +
+                        $"{cut.MatchCount} time(s) in this export; exactly 1 is required for the " +
+                        $"cut. Nothing has been written.");
+                }
+            }
         }
 
         private static void RefuseDuplicate(
@@ -328,18 +390,23 @@ namespace Chatcheology.Data.OlderExports
         }
 
         /// <summary>
-        /// Refuses a shown export whose period, first to last message timestamp inclusive, meets
-        /// the period of any export already registered as shown.
+        /// Refuses a shown export whose shown period, first to last shown message timestamp
+        /// inclusive, meets the shown period of any export already registered as shown.
         /// </summary>
         /// <remarks>
         /// Inclusive at both ends: with minute-precision timestamps, two exports sharing a minute
-        /// cannot be put in order without a guess. Compared on the stored local wall-clock text,
-        /// whose fixed-width format sorts in time order.
+        /// cannot be put in order without a guess. The one exception is the inner export of a cut
+        /// (<paramref name="cutAfterConversationID"/>): the shown part may start in the inner's
+        /// last minute, because the exact cut has already put the two in order, but not before it.
+        /// An existing export's shown period counts only its shown messages (those from its
+        /// <c>ShownFromSequenceNumber</c> on). Compared on the stored local wall-clock text, whose
+        /// fixed-width format sorts in time order.
         /// </remarks>
         private static void RefuseOverlapWithShownExports(
             SqliteConnection connection,
             SqliteTransaction transaction,
-            IReadOnlyList<ParsedMessage> messages)
+            IReadOnlyList<ParsedMessage> messages,
+            long? cutAfterConversationID)
         {
             var first = WorkspaceDateFormats.FormatMessageDateTimeLocal(
                 messages.Min(message => message.MessageDateTime));
@@ -352,17 +419,24 @@ namespace Chatcheology.Data.OlderExports
                 """
                 SELECT COUNT(*)
                 FROM (
-                    SELECT MIN(m.MessageDateTimeLocal) AS FirstLocal,
+                    SELECT o.ConversationID AS ConversationID,
+                           MIN(m.MessageDateTimeLocal) AS FirstLocal,
                            MAX(m.MessageDateTimeLocal) AS LastLocal
                     FROM ExportOrder AS o
                     JOIN Message AS m ON m.ConversationID = o.ConversationID
                     WHERE o.Shown = 1
+                      AND (o.ShownFromSequenceNumber IS NULL
+                           OR m.SequenceNumber >= o.ShownFromSequenceNumber)
                     GROUP BY o.ConversationID
                 )
-                WHERE FirstLocal <= $last AND $first <= LastLocal;
+                WHERE FirstLocal <= $last
+                  AND (CASE WHEN ConversationID IS $cutAfter
+                            THEN $first < LastLocal
+                            ELSE $first <= LastLocal END);
                 """;
             command.Parameters.AddWithValue("$first", first);
             command.Parameters.AddWithValue("$last", last);
+            command.Parameters.AddWithValue("$cutAfter", (object?)cutAfterConversationID ?? DBNull.Value);
 
             var overlapping = Convert.ToInt64(command.ExecuteScalar(), CultureInfo.InvariantCulture);
 
@@ -406,19 +480,65 @@ namespace Chatcheology.Data.OlderExports
             SqliteTransaction transaction,
             long conversationID,
             int position,
-            bool shown)
+            bool shown,
+            int? shownFromSequenceNumber)
         {
             using var command = connection.CreateCommand();
             command.Transaction = transaction;
             command.CommandText =
                 """
-                INSERT INTO ExportOrder (ConversationID, Position, Shown)
-                VALUES ($conversationID, $position, $shown);
+                INSERT INTO ExportOrder (ConversationID, Position, Shown, ShownFromSequenceNumber)
+                VALUES ($conversationID, $position, $shown, $shownFrom);
                 """;
             command.Parameters.AddWithValue("$conversationID", conversationID);
             command.Parameters.AddWithValue("$position", position);
             command.Parameters.AddWithValue("$shown", shown ? 1 : 0);
+            command.Parameters.AddWithValue("$shownFrom", (object?)shownFromSequenceNumber ?? DBNull.Value);
             command.ExecuteNonQuery();
+        }
+
+        /// <summary>
+        /// The conversation of the already imported, shown export whose chat file has
+        /// <paramref name="sha256"/>: the inner export a cut is made after.
+        /// </summary>
+        /// <exception cref="InvalidOperationException">
+        /// No such export is imported, or it is not shown.
+        /// </exception>
+        private static long FindShownConversation(
+            SqliteConnection connection, SqliteTransaction transaction, string sha256)
+        {
+            using var command = connection.CreateCommand();
+            command.Transaction = transaction;
+            command.CommandText =
+                """
+                SELECT DISTINCT m.ConversationID, o.Shown
+                FROM ImportSource AS s
+                JOIN Message AS m ON m.ImportSourceID = s.ImportSourceID
+                JOIN ExportOrder AS o ON o.ConversationID = m.ConversationID
+                WHERE s.SHA256 = $sha256 COLLATE NOCASE;
+                """;
+            command.Parameters.AddWithValue("$sha256", sha256);
+
+            using var reader = command.ExecuteReader();
+
+            if (!reader.Read())
+            {
+                throw new InvalidOperationException(
+                    "The export to show this one after has not been imported yet. Import it first " +
+                    "(shown), then this one. Nothing has been written.");
+            }
+
+            var conversationID = reader.GetInt64(0);
+            var shown = reader.GetInt64(1) == 1;
+
+            if (!shown)
+            {
+                throw new InvalidOperationException(
+                    "The export to show this one after is imported but not shown, so nothing can be " +
+                    "shown after it. Nothing has been written.");
+            }
+
+            return conversationID;
         }
 
         private static long InsertAttachment(

@@ -34,6 +34,14 @@ namespace Chatcheology.Data.OlderExports
         /// </summary>
         public string? FallbackMediaFolder { get; init; }
 
+        /// <summary>
+        /// The revised D2 cut: the inner export this one contains, already imported and shown.
+        /// When set, this export must be shown, and it is shown only from the message after the
+        /// one line that exactly matches the inner export's last message (see
+        /// <see cref="OlderExportCut"/>). Null for every export that is shown whole or not at all.
+        /// </summary>
+        public OlderExportSource? ShownAfter { get; init; }
+
         /// <summary>When the import is performed. Must be <see cref="DateTimeKind.Utc"/>.</summary>
         public required DateTime ImportedDateTimeUtc { get; init; }
 

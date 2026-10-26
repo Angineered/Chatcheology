@@ -50,6 +50,11 @@ dry-run <export-folder>... [--fallback-folder <folder>] [--overlap <inner-folder
   unmatched lines in each export, grouped by category. Line numbers only, never text or names;
   not printed by default.
 
+- `--cut <inner-folder> <outer-folder>`: the revised D2 cut. Reports how many times the inner
+  export's last line occurs exactly (timestamp, type, sender, text) in the outer (must be 1), and
+  then the outer messages hidden (up to and including the match) and shown, and the shown part's
+  first and last timestamp. Counts and dates only.
+
 `senders` (prints sender names with counts; personal data, only on this explicit command):
 
 ```
@@ -71,7 +76,14 @@ import <export-folder> --workspace-folder <folder> --local <name> --other <name>
   evidence only; a shown export whose period overlaps another shown export is refused.
 - `--fallback-folder`: only for the superset export; its absent `(file attached)` names are also
   looked for in this folder, by exact name.
+- `--shown-after <inner-folder>`: show this export only after the cut (see `--cut`). The inner
+  export must already be imported and shown, the cut must be found exactly once, and `--shown`
+  must be `yes`. Every line is still imported; lines up to and including the match are kept as
+  evidence, not shown. The overlap rule applies to the shown part only. Import the inner export
+  first.
 - The same chat file (same SHA-256) is never imported twice.
+- Format note: an older-exports file made before `--shown-after` existed is refused; move it
+  aside and import again into a new file.
 
 `--parent <folder>` (any command): export folders, `--fallback-folder` and `--overlap` are folder
 names under this parent.

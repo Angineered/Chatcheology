@@ -111,6 +111,33 @@ namespace Chatcheology.Data.Tests.OlderExports
         }
 
         [Fact]
+        public void Open_RefusesAnEarlierFormatFile_WithAClearReason()
+        {
+            using var folders = new SyntheticExportFolders();
+            OlderExportsDatabase.Create(folders.OlderExportsPath, Now);
+
+            // Simulate a version-1 file: rebuild the marker without its version CHECK.
+            using (var connection = WorkspaceDatabase.OpenConnection(folders.OlderExportsPath))
+            using (var command = connection.CreateCommand())
+            {
+                command.CommandText =
+                    """
+                    DROP TABLE OlderExportsInfo;
+                    CREATE TABLE OlderExportsInfo (
+                        OlderExportsInfoID INTEGER PRIMARY KEY, Purpose TEXT NOT NULL,
+                        FormatVersion INTEGER NOT NULL, CreatedDateTimeUtc TEXT NOT NULL);
+                    INSERT INTO OlderExportsInfo VALUES (1, 'OlderExports', 1, 'x');
+                    """;
+                command.ExecuteNonQuery();
+            }
+
+            var exception = Assert.Throws<InvalidOperationException>(
+                () => OlderExportsDatabase.OpenConnection(folders.OlderExportsPath));
+
+            Assert.Contains("earlier format", exception.Message, StringComparison.Ordinal);
+        }
+
+        [Fact]
         public void Open_MissingFile_CreatesNothing()
         {
             using var folders = new SyntheticExportFolders();
@@ -122,8 +149,10 @@ namespace Chatcheology.Data.Tests.OlderExports
 
         [Theory]
         [InlineData("INSERT INTO OlderExportsInfo VALUES (2, 'OlderExports', 1, 'x');")]
-        [InlineData("INSERT INTO ExportOrder VALUES (1, 0, 1);")]
-        [InlineData("INSERT INTO ExportOrder VALUES (1, 1, 2);")]
+        [InlineData("INSERT INTO ExportOrder VALUES (1, 0, 1, NULL);")]
+        [InlineData("INSERT INTO ExportOrder VALUES (1, 1, 2, NULL);")]
+        [InlineData("INSERT INTO ExportOrder VALUES (1, 1, 1, 0);")]
+        [InlineData("INSERT INTO ExportOrder VALUES (1, 1, 0, 5);")]
         [InlineData("INSERT INTO ExportRole VALUES (1, 1, 'Someone');")]
         [InlineData("INSERT INTO ExportAttachmentName VALUES (1, 'a/b.jpg');")]
         [InlineData("INSERT INTO ExportAttachmentName VALUES (1, 'a\\b.jpg');")]
