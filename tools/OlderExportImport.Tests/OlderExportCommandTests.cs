@@ -142,6 +142,78 @@ namespace Chatcheology.Tools.OlderExportImport.Tests
         }
 
         [Fact]
+        public void DryRun_OverlapSplitsByKind_AndLineNumbersOnlyWhenAsked()
+        {
+            CreateExport(
+                "innerzz",
+                """
+                10/04/2015, 08:01 - Alex Example: zorbly
+                caption
+                10/04/2015, 08:02 - Sam Sample: snapzz.jpg (file attached)
+                10/04/2015, 08:03 - Sam Sample: wibble
+                """);
+            CreateExport(
+                "outerzz",
+                """
+                10/04/2015, 08:01 - Alex Example: zorbly
+                caption
+                10/04/2015, 08:02 - Sam Sample: <Media omitted>
+                10/04/2015, 08:04 - Sam Sample: wibble
+                """);
+
+            var (defaultCode, defaultOutput, _) = Run("--overlap", Folder("innerzz"), Folder("outerzz"));
+
+            Assert.Equal(0, defaultCode);
+            Assert.Contains("Overlap: 2 of 3 lines", defaultOutput, StringComparison.Ordinal);
+            Assert.Contains(
+                "file attached vs media omitted (same time and sender): 1 (0 / 1 / 0 / 0)",
+                defaultOutput,
+                StringComparison.Ordinal);
+            Assert.Contains(
+                "no line in the second with the same time and sender: 1 (1 / 0 / 0 / 0)",
+                defaultOutput,
+                StringComparison.Ordinal);
+            Assert.Contains("same sender within +/-1 minute: 1", defaultOutput, StringComparison.Ordinal);
+            Assert.Contains("identical line within +/-60 minutes: 1", defaultOutput, StringComparison.Ordinal);
+            // Only 08:01 and 08:02 of the outer lie within the inner period (08:01 to 08:03).
+            Assert.Contains("Reverse: 1 of 2 lines", defaultOutput, StringComparison.Ordinal);
+            Assert.DoesNotContain("line numbers", defaultOutput, StringComparison.Ordinal);
+            AssertNoSecrets(defaultOutput);
+
+            var (code, output, _) = Run("--overlap", Folder("innerzz"), Folder("outerzz"), "--overlap-lines");
+
+            Assert.Equal(0, code);
+            Assert.Contains("Unmatched source line numbers (line numbers only):", output, StringComparison.Ordinal);
+            Assert.Contains(
+                "First export, file attached vs media omitted (same time and sender): 3",
+                output,
+                StringComparison.Ordinal);
+            Assert.Contains(
+                "First export, no line in the other with the same time and sender: 4",
+                output,
+                StringComparison.Ordinal);
+            Assert.Contains(
+                "Second export, file attached vs media omitted (same time and sender): 3",
+                output,
+                StringComparison.Ordinal);
+            Assert.Contains(
+                "Second export, no line in the other with the same time and sender: none",
+                output,
+                StringComparison.Ordinal);
+            AssertNoSecrets(output);
+            Assert.DoesNotContain("caption", output, StringComparison.Ordinal);
+        }
+
+        [Fact]
+        public void OverlapLines_WithoutOverlap_IsAUsageError()
+        {
+            var (code, _, error) = Run(Folder("olderzz"), "--overlap-lines");
+
+            Assert.Equal(2, code);
+            Assert.Contains("--overlap-lines needs --overlap", error, StringComparison.Ordinal);
+        }
+
+        [Fact]
         public void DryRun_WithParentFolder_Works()
         {
             var (code, output, _) = Run("dry-run", "--parent", _root, "olderzz", "--fallback-folder", "supersetzz");

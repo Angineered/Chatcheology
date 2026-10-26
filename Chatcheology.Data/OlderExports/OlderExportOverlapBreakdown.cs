@@ -5,7 +5,8 @@ namespace Chatcheology.Data.OlderExports
     /// </summary>
     /// <remarks>
     /// Produced by <see cref="OlderExportOverlap.Analyse"/>. The five categories are exclusive and
-    /// add up to <see cref="NotFoundCount"/>. No text, name or timestamp is carried.
+    /// add up to <see cref="NotFoundCount"/>. No text, name or timestamp is carried; the two
+    /// directions also carry the 1-based source line numbers of the unmatched lines.
     /// </remarks>
     public sealed class OlderExportOverlapBreakdown
     {
@@ -16,8 +17,8 @@ namespace Chatcheology.Data.OlderExports
         public required int NotFoundCount { get; init; }
 
         /// <summary>
-        /// The inner line is <c>(file attached)</c> and the outer has <c>&lt;Media omitted&gt;</c>
-        /// at the same timestamp and sender.
+        /// At the same timestamp and sender, one side has <c>(file attached)</c> and the other
+        /// <c>&lt;Media omitted&gt;</c> (either way round).
         /// </summary>
         public required int FileAttachedWhereOuterHasMediaOmittedCount { get; init; }
 
@@ -49,5 +50,17 @@ namespace Chatcheology.Data.OlderExports
 
         /// <summary>Of those, how many have no exact counterpart in the inner export.</summary>
         public required int OuterInInnerPeriodNotFoundInInnerCount { get; init; }
+
+        /// <summary>
+        /// The inner lines not found in the outer export, by category and line kind, with
+        /// clock-shift hints and source line numbers. The counts above are this direction's.
+        /// </summary>
+        public required OlderExportOverlapDirection Forward { get; init; }
+
+        /// <summary>
+        /// The outer lines within the inner export's period not found in the inner export, in the
+        /// same detail.
+        /// </summary>
+        public required OlderExportOverlapDirection Reverse { get; init; }
     }
 }

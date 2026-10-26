@@ -130,6 +130,92 @@ namespace Chatcheology.Data.Tests.OlderExports
         }
 
         [Fact]
+        public void Analyse_SplitsEachCategoryByLineKind_InBothDirections()
+        {
+            var inner = Parse(
+                """
+                26/03/2016, 10:00 - Sam Sample: a.jpg (file attached)
+                26/03/2016, 10:01 - Alex Example: <Media omitted>
+                26/03/2016, 10:02 - Alex Example: words
+                26/03/2016, 10:03 - Messages to this chat are now secured.
+                26/03/2016, 10:04 - Sam Sample: b.jpg (file attached)
+                26/03/2016, 10:05 - Sam Sample: <Media omitted>
+                26/03/2016, 10:09 - Sam Sample: end
+                """);
+
+            var outer = Parse(
+                """
+                26/03/2016, 10:00 - Sam Sample: <Media omitted>
+                26/03/2016, 10:01 - Alex Example: c.jpg (file attached)
+                26/03/2016, 10:02 - Alex Example: other words
+                26/03/2016, 10:03 - A different notice.
+                26/03/2016, 10:06 - Alex Example: outer only
+                26/03/2016, 10:09 - Sam Sample: end
+                """);
+
+            var forward = OlderExportOverlap.Analyse(inner, outer).Forward;
+
+            Assert.Equal(7, forward.ComparedCount);
+            Assert.Equal(6, forward.NotFoundCount);
+
+            // Both media mismatches, either way round.
+            Assert.Equal(1, forward.Count(OverlapCategory.FileAttachedVersusMediaOmitted, OverlapLineKind.UserFileAttached));
+            Assert.Equal(1, forward.Count(OverlapCategory.FileAttachedVersusMediaOmitted, OverlapLineKind.UserMediaOmitted));
+            Assert.Equal(1, forward.Count(OverlapCategory.OtherContent, OverlapLineKind.UserText));
+            Assert.Equal(1, forward.Count(OverlapCategory.OtherContent, OverlapLineKind.System));
+            Assert.Equal(1, forward.Count(OverlapCategory.NoLineAtTimestampAndSender, OverlapLineKind.UserFileAttached));
+            Assert.Equal(1, forward.Count(OverlapCategory.NoLineAtTimestampAndSender, OverlapLineKind.UserMediaOmitted));
+            Assert.Equal(
+                [1, 2, 3, 4, 5, 6],
+                forward.Unmatched.Select(line => line.SourceLineStart));
+
+            var reverse = OlderExportOverlap.Analyse(inner, outer).Reverse;
+
+            // Outer within 10:00 to 10:09: all six lines; "end" is found.
+            Assert.Equal(6, reverse.ComparedCount);
+            Assert.Equal(5, reverse.NotFoundCount);
+            Assert.Equal(1, reverse.Count(OverlapCategory.FileAttachedVersusMediaOmitted, OverlapLineKind.UserMediaOmitted));
+            Assert.Equal(1, reverse.Count(OverlapCategory.FileAttachedVersusMediaOmitted, OverlapLineKind.UserFileAttached));
+            Assert.Equal(1, reverse.Count(OverlapCategory.OtherContent, OverlapLineKind.UserText));
+            Assert.Equal(1, reverse.Count(OverlapCategory.OtherContent, OverlapLineKind.System));
+            Assert.Equal(1, reverse.Count(OverlapCategory.NoLineAtTimestampAndSender, OverlapLineKind.UserText));
+        }
+
+        [Fact]
+        public void Analyse_ClockShiftHints_CountNearbyAndShiftedIdenticalLines()
+        {
+            var inner = Parse(
+                """
+                26/03/2016, 10:00 - Alex Example: one minute off
+                26/03/2016, 11:00 - Alex Example: one hour off
+                26/03/2016, 13:30 - Alex Example: two hours off
+                26/03/2016, 17:00 - Alex Example: three hours off
+                26/03/2016, 20:00 - Sam Sample: nothing near
+                """);
+
+            // No outer line shares a timestamp and sender with an inner line.
+            var outer = Parse(
+                """
+                26/03/2016, 10:01 - Alex Example: one minute off
+                26/03/2016, 12:00 - Alex Example: one hour off
+                26/03/2016, 15:30 - Alex Example: two hours off
+                26/03/2016, 20:00 - Alex Example: three hours off
+                26/03/2016, 20:01 - Alex Example: someone else nearby
+                """);
+
+            var forward = OlderExportOverlap.Analyse(inner, outer).Forward;
+
+            Assert.Equal(5, forward.Count(OverlapCategory.NoLineAtTimestampAndSender));
+
+            // 10:00 has Alex at 10:01; 20:00 (Sam) has only Alex nearby, which does not count.
+            Assert.Equal(1, forward.SameSenderWithinOneMinuteCount);
+
+            // Identical content: one minute and one hour off are within 60; two hours within 120.
+            Assert.Equal(2, forward.IdenticalWithinSixtyMinutesCount);
+            Assert.Equal(3, forward.IdenticalWithinOneHundredTwentyMinutesCount);
+        }
+
+        [Fact]
         public void Analyse_EmptyInner_CountsNothing()
         {
             var breakdown = OlderExportOverlap.Analyse([], Parse(Outer));

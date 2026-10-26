@@ -34,26 +34,26 @@ namespace Chatcheology.Data.OlderExports
         }
 
         /// <summary>
-        /// Compares <paramref name="inner"/> with <paramref name="outer"/> and sorts every inner
-        /// line not found exactly into one category, and counts the reverse direction within the
-        /// inner export's period.
+        /// Compares <paramref name="inner"/> with <paramref name="outer"/> in both directions: every
+        /// inner line not found exactly in the outer export, and every outer line within the inner
+        /// export's period not found exactly in the inner export. Each unmatched line is sorted into
+        /// one category and one line kind.
         /// </summary>
         /// <remarks>
-        /// Each unmatched inner line is put in the first category that applies, so the categories
-        /// add up to <see cref="OlderExportOverlapBreakdown.NotFoundCount"/>. "Same timestamp and
-        /// sender" looks at every outer line with that timestamp and sender, matched or not:
-        /// <list type="number">
-        /// <item>The inner line is a <c>(file attached)</c> line and an outer line at the same
-        /// timestamp and sender is <c>&lt;Media omitted&gt;</c>.</item>
-        /// <item>An outer line has exactly the same content, but the inner export repeats the line
-        /// more often than the outer does.</item>
-        /// <item>An outer line at the same timestamp and sender has content equal once leading and
-        /// trailing whitespace is removed from each line and from the whole.</item>
-        /// <item>Outer lines at the same timestamp and sender exist, but all differ otherwise.</item>
-        /// <item>No outer line has the same timestamp and sender.</item>
-        /// </list>
-        /// Timestamp and sender together fix the type (only system lines have no sender), so the
-        /// type needs no category of its own.
+        /// Each unmatched line is put in the first category that applies (see
+        /// <see cref="OverlapCategory"/>), so the categories add up to the not-found count. "Same
+        /// timestamp and sender" looks at every line of the other export with that timestamp and
+        /// sender, matched or not. Timestamp and sender together fix the type (only system lines
+        /// have no sender), so the type needs no category of its own.
+        /// <para>
+        /// For lines with no counterpart at the same timestamp and sender, the clock-shift hints
+        /// look for a line by the same sender within one minute, and for an identical line within
+        /// 60 and 120 minutes, in the whole other export.
+        /// </para>
+        /// <para>
+        /// The reverse direction compares the outer lines whose timestamp lies within the inner
+        /// export's first-to-last period (inclusive) against the whole inner export.
+        /// </para>
         /// </remarks>
         public static OlderExportOverlapBreakdown Analyse(
             IReadOnlyList<ParsedMessage> inner,
@@ -62,42 +62,8 @@ namespace Chatcheology.Data.OlderExports
             ArgumentNullException.ThrowIfNull(inner);
             ArgumentNullException.ThrowIfNull(outer);
 
-            var notFound = FindNotFound(inner, outer);
+            var forward = AnalyseDirection(inner, outer);
 
-            var outerByTimeAndSender = outer.ToLookup(message => (message.MessageDateTime, message.Sender));
-
-            int fileAttached = 0, repeated = 0, whitespace = 0, otherContent = 0, noLine = 0;
-
-            foreach (var message in notFound)
-            {
-                var candidates = outerByTimeAndSender[(message.MessageDateTime, message.Sender)].ToList();
-
-                if (candidates.Count == 0)
-                {
-                    noLine++;
-                }
-                else if (message.AttachedFileName is not null
-                    && candidates.Any(candidate => candidate.IsMediaPlaceholder))
-                {
-                    fileAttached++;
-                }
-                else if (candidates.Any(candidate => string.Equals(
-                    candidate.MessageContent, message.MessageContent, StringComparison.Ordinal)))
-                {
-                    repeated++;
-                }
-                else if (candidates.Any(candidate => string.Equals(
-                    TrimLines(candidate.MessageContent), TrimLines(message.MessageContent), StringComparison.Ordinal)))
-                {
-                    whitespace++;
-                }
-                else
-                {
-                    otherContent++;
-                }
-            }
-
-            // The inner export's period, first to last timestamp inclusive.
             var outerInPeriod = new List<ParsedMessage>();
 
             if (inner.Count > 0)
@@ -109,19 +75,115 @@ namespace Chatcheology.Data.OlderExports
                     message.MessageDateTime >= first && message.MessageDateTime <= last));
             }
 
+            var reverse = AnalyseDirection(outerInPeriod, inner);
+
             return new OlderExportOverlapBreakdown
             {
                 InnerCount = inner.Count,
-                NotFoundCount = notFound.Count,
-                FileAttachedWhereOuterHasMediaOmittedCount = fileAttached,
-                RepeatedMoreOftenThanInOuterCount = repeated,
-                WhitespaceOnlyDifferenceCount = whitespace,
-                OtherContentDifferenceCount = otherContent,
-                NoOuterLineAtTimestampAndSenderCount = noLine,
-                OuterInInnerPeriodCount = outerInPeriod.Count,
-                OuterInInnerPeriodNotFoundInInnerCount = FindNotFound(outerInPeriod, inner).Count,
+                NotFoundCount = forward.NotFoundCount,
+                FileAttachedWhereOuterHasMediaOmittedCount = forward.Count(OverlapCategory.FileAttachedVersusMediaOmitted),
+                RepeatedMoreOftenThanInOuterCount = forward.Count(OverlapCategory.RepeatedMoreOften),
+                WhitespaceOnlyDifferenceCount = forward.Count(OverlapCategory.WhitespaceOnly),
+                OtherContentDifferenceCount = forward.Count(OverlapCategory.OtherContent),
+                NoOuterLineAtTimestampAndSenderCount = forward.Count(OverlapCategory.NoLineAtTimestampAndSender),
+                OuterInInnerPeriodCount = reverse.ComparedCount,
+                OuterInInnerPeriodNotFoundInInnerCount = reverse.NotFoundCount,
+                Forward = forward,
+                Reverse = reverse,
             };
         }
+
+        /// <summary>
+        /// The lines of <paramref name="compared"/> with no exact counterpart in
+        /// <paramref name="other"/>, sorted, with clock-shift hints.
+        /// </summary>
+        private static OlderExportOverlapDirection AnalyseDirection(
+            IReadOnlyList<ParsedMessage> compared,
+            IReadOnlyList<ParsedMessage> other)
+        {
+            var notFound = FindNotFound(compared, other);
+
+            var otherByTimeAndSender = other.ToLookup(message => (message.MessageDateTime, message.Sender));
+            var otherBySender = other.ToLookup(message => message.Sender);
+
+            var unmatched = new List<OverlapUnmatchedLine>(notFound.Count);
+            int withinOneMinute = 0, identicalWithinSixty = 0, identicalWithinOneHundredTwenty = 0;
+
+            foreach (var message in notFound)
+            {
+                var candidates = otherByTimeAndSender[(message.MessageDateTime, message.Sender)].ToList();
+                var category = Categorise(message, candidates);
+
+                if (category == OverlapCategory.NoLineAtTimestampAndSender)
+                {
+                    var sameSender = otherBySender[message.Sender].ToList();
+
+                    if (sameSender.Any(candidate => IsWithin(candidate, message, TimeSpan.FromMinutes(1))))
+                    {
+                        withinOneMinute++;
+                    }
+
+                    var identical = sameSender
+                        .Where(candidate => LineKey.Of(candidate) with { Timestamp = default }
+                            == LineKey.Of(message) with { Timestamp = default })
+                        .ToList();
+
+                    if (identical.Any(candidate => IsWithin(candidate, message, TimeSpan.FromMinutes(60))))
+                    {
+                        identicalWithinSixty++;
+                    }
+
+                    if (identical.Any(candidate => IsWithin(candidate, message, TimeSpan.FromMinutes(120))))
+                    {
+                        identicalWithinOneHundredTwenty++;
+                    }
+                }
+
+                unmatched.Add(new OverlapUnmatchedLine(
+                    message.SourceLineStart, category, OlderExportOverlapDirection.KindOf(message)));
+            }
+
+            return new OlderExportOverlapDirection
+            {
+                ComparedCount = compared.Count,
+                Unmatched = unmatched,
+                SameSenderWithinOneMinuteCount = withinOneMinute,
+                IdenticalWithinSixtyMinutesCount = identicalWithinSixty,
+                IdenticalWithinOneHundredTwentyMinutesCount = identicalWithinOneHundredTwenty,
+            };
+        }
+
+        private static OverlapCategory Categorise(ParsedMessage message, List<ParsedMessage> candidates)
+        {
+            if (candidates.Count == 0)
+            {
+                return OverlapCategory.NoLineAtTimestampAndSender;
+            }
+
+            if ((message.AttachedFileName is not null && candidates.Any(candidate => candidate.IsMediaPlaceholder))
+                || (message.IsMediaPlaceholder && candidates.Any(candidate => candidate.AttachedFileName is not null)))
+            {
+                return OverlapCategory.FileAttachedVersusMediaOmitted;
+            }
+
+            if (candidates.Any(candidate => string.Equals(
+                    candidate.MessageContent, message.MessageContent, StringComparison.Ordinal)))
+            {
+                return OverlapCategory.RepeatedMoreOften;
+            }
+
+            if (candidates.Any(candidate => string.Equals(
+                    TrimLines(candidate.MessageContent), TrimLines(message.MessageContent), StringComparison.Ordinal)))
+            {
+                return OverlapCategory.WhitespaceOnly;
+            }
+
+            return OverlapCategory.OtherContent;
+        }
+
+        /// <summary>Whether the two timestamps are at most <paramref name="limit"/> apart.</summary>
+        private static bool IsWithin(ParsedMessage left, ParsedMessage right, TimeSpan limit) =>
+            (left.MessageDateTime - right.MessageDateTime).Duration() <= limit;
 
         /// <summary>
         /// The messages of <paramref name="inner"/> left over after each is paired with an

@@ -175,31 +175,84 @@ namespace Chatcheology.Tools.OlderExportImport
                 }
 
                 output.WriteLine(
-                    $"Overlap: {overlap.NotFoundCount} of {overlap.InnerCount} lines of the first " +
-                    $"--overlap export are not found exactly in the second.");
+                    $"Overlap: {overlap.Forward.NotFoundCount} of {overlap.Forward.ComparedCount} " +
+                    $"lines of the first --overlap export are not found exactly in the second.");
+                WriteDirection(output, overlap.Forward, "second");
+
                 output.WriteLine(
-                    $"  file attached where the second has media omitted (same time and sender): " +
-                    $"{overlap.FileAttachedWhereOuterHasMediaOmittedCount}");
-                output.WriteLine(
-                    $"  identical line, repeated more often than in the second: " +
-                    $"{overlap.RepeatedMoreOftenThanInOuterCount}");
-                output.WriteLine(
-                    $"  same time and sender, text differs only in leading/trailing whitespace: " +
-                    $"{overlap.WhitespaceOnlyDifferenceCount}");
-                output.WriteLine(
-                    $"  same time and sender, text differs otherwise: " +
-                    $"{overlap.OtherContentDifferenceCount}");
-                output.WriteLine(
-                    $"  no line in the second with the same time and sender: " +
-                    $"{overlap.NoOuterLineAtTimestampAndSenderCount}");
-                output.WriteLine(
-                    $"Reverse: {overlap.OuterInInnerPeriodNotFoundInInnerCount} of " +
-                    $"{overlap.OuterInInnerPeriodCount} lines of the second export within the " +
-                    $"first's period are not found exactly in the first.");
+                    $"Reverse: {overlap.Reverse.NotFoundCount} of {overlap.Reverse.ComparedCount} " +
+                    $"lines of the second export within the first's period are not found exactly " +
+                    $"in the first.");
+                WriteDirection(output, overlap.Reverse, "first");
+
+                if (parsed.OverlapLines)
+                {
+                    output.WriteLine();
+                    output.WriteLine("Unmatched source line numbers (line numbers only):");
+                    WriteLineNumbers(output, overlap.Forward, "First export");
+                    WriteLineNumbers(output, overlap.Reverse, "Second export");
+                }
             }
 
             return anyStopped ? Failed : Success;
         }
+
+        /// <summary>
+        /// Writes one overlap direction: each category with its count split by line kind, then the
+        /// clock-shift hints for lines with no counterpart at the same time and sender.
+        /// </summary>
+        private static void WriteDirection(TextWriter output, OlderExportOverlapDirection direction, string other)
+        {
+            output.WriteLine("  by category (user text / file attached / media omitted / system):");
+
+            foreach (var (category, label) in CategoryLabels(other))
+            {
+                output.WriteLine(
+                    $"    {label}: {direction.Count(category)} (" +
+                    $"{direction.Count(category, OverlapLineKind.UserText)} / " +
+                    $"{direction.Count(category, OverlapLineKind.UserFileAttached)} / " +
+                    $"{direction.Count(category, OverlapLineKind.UserMediaOmitted)} / " +
+                    $"{direction.Count(category, OverlapLineKind.System)})");
+            }
+
+            output.WriteLine(
+                $"  of the lines with no line at the same time and sender in the {other}:");
+            output.WriteLine(
+                $"    same sender within +/-1 minute: {direction.SameSenderWithinOneMinuteCount}");
+            output.WriteLine(
+                $"    identical line within +/-60 minutes: {direction.IdenticalWithinSixtyMinutesCount}");
+            output.WriteLine(
+                $"    identical line within +/-120 minutes: " +
+                $"{direction.IdenticalWithinOneHundredTwentyMinutesCount}");
+        }
+
+        /// <summary>
+        /// Writes the 1-based source line numbers of one direction's unmatched lines, grouped by
+        /// category. Only with <c>--overlap-lines</c>; never text, names or file names.
+        /// </summary>
+        private static void WriteLineNumbers(TextWriter output, OlderExportOverlapDirection direction, string export)
+        {
+            foreach (var (category, label) in CategoryLabels("other"))
+            {
+                var numbers = direction.Unmatched
+                    .Where(line => line.Category == category)
+                    .Select(line => line.SourceLineStart.ToString(CultureInfo.InvariantCulture))
+                    .ToList();
+
+                output.WriteLine(
+                    $"  {export}, {label}: {(numbers.Count == 0 ? "none" : string.Join(", ", numbers))}");
+            }
+        }
+
+        private static (OverlapCategory Category, string Label)[] CategoryLabels(string other) =>
+        [
+            (OverlapCategory.FileAttachedVersusMediaOmitted,
+                "file attached vs media omitted (same time and sender)"),
+            (OverlapCategory.RepeatedMoreOften, $"identical line, repeated more often than in the {other}"),
+            (OverlapCategory.WhitespaceOnly, "same time and sender, text differs only in leading/trailing whitespace"),
+            (OverlapCategory.OtherContent, "same time and sender, text differs otherwise"),
+            (OverlapCategory.NoLineAtTimestampAndSender, $"no line in the {other} with the same time and sender"),
+        ];
 
         /// <summary>Loads one of the two overlap exports, marking which one stopped.</summary>
         private static OlderExportSource LoadForOverlap(string folder, string which)
@@ -345,7 +398,7 @@ namespace Chatcheology.Tools.OlderExportImport
         {
             output.WriteLine("OlderExportImport: dry run, sender listing and import of older WhatsApp exports.");
             output.WriteLine();
-            output.WriteLine("  [dry-run] <export-folder>... [--fallback-folder <folder>] [--overlap <inner-folder> <outer-folder>]");
+            output.WriteLine("  [dry-run] <export-folder>... [--fallback-folder <folder>] [--overlap <inner-folder> <outer-folder> [--overlap-lines]]");
             output.WriteLine("  senders <export-folder>");
             output.WriteLine("  import <export-folder> --workspace-folder <folder> --local <name> --other <name>");
             output.WriteLine("         --position <n> --shown yes|no [--fallback-folder <folder>] [--create]");
@@ -383,6 +436,8 @@ namespace Chatcheology.Tools.OlderExportImport
             internal bool? Shown { get; private set; }
 
             internal bool Create { get; private set; }
+
+            internal bool OverlapLines { get; private set; }
 
             internal static ParsedArguments Parse(string[] args)
             {
@@ -465,6 +520,10 @@ namespace Chatcheology.Tools.OlderExportImport
                             };
                             break;
 
+                        case "--overlap-lines":
+                            parsed.OverlapLines = true;
+                            break;
+
                         case "--create":
                             parsed.Create = true;
                             break;
@@ -488,6 +547,11 @@ namespace Chatcheology.Tools.OlderExportImport
                 {
                     throw new UsageException(
                         "--workspace-folder, --local and --other belong to import only.");
+                }
+
+                if (parsed.OverlapLines && parsed.OverlapFolders is null)
+                {
+                    throw new UsageException("--overlap-lines needs --overlap.");
                 }
 
                 if (parent is not null)

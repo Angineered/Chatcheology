@@ -42,7 +42,13 @@ dry-run <export-folder>... [--fallback-folder <folder>] [--overlap <inner-folder
   time and sender; identical line repeated more often than in the outer; same time and sender with
   text differing only in leading/trailing whitespace; differing otherwise; no outer line at that
   time and sender. The reverse count is the outer lines within the inner's period that are not
-  found in the inner.
+  found in the inner, broken down the same way. In both directions each category is split by
+  line kind (user text / file attached / media omitted / system), and for lines with no line at
+  the same time and sender the report counts how many have a line by the same sender within
+  +/-1 minute, and an identical line within +/-60 and +/-120 minutes (clock or timezone shifts).
+- `--overlap-lines` (with `--overlap`): also prints the 1-based source line numbers of the
+  unmatched lines in each export, grouped by category. Line numbers only, never text or names;
+  not printed by default.
 
 `senders` (prints sender names with counts; personal data, only on this explicit command):
 
