@@ -225,6 +225,9 @@ namespace Chatcheology.Tools.OlderExportImport.Tests
             Assert.Contains("occurs 1 time(s) exactly", output, StringComparison.Ordinal);
             Assert.Contains("messages hidden (up to and including the match): 2", output, StringComparison.Ordinal);
             Assert.Contains("messages shown: 2", output, StringComparison.Ordinal);
+            Assert.Contains("hidden, dated within the first's period: 2", output, StringComparison.Ordinal);
+            Assert.Contains("hidden, dated before the first's first message (shown nowhere): 0", output, StringComparison.Ordinal);
+            Assert.Contains("shown outer lines that duplicate an inner line: 0 (must be 0)", output, StringComparison.Ordinal);
             Assert.Contains("shown part first: 2015-04-10 08:03", output, StringComparison.Ordinal);
             Assert.Contains("shown part last: 2015-04-11 09:00", output, StringComparison.Ordinal);
             AssertNoSecrets(output);
@@ -252,6 +255,24 @@ namespace Chatcheology.Tools.OlderExportImport.Tests
             Assert.Contains("Messages shown: 2", importOutput, StringComparison.Ordinal);
             Assert.Contains("Shown from message: 3 (after the cut)", importOutput, StringComparison.Ordinal);
             AssertNoSecrets(importOutput);
+        }
+
+        [Fact]
+        public void Cut_ShownLinesDuplicatingTheInner_Stop()
+        {
+            CreateExport(
+                "innerzz",
+                "08/12/2016, 21:00 - Alex Example: zorbly\n08/12/2016, 21:00 - Sam Sample: wibble");
+            CreateExport(
+                "outerzz",
+                "08/12/2016, 21:00 - Sam Sample: wibble\n08/12/2016, 21:00 - Alex Example: zorbly\n06/09/2017, 12:59 - Alex Example: end");
+
+            var (code, output, _) = Run("--cut", Folder("innerzz"), Folder("outerzz"));
+
+            Assert.Equal(1, code);
+            Assert.Contains("shown outer lines that duplicate an inner line: 1 (must be 0)", output, StringComparison.Ordinal);
+            Assert.Contains("Cut: Stopped: shown lines would duplicate inner lines", output, StringComparison.Ordinal);
+            AssertNoSecrets(output);
         }
 
         [Fact]

@@ -52,8 +52,14 @@ dry-run <export-folder>... [--fallback-folder <folder>] [--overlap <inner-folder
 
 - `--cut <inner-folder> <outer-folder>`: the revised D2 cut. Reports how many times the inner
   export's last line occurs exactly (timestamp, type, sender, text) in the outer (must be 1), and
-  then the outer messages hidden (up to and including the match) and shown, and the shown part's
-  first and last timestamp. Counts and dates only.
+  then the outer messages hidden (up to and including the match; split into dated within the
+  inner's period, before its first message and after its last message, the latter two shown
+  nowhere) and shown, how many shown lines exactly duplicate an inner line (must be 0, or they
+  would be shown twice), and the shown part's first and last timestamp. Counts and dates only.
+
+"Exact" everywhere (overlap, cut, duplicates) compares the timestamp, type, sender and text, with
+the text compared character for character after the parser has removed only the invisible
+direction marks U+200E and U+200F.
 
 `senders` (prints sender names with counts; personal data, only on this explicit command):
 
@@ -80,7 +86,11 @@ import <export-folder> --workspace-folder <folder> --local <name> --other <name>
   export must already be imported and shown, the cut must be found exactly once, and `--shown`
   must be `yes`. Every line is still imported; lines up to and including the match are kept as
   evidence, not shown. The overlap rule applies to the shown part only. Import the inner export
-  first.
+  first, and give this export a later position. A shown line after the cut that exactly
+  duplicates an inner line stops the import.
+- Positions must follow the timeline: at every import, the shown exports sorted by position must
+  have shown periods that each start after the previous one ends (a cut export may start in its
+  inner export's last minute).
 - The same chat file (same SHA-256) is never imported twice.
 - Format note: an older-exports file made before `--shown-after` existed is refused; move it
   aside and import again into a new file.

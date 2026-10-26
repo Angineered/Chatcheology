@@ -171,14 +171,25 @@ namespace Chatcheology.Tools.OlderExportImport
                     if (cut.IsFound)
                     {
                         output.WriteLine($"  second export messages hidden (up to and including the match): {cut.HiddenCount}");
+                        output.WriteLine($"    hidden, dated within the first's period: {cut.HiddenWithinInnerPeriodCount}");
+                        output.WriteLine($"    hidden, dated before the first's first message (shown nowhere): {cut.HiddenBeforeInnerPeriodCount}");
+                        output.WriteLine($"    hidden, dated after the first's last message (shown nowhere): {cut.HiddenAfterInnerPeriodCount}");
                         output.WriteLine($"  second export messages shown: {cut.ShownCount}");
+                        output.WriteLine($"  shown outer lines that duplicate an inner line: {cut.ShownDuplicatingInnerCount} (must be 0)");
                         output.WriteLine($"  shown part first: {FormatDate(cut.ShownFirst)}");
                         output.WriteLine($"  shown part last: {FormatDate(cut.ShownLast)}");
                     }
-                    else
+
+                    if (!cut.IsFound)
                     {
                         anyStopped = true;
                         output.WriteLine("Cut: Stopped: no cut can be made unless the match count is 1.");
+                    }
+                    else if (!cut.IsUsable)
+                    {
+                        anyStopped = true;
+                        output.WriteLine(
+                            "Cut: Stopped: shown lines would duplicate inner lines, so they would be shown twice.");
                     }
                 }
                 catch (OverlapStoppedException exception)

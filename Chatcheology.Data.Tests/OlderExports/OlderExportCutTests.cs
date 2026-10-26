@@ -305,6 +305,160 @@ namespace Chatcheology.Data.Tests.OlderExports
             Assert.Equal(0L, Scalar(connection, "SELECT COUNT(*) FROM MediaFile;"));
         }
 
+        [Fact]
+        public void Find_SplitsHiddenLinesByTheInnersPeriod_AndCountsDuplicates()
+        {
+            var outer =
+                """
+                20/03/2016, 08:00 - Alex Example: before the inner
+                26/03/2016, 10:00 - Alex Example: a
+                09/12/2016, 07:00 - Alex Example: after, out of order
+                08/12/2016, 21:00 - Sam Sample: final zorp
+                06/09/2017, 12:59 - Alex Example: end
+                """;
+
+            var cut = OlderExportCut.Find(Parse(Inner), Parse(outer));
+
+            Assert.Equal(4, cut.HiddenCount);
+            Assert.Equal(2, cut.HiddenWithinInnerPeriodCount);
+            Assert.Equal(1, cut.HiddenBeforeInnerPeriodCount);
+            Assert.Equal(1, cut.HiddenAfterInnerPeriodCount);
+            Assert.Equal(0, cut.ShownDuplicatingInnerCount);
+            Assert.True(cut.IsUsable);
+        }
+
+        /// <summary>Review repro A: the inner's last line is earlier in time than its first.</summary>
+        [Fact]
+        public void Import_ReproA_ShownLineDuplicatingTheInner_IsRefused()
+        {
+            using var folders = new SyntheticExportFolders();
+            var inner = folders.CreateExport(
+                "inner",
+                "26/03/2016, 10:00 - Alex Example: a\n25/03/2016, 09:00 - Sam Sample: back");
+            var outer = folders.CreateExport(
+                "outer",
+                "25/03/2016, 09:00 - Sam Sample: back\n26/03/2016, 10:00 - Alex Example: a\n27/03/2016, 10:00 - Alex Example: new");
+            OlderExportsDatabase.Create(folders.OlderExportsPath, Now);
+
+            Assert.Equal(1, OlderExportCut.Find(
+                OlderExportSource.Load(inner).Messages, OlderExportSource.Load(outer).Messages).ShownDuplicatingInnerCount);
+
+            Import(folders, inner, position: 4);
+
+            var exception = Assert.Throws<InvalidOperationException>(
+                () => Import(folders, outer, position: 5, shownAfter: inner));
+
+            Assert.Contains("1 line(s)", exception.Message, StringComparison.Ordinal);
+            Assert.Contains("shown twice", exception.Message, StringComparison.Ordinal);
+            AssertCounts(folders, conversations: 1, orders: 1);
+        }
+
+        /// <summary>Review repro B: two lines in the same minute, in a different order.</summary>
+        [Fact]
+        public void Import_ReproB_SameMinuteReordered_IsRefused()
+        {
+            using var folders = new SyntheticExportFolders();
+            var inner = folders.CreateExport(
+                "inner",
+                "08/12/2016, 21:00 - Alex Example: x\n08/12/2016, 21:00 - Sam Sample: final zorp");
+            var outer = folders.CreateExport(
+                "outer",
+                "08/12/2016, 21:00 - Sam Sample: final zorp\n08/12/2016, 21:00 - Alex Example: x\n06/09/2017, 12:59 - Alex Example: end");
+            OlderExportsDatabase.Create(folders.OlderExportsPath, Now);
+
+            Import(folders, inner, position: 4);
+
+            var exception = Assert.Throws<InvalidOperationException>(
+                () => Import(folders, outer, position: 5, shownAfter: inner));
+
+            Assert.Contains("shown twice", exception.Message, StringComparison.Ordinal);
+            Assert.DoesNotContain("zorp", exception.Message, StringComparison.Ordinal);
+            AssertCounts(folders, conversations: 1, orders: 1);
+        }
+
+        [Fact]
+        public void Import_ShownAfter_AtAnEarlierPosition_IsRefused()
+        {
+            using var folders = new SyntheticExportFolders();
+            var inner = folders.CreateExport("20161209", Inner);
+            var outer = folders.CreateExport("20170906", Outer);
+            OlderExportsDatabase.Create(folders.OlderExportsPath, Now);
+
+            Import(folders, inner, position: 5);
+
+            var exception = Assert.Throws<InvalidOperationException>(
+                () => Import(folders, outer, position: 1, shownAfter: inner));
+
+            Assert.Contains("later position", exception.Message, StringComparison.Ordinal);
+            AssertCounts(folders, conversations: 1, orders: 1);
+        }
+
+        [Fact]
+        public void Import_ShownExportsOutOfTimelineOrder_IsRefused()
+        {
+            using var folders = new SyntheticExportFolders();
+            var later = folders.CreateExport(
+                "later",
+                "01/10/2017, 09:00 - Alex Example: x\n02/10/2017, 09:00 - Sam Sample: y");
+            var earlier = folders.CreateExport(
+                "earlier",
+                "01/10/2015, 09:00 - Alex Example: x\n02/10/2015, 09:00 - Sam Sample: y");
+            OlderExportsDatabase.Create(folders.OlderExportsPath, Now);
+
+            Import(folders, later, position: 1);
+
+            // No overlap, but position 2 would put 2015 after 2017.
+            var exception = Assert.Throws<InvalidOperationException>(() => Import(folders, earlier, position: 2));
+
+            Assert.Contains("1 pair(s)", exception.Message, StringComparison.Ordinal);
+            AssertCounts(folders, conversations: 1, orders: 1);
+
+            // Not shown, it has no shown period and takes no part in the order, so it is accepted.
+            Import(folders, earlier, position: 2, shown: false);
+            AssertCounts(folders, conversations: 2, orders: 2);
+        }
+
+        [Fact]
+        public void Import_PositionsFollowingTheTimeline_AreAccepted_IncludingTheCutMinute()
+        {
+            using var folders = new SyntheticExportFolders();
+            var first = folders.CreateExport(
+                "first",
+                "01/10/2015, 09:00 - Alex Example: x\n02/10/2015, 09:00 - Sam Sample: y");
+            var inner = folders.CreateExport("20161209", Inner);
+            var outer = folders.CreateExport("20170906", Outer);
+            OlderExportsDatabase.Create(folders.OlderExportsPath, Now);
+
+            Import(folders, inner, position: 4);
+            Import(folders, outer, position: 5, shownAfter: inner);
+
+            // Inserting an earlier export at an earlier position keeps the order.
+            Import(folders, first, position: 2);
+
+            AssertCounts(folders, conversations: 3, orders: 3);
+        }
+
+        [Fact]
+        public void Import_AnExportPlacedBetweenAnInnerAndItsCutOuter_IsRefusedWhenOutOfOrder()
+        {
+            using var folders = new SyntheticExportFolders();
+            var inner = folders.CreateExport("20161209", Inner);
+            var outer = folders.CreateExport("20170906", Outer);
+            var afterAll = folders.CreateExport(
+                "afterall",
+                "01/10/2017, 09:00 - Alex Example: x\n02/10/2017, 09:00 - Sam Sample: y");
+            OlderExportsDatabase.Create(folders.OlderExportsPath, Now);
+
+            Import(folders, inner, position: 4);
+            Import(folders, outer, position: 6, shownAfter: inner);
+
+            // Dated after both, but placed between them by position.
+            Assert.Throws<InvalidOperationException>(() => Import(folders, afterAll, position: 5));
+
+            Import(folders, afterAll, position: 7);
+            AssertCounts(folders, conversations: 3, orders: 3);
+        }
+
         private static OlderExportImportResult Import(
             SyntheticExportFolders folders,
             string folder,

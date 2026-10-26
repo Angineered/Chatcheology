@@ -38,7 +38,9 @@ namespace Chatcheology.Data.OlderExports
         /// The revised D2 cut: the inner export this one contains, already imported and shown.
         /// When set, this export must be shown, and it is shown only from the message after the
         /// one line that exactly matches the inner export's last message (see
-        /// <see cref="OlderExportCut"/>). Null for every export that is shown whole or not at all.
+        /// <see cref="OlderExportCut"/>). Its position must be later than the inner's, and no shown
+        /// line may exactly duplicate an inner line. Null for every export that is shown whole or
+        /// not at all.
         /// </summary>
         public OlderExportSource? ShownAfter { get; init; }
 

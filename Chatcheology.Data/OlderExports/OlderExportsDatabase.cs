@@ -40,11 +40,12 @@ namespace Chatcheology.Data.OlderExports
 
         /// <summary>The older-exports table layout this build creates and accepts.</summary>
         /// <remarks>
-        /// Version 2 adds <c>ExportOrder.ShownFromSequenceNumber</c> (the revised D2 cut). A
-        /// version-1 file is refused with a clear reason rather than migrated: it can only hold
-        /// imports made before the cut existed, and re-importing into a new file is the safe path.
+        /// Version 2 added <c>ExportOrder.ShownFromSequenceNumber</c> (the revised D2 cut);
+        /// version 3 adds <c>ExportOrder.ShownAfterConversationID</c>, the inner export a cut was
+        /// made after, so later imports can check the position order. An earlier file is refused
+        /// with a clear reason rather than migrated: re-importing into a new file is the safe path.
         /// </remarks>
-        internal const int MarkerFormatVersion = 2;
+        internal const int MarkerFormatVersion = 3;
 
         /// <summary>The tables this file adds to the workspace schema, in creation order.</summary>
         internal static readonly string[] AddedTableNames =
@@ -106,6 +107,7 @@ namespace Chatcheology.Data.OlderExports
                 Position                INTEGER NOT NULL,
                 Shown                   INTEGER NOT NULL,
                 ShownFromSequenceNumber INTEGER NULL,
+                ShownAfterConversationID INTEGER NULL,
 
                 UNIQUE (Position),
 
@@ -113,6 +115,10 @@ namespace Chatcheology.Data.OlderExports
                 CHECK (Shown IN (0, 1)),
                 CHECK (ShownFromSequenceNumber IS NULL OR ShownFromSequenceNumber > 0),
                 CHECK (Shown = 1 OR ShownFromSequenceNumber IS NULL),
+                CHECK ((ShownFromSequenceNumber IS NULL) = (ShownAfterConversationID IS NULL)),
+                CHECK (ShownAfterConversationID IS NULL OR ShownAfterConversationID <> ConversationID),
+
+                FOREIGN KEY (ShownAfterConversationID) REFERENCES Conversation (ConversationID),
 
                 FOREIGN KEY (ConversationID) REFERENCES Conversation (ConversationID)
             );
