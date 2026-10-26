@@ -151,6 +151,22 @@ namespace Chatcheology.Data.OlderExports
         }
 
         /// <summary>
+        /// The media candidates of another export's folder (the fallback folder): the names of the
+        /// files directly in it, compared ordinally, without its chat file.
+        /// </summary>
+        /// <remarks>
+        /// Every <c>.txt</c> file is left out. In an export folder that is exactly the chat file,
+        /// which is what <see cref="MediaFileNames"/> leaves out of an export's own folder; the
+        /// fallback folder is not required to be loadable as an export, so its <c>.txt</c> count
+        /// is not checked here.
+        /// </remarks>
+        internal static HashSet<string> ListFallbackMediaFileNames(string folderPath) =>
+            new(
+                ListFileNames(folderPath).Where(name => !string.Equals(
+                    Path.GetExtension(name), ChatFileExtension, StringComparison.OrdinalIgnoreCase)),
+                StringComparer.Ordinal);
+
+        /// <summary>
         /// The names of the files directly in <paramref name="folderPath"/>, as the file system
         /// spells them. Subfolders are not searched.
         /// </summary>

@@ -119,7 +119,7 @@ namespace Chatcheology.Data.OlderExports
             var media = new MediaWriter(connection, transaction, request.ImportedDateTimeUtc);
             var fallbackNames = fallbackFolder is null
                 ? null
-                : new HashSet<string>(OlderExportSource.ListFileNames(fallbackFolder), StringComparer.Ordinal);
+                : OlderExportSource.ListFallbackMediaFileNames(fallbackFolder);
 
             int fileAttached = 0, ownFolder = 0, fallback = 0, unresolved = 0, mediaOmitted = 0;
 
@@ -203,8 +203,16 @@ namespace Chatcheology.Data.OlderExports
             return senders;
         }
 
-        private static void ValidateRequest(OlderExportImportRequest request)
+        /// <summary>
+        /// Runs every check <see cref="Import"/> makes before it opens the database, without
+        /// opening anything, so a caller can refuse a request before creating the file.
+        /// </summary>
+        /// <exception cref="ArgumentNullException"><paramref name="request"/> is null.</exception>
+        /// <exception cref="ArgumentException">As for <see cref="Import"/>.</exception>
+        public static void ValidateRequest(OlderExportImportRequest request)
         {
+            ArgumentNullException.ThrowIfNull(request);
+
             ArgumentNullException.ThrowIfNull(request.Export, nameof(request.Export));
             ArgumentNullException.ThrowIfNull(request.Roles, nameof(request.Roles));
 

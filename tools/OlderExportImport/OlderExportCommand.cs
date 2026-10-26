@@ -1,6 +1,7 @@
 using System.Globalization;
 using Chatcheology.Core.Models;
 using Chatcheology.Data.OlderExports;
+using Microsoft.Data.Sqlite;
 
 namespace Chatcheology.Tools.OlderExportImport
 {
@@ -195,6 +196,26 @@ namespace Chatcheology.Tools.OlderExportImport
             var export = OlderExportSource.Load(parsed.ExportFolders[0]);
             var now = utcNow();
 
+            var request = new OlderExportImportRequest
+            {
+                Export = export,
+                Roles = new Dictionary<string, OlderExportRole>(StringComparer.Ordinal)
+                {
+                    [local] = OlderExportRole.Local,
+                    [other] = OlderExportRole.Other,
+                },
+                Position = position,
+                Shown = shown,
+                FallbackMediaFolder = parsed.FallbackFolder,
+                ImportedDateTimeUtc = now,
+            };
+
+            // Everything that can be refused without the file is refused before it is created,
+            // so a refused request never leaves an empty older-exports file behind.
+            OlderExportImporter.ValidateRequest(request);
+
+            var created = false;
+
             if (!File.Exists(databasePath))
             {
                 if (!parsed.Create)
@@ -205,24 +226,28 @@ namespace Chatcheology.Tools.OlderExportImport
                 }
 
                 OlderExportsDatabase.Create(databasePath, now);
-                output.WriteLine("Created the older-exports file.");
+                created = true;
             }
 
-            var result = new OlderExportImporter().Import(
-                databasePath,
-                new OlderExportImportRequest
-                {
-                    Export = export,
-                    Roles = new Dictionary<string, OlderExportRole>(StringComparer.Ordinal)
-                    {
-                        [local] = OlderExportRole.Local,
-                        [other] = OlderExportRole.Other,
-                    },
-                    Position = position,
-                    Shown = shown,
-                    FallbackMediaFolder = parsed.FallbackFolder,
-                    ImportedDateTimeUtc = now,
-                });
+            OlderExportImportResult result;
+
+            try
+            {
+                result = new OlderExportImporter().Import(databasePath, request);
+            }
+            catch when (created)
+            {
+                // The import rolled back, so the file this run created holds nothing but the
+                // schema. Removing it restores the folder to how it was found.
+                SqliteConnection.ClearAllPools();
+                File.Delete(databasePath);
+                throw;
+            }
+
+            if (created)
+            {
+                output.WriteLine("Created the older-exports file.");
+            }
 
             output.WriteLine("Imported.");
             output.WriteLine($"  Conversation: {result.ConversationID}");

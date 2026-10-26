@@ -166,6 +166,28 @@ namespace Chatcheology.Data.Tests.OlderExports
         }
 
         [Fact]
+        public void Import_ChatFilesAreNeverMediaCandidates_InEitherFolder()
+        {
+            using var folders = new SyntheticExportFolders();
+            var fallback = folders.CreateExport("20161209", "26/03/2016, 10:01 - Alex Example: x");
+            var superset = folders.CreateExport(
+                "20170906",
+                $"26/03/2016, 10:01 - Alex Example: {SyntheticExportFolders.ChatFileName} (file attached)\n" +
+                "26/03/2016, 10:02 - Sam Sample: y");
+            OlderExportsDatabase.Create(folders.OlderExportsPath, Now);
+
+            var result = Import(folders, superset, position: 5, shown: true, fallbackFolder: fallback);
+
+            Assert.Equal(1, result.FileAttachedAttachmentCount);
+            Assert.Equal(0, result.ResolvedInOwnFolderCount);
+            Assert.Equal(0, result.ResolvedInFallbackFolderCount);
+            Assert.Equal(1, result.UnresolvedFileAttachedCount);
+
+            using var connection = WorkspaceDatabase.OpenReadOnlyConnection(folders.OlderExportsPath);
+            Assert.Equal(0L, Scalar(connection, "SELECT COUNT(*) FROM MediaFile;"));
+        }
+
+        [Fact]
         public void Import_WithoutFallback_DoesNotLookInOtherFolders()
         {
             using var folders = new SyntheticExportFolders();

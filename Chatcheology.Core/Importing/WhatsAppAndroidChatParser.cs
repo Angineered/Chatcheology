@@ -17,7 +17,10 @@ namespace Chatcheology.Core.Importing
     /// rest of the file to that one layout, and fails clearly rather than guessing at anything
     /// else, so that source data is never silently misinterpreted. A header-shaped line of a
     /// different supported layout later in the same file stops the parse with its line number;
-    /// it is never read as continuation text and never as a message of its own.
+    /// it is never read as continuation text and never as a message of its own. A line that is
+    /// recognisably a header but not in an accepted format (a one-digit hour, <c>Sept</c>, a
+    /// one-digit day or month in a numeric layout) stops the parse in the same way, rather than
+    /// being absorbed into the previous message.
     /// <para>
     /// The three layouts cannot be confused with one another: <see cref="WhatsAppHeaderShape.TimeFirst"/>
     /// starts with <c>dd:</c>, <see cref="WhatsAppHeaderShape.YearFirst"/> with <c>dddd/</c> and
@@ -69,12 +72,6 @@ namespace Chatcheology.Core.Importing
         /// </summary>
         private const string TimeFirstTimestampFormat = "HH':'mm', 'd' 'MMM' 'yyyy";
 
-        /// <summary>Length of <c>yyyy/MM/dd, HH:mm</c> and of <c>dd/MM/yyyy, HH:mm</c>.</summary>
-        private const int FixedTimestampLength = 17;
-
-        /// <summary>Length of <c>HH:mm, </c>, the fixed start of the time-first layout.</summary>
-        private const int TimeFirstPrefixLength = 7;
-
         /// <summary>Separates the timestamp from the rest of the line.</summary>
         private const string HeaderSeparator = " - ";
 
@@ -85,10 +82,10 @@ namespace Chatcheology.Core.Importing
         /// LEFT-TO-RIGHT MARK. Written as an escape sequence because the character is invisible,
         /// so the value cannot be altered by the encoding this file is stored or checked out with.
         /// </summary>
-        private const char LeftToRightMark = '‎';
+        private const char LeftToRightMark = '\u200E';
 
         /// <summary>RIGHT-TO-LEFT MARK. Written as an escape sequence for the same reason.</summary>
-        private const char RightToLeftMark = '‏';
+        private const char RightToLeftMark = '\u200F';
 
         /// <summary>
         /// Reads every logical message from <paramref name="reader"/>, preserving source order.
@@ -145,8 +142,10 @@ namespace Chatcheology.Core.Importing
                 // original line is what gets kept in RawContent.
                 var workingLine = RemoveDirectionMarks(line);
 
-                if (TryMatchHeaderShape(workingLine, out var lineShape, out var timestampLength))
+                if (TryMatchHeaderShape(workingLine, out var match))
                 {
+                    var lineShape = match.Shape;
+
                     if (fileShape is null)
                     {
                         // Decided once, by the first header, and never revisited.
@@ -166,7 +165,7 @@ namespace Chatcheology.Core.Importing
                     // Header-shaped lines are held to the exact format, whether or not a message
                     // is already open. Degrading one to continuation text would silently absorb
                     // data that was probably meant to be a message of its own.
-                    var header = ReadHeader(workingLine, lineNumber, lineShape, timestampLength);
+                    var header = ReadHeader(workingLine, lineNumber, match);
 
                     if (pending is not null)
                     {
@@ -240,159 +239,252 @@ namespace Chatcheology.Core.Importing
 
         /// <summary>
         /// Tests whether a line begins with the header shape of one of the supported layouts, and
-        /// if so which one and how long its timestamp is. This is a shape test only;
+        /// if so which one, how long its timestamp is, and whether every field has exactly the
+        /// width the layout's accepted format requires. This is a shape test only;
         /// <see cref="ReadHeader"/> decides whether the shape is a valid header.
         /// </summary>
         /// <remarks>
+        /// The shapes are deliberately wider than the accepted formats: hours, minutes, days and
+        /// months may have one or two digits, and the time-first month may be any run of three or
+        /// more letters. A line that is recognisably a header but not an accepted one — a one-digit
+        /// hour, <c>Sept</c> for <c>Sep</c>, a one-digit day in a numeric layout — therefore reaches
+        /// <see cref="ReadHeader"/> and stops the parse with its line number, instead of being
+        /// absorbed as continuation text and credited to the previous message's sender. What is
+        /// accepted is unchanged: <see cref="TryParseTimestamp"/> requires the exact widths.
+        /// <para>
         /// Digits are matched as ASCII <c>'0'</c>–<c>'9'</c> rather than as any Unicode decimal
         /// digit, and month letters as ASCII letters, so the shape test agrees with what the
-        /// invariant timestamp parse accepts. The three shapes differ within their first five
-        /// characters, so at most one can match.
+        /// invariant timestamp parse accepts. The three shapes cannot both match one line: after
+        /// its first run of digits, a time-first header has <c>:</c>, a year-first header has
+        /// four digits then <c>/</c>, and a day-first header has one or two digits then <c>/</c>.
+        /// </para>
         /// </remarks>
-        private static bool TryMatchHeaderShape(
-            string line,
-            out WhatsAppHeaderShape shape,
-            out int timestampLength)
+        private static bool TryMatchHeaderShape(string line, out HeaderShapeMatch match)
         {
-            if (HasYearFirstShape(line))
+            if (TryMatchYearFirstShape(line, out match)
+                || TryMatchDayFirstShape(line, out match)
+                || TryMatchTimeFirstShape(line, out match))
             {
-                shape = WhatsAppHeaderShape.YearFirst;
-                timestampLength = FixedTimestampLength;
                 return true;
             }
 
-            if (HasDayFirstShape(line))
-            {
-                shape = WhatsAppHeaderShape.DayFirst;
-                timestampLength = FixedTimestampLength;
-                return true;
-            }
-
-            if (TryMatchTimeFirstShape(line, out timestampLength))
-            {
-                shape = WhatsAppHeaderShape.TimeFirst;
-                return true;
-            }
-
-            shape = default;
-            timestampLength = 0;
+            match = default;
             return false;
-        }
-
-        /// <summary>The fixed-width shape <c>dddd/dd/dd, dd:dd - </c>.</summary>
-        private static bool HasYearFirstShape(string line)
-        {
-            if (line.Length < FixedTimestampLength + HeaderSeparator.Length)
-            {
-                return false;
-            }
-
-            return IsAsciiDigits(line, 0, 4)                                 // yyyy
-                && line[4] == '/'
-                && IsAsciiDigits(line, 5, 2)                                 // MM
-                && line[7] == '/'
-                && IsAsciiDigits(line, 8, 2)                                 // dd
-                && line[10] == ','
-                && line[11] == ' '
-                && IsAsciiDigits(line, 12, 2)                                // HH
-                && line[14] == ':'
-                && IsAsciiDigits(line, 15, 2)                                // mm
-                && HasHeaderSeparatorAt(line, FixedTimestampLength);
-        }
-
-        /// <summary>The fixed-width shape <c>dd/dd/dddd, dd:dd - </c>.</summary>
-        private static bool HasDayFirstShape(string line)
-        {
-            if (line.Length < FixedTimestampLength + HeaderSeparator.Length)
-            {
-                return false;
-            }
-
-            return IsAsciiDigits(line, 0, 2)                                 // dd
-                && line[2] == '/'
-                && IsAsciiDigits(line, 3, 2)                                 // MM
-                && line[5] == '/'
-                && IsAsciiDigits(line, 6, 4)                                 // yyyy
-                && line[10] == ','
-                && line[11] == ' '
-                && IsAsciiDigits(line, 12, 2)                                // HH
-                && line[14] == ':'
-                && IsAsciiDigits(line, 15, 2)                                // mm
-                && HasHeaderSeparatorAt(line, FixedTimestampLength);
         }
 
         /// <summary>
-        /// The shape <c>dd:dd, d[d] LLL dddd - </c>, whose length depends on whether the day has
-        /// one digit or two.
+        /// The shape <c>dddd/d[d]/d[d], d[d]:d[d] - </c>. Exact when month, day, hour and minute
+        /// all have two digits.
         /// </summary>
-        private static bool TryMatchTimeFirstShape(string line, out int timestampLength)
+        private static bool TryMatchYearFirstShape(string line, out HeaderShapeMatch match)
         {
-            timestampLength = 0;
+            match = default;
+            var position = 0;
 
-            if (line.Length < TimeFirstPrefixLength
-                || !IsAsciiDigits(line, 0, 2)                                // HH
-                || line[2] != ':'
-                || !IsAsciiDigits(line, 3, 2)                                // mm
-                || line[5] != ','
-                || line[6] != ' ')
+            var year = ReadAsciiDigits(line, ref position, 4);
+            if (year != 4 || !ReadLiteral(line, ref position, "/"))
             {
                 return false;
             }
 
-            foreach (var dayDigits in (ReadOnlySpan<int>)[1, 2])
+            var month = ReadAsciiDigits(line, ref position, 2);
+            if (month == 0 || !ReadLiteral(line, ref position, "/"))
             {
-                var monthStart = TimeFirstPrefixLength + dayDigits + 1;
-                var yearStart = monthStart + 4;
-                var length = yearStart + 4;
-
-                if (line.Length < length + HeaderSeparator.Length)
-                {
-                    continue;
-                }
-
-                if (IsAsciiDigits(line, TimeFirstPrefixLength, dayDigits)    // d or dd
-                    && line[monthStart - 1] == ' '
-                    && IsAsciiLetters(line, monthStart, 3)                   // MMM
-                    && line[yearStart - 1] == ' '
-                    && IsAsciiDigits(line, yearStart, 4)                     // yyyy
-                    && HasHeaderSeparatorAt(line, length))
-                {
-                    timestampLength = length;
-                    return true;
-                }
+                return false;
             }
 
-            return false;
+            var day = ReadAsciiDigits(line, ref position, 2);
+            if (day == 0 || !ReadLiteral(line, ref position, ", "))
+            {
+                return false;
+            }
+
+            if (!TryReadTime(line, ref position, out var hour, out var minute))
+            {
+                return false;
+            }
+
+            return Complete(
+                line,
+                position,
+                WhatsAppHeaderShape.YearFirst,
+                exactWidths: month == 2 && day == 2 && hour == 2 && minute == 2,
+                out match);
         }
 
-        private static bool HasHeaderSeparatorAt(string line, int index) =>
-            string.CompareOrdinal(line, index, HeaderSeparator, 0, HeaderSeparator.Length) == 0;
-
-        private static bool IsAsciiDigits(string value, int start, int length)
+        /// <summary>
+        /// The shape <c>d[d]/d[d]/dddd, d[d]:d[d] - </c>. Exact when day, month, hour and minute
+        /// all have two digits.
+        /// </summary>
+        private static bool TryMatchDayFirstShape(string line, out HeaderShapeMatch match)
         {
-            for (var index = start; index < start + length; index++)
+            match = default;
+            var position = 0;
+
+            var day = ReadAsciiDigits(line, ref position, 2);
+            if (day == 0 || !ReadLiteral(line, ref position, "/"))
             {
-                if (!char.IsAsciiDigit(value[index]))
-                {
-                    return false;
-                }
+                return false;
             }
 
+            var month = ReadAsciiDigits(line, ref position, 2);
+            if (month == 0 || !ReadLiteral(line, ref position, "/"))
+            {
+                return false;
+            }
+
+            var year = ReadAsciiDigits(line, ref position, 4);
+            if (year != 4 || !ReadLiteral(line, ref position, ", "))
+            {
+                return false;
+            }
+
+            if (!TryReadTime(line, ref position, out var hour, out var minute))
+            {
+                return false;
+            }
+
+            return Complete(
+                line,
+                position,
+                WhatsAppHeaderShape.DayFirst,
+                exactWidths: day == 2 && month == 2 && hour == 2 && minute == 2,
+                out match);
+        }
+
+        /// <summary>
+        /// The shape <c>d[d]:d[d], d[d] LLL… dddd - </c>, with a month of three or more letters.
+        /// Exact when hour and minute have two digits and the month has three letters; the day
+        /// may have one or two digits in the accepted format too.
+        /// </summary>
+        private static bool TryMatchTimeFirstShape(string line, out HeaderShapeMatch match)
+        {
+            match = default;
+            var position = 0;
+
+            if (!TryReadTime(line, ref position, out var hour, out var minute)
+                || !ReadLiteral(line, ref position, ", "))
+            {
+                return false;
+            }
+
+            var day = ReadAsciiDigits(line, ref position, 2);
+            if (day == 0 || !ReadLiteral(line, ref position, " "))
+            {
+                return false;
+            }
+
+            var month = ReadAsciiLetters(line, ref position);
+            if (month < 3 || !ReadLiteral(line, ref position, " "))
+            {
+                return false;
+            }
+
+            var year = ReadAsciiDigits(line, ref position, 4);
+            if (year != 4)
+            {
+                return false;
+            }
+
+            return Complete(
+                line,
+                position,
+                WhatsAppHeaderShape.TimeFirst,
+                exactWidths: hour == 2 && minute == 2 && month == 3,
+                out match);
+        }
+
+        /// <summary>Reads <c>d[d]:d[d]</c>, reporting the width of each part.</summary>
+        private static bool TryReadTime(string line, ref int position, out int hour, out int minute)
+        {
+            minute = 0;
+            hour = ReadAsciiDigits(line, ref position, 2);
+
+            if (hour == 0 || !ReadLiteral(line, ref position, ":"))
+            {
+                return false;
+            }
+
+            minute = ReadAsciiDigits(line, ref position, 2);
+
+            return minute > 0;
+        }
+
+        /// <summary>
+        /// Requires the header separator right after the timestamp, which ends at
+        /// <paramref name="position"/>.
+        /// </summary>
+        private static bool Complete(
+            string line,
+            int position,
+            WhatsAppHeaderShape shape,
+            bool exactWidths,
+            out HeaderShapeMatch match)
+        {
+            if (line.Length < position + HeaderSeparator.Length
+                || string.CompareOrdinal(line, position, HeaderSeparator, 0, HeaderSeparator.Length) != 0)
+            {
+                match = default;
+                return false;
+            }
+
+            match = new HeaderShapeMatch(shape, position, exactWidths);
             return true;
         }
 
-        private static bool IsAsciiLetters(string value, int start, int length)
+        /// <summary>
+        /// Reads up to <paramref name="maximum"/> ASCII digits from <paramref name="position"/>,
+        /// advancing past them, and returns how many were read. A longer run leaves the next
+        /// character a digit, which the following literal then fails on.
+        /// </summary>
+        private static int ReadAsciiDigits(string line, ref int position, int maximum)
         {
-            for (var index = start; index < start + length; index++)
+            var start = position;
+
+            while (position < line.Length
+                && position - start < maximum
+                && char.IsAsciiDigit(line[position]))
             {
-                if (!char.IsAsciiLetter(value[index]))
-                {
-                    return false;
-                }
+                position++;
             }
 
+            return position - start;
+        }
+
+        /// <summary>Reads a run of ASCII letters and returns its length.</summary>
+        private static int ReadAsciiLetters(string line, ref int position)
+        {
+            var start = position;
+
+            while (position < line.Length && char.IsAsciiLetter(line[position]))
+            {
+                position++;
+            }
+
+            return position - start;
+        }
+
+        /// <summary>Consumes <paramref name="literal"/> at <paramref name="position"/> if it is there.</summary>
+        private static bool ReadLiteral(string line, ref int position, string literal)
+        {
+            if (line.Length < position + literal.Length
+                || string.CompareOrdinal(line, position, literal, 0, literal.Length) != 0)
+            {
+                return false;
+            }
+
+            position += literal.Length;
             return true;
         }
+
+        /// <summary>
+        /// A header-shaped line: its layout, the length of its timestamp, and whether every field
+        /// has the width the accepted format requires.
+        /// </summary>
+        private readonly record struct HeaderShapeMatch(
+            WhatsAppHeaderShape Shape,
+            int TimestampLength,
+            bool HasExactWidths);
 
         /// <summary>
         /// Reads a header-shaped line as a user or system message header, or throws if it does not
@@ -401,17 +493,16 @@ namespace Chatcheology.Core.Importing
         private static MessageHeader ReadHeader(
             string line,
             int lineNumber,
-            WhatsAppHeaderShape shape,
-            int timestampLength)
+            HeaderShapeMatch match)
         {
-            if (!TryParseTimestamp(line.Substring(0, timestampLength), shape, out var timestamp))
+            if (!TryParseTimestamp(line.Substring(0, match.TimestampLength), match, out var timestamp))
             {
                 throw new FormatException(
-                    $"Line {lineNumber}: the line has the {Describe(shape)} message header shape " +
-                    $"but the timestamp is not a valid '{FormatPattern(shape)}' value.");
+                    $"Line {lineNumber}: the line has the {Describe(match.Shape)} message header " +
+                    $"shape but the timestamp is not a valid '{FormatPattern(match.Shape)}' value.");
             }
 
-            var remainder = line.Substring(timestampLength + HeaderSeparator.Length);
+            var remainder = line.Substring(match.TimestampLength + HeaderSeparator.Length);
             var senderSeparatorIndex = remainder.IndexOf(SenderSeparator, StringComparison.Ordinal);
 
             if (senderSeparatorIndex < 0)
@@ -440,35 +531,44 @@ namespace Chatcheology.Core.Importing
         }
 
         /// <summary>
-        /// Parses a timestamp of the given layout with the invariant culture.
+        /// Parses a header-shaped timestamp with the invariant culture, accepting only the exact
+        /// format of its layout.
         /// </summary>
         /// <remarks>
-        /// For the time-first layout the month abbreviation is first required to be exactly one of
-        /// the invariant English abbreviations, compared ordinally, because the framework's own
-        /// month-name matching ignores case and would accept <c>jan</c> or <c>JAN</c>.
+        /// A shape match whose fields do not all have the accepted widths is refused before any
+        /// parse, so a widened shape never widens what is accepted. For the time-first layout the
+        /// month abbreviation is then required to be exactly one of the invariant English
+        /// abbreviations, compared ordinally, because the framework's own month-name matching
+        /// ignores case and would accept <c>jan</c> or <c>JAN</c>.
         /// </remarks>
         private static bool TryParseTimestamp(
             string timestampText,
-            WhatsAppHeaderShape shape,
+            HeaderShapeMatch match,
             out DateTime timestamp)
         {
-            if (shape == WhatsAppHeaderShape.TimeFirst)
+            timestamp = default;
+
+            if (!match.HasExactWidths)
             {
-                // The month token always occupies the three characters before " yyyy".
+                return false;
+            }
+
+            if (match.Shape == WhatsAppHeaderShape.TimeFirst)
+            {
+                // With exact widths, the month token occupies the three characters before " yyyy".
                 var month = timestampText.Substring(timestampText.Length - 8, 3);
 
                 if (Array.IndexOf(
                         CultureInfo.InvariantCulture.DateTimeFormat.AbbreviatedMonthNames,
                         month) < 0)
                 {
-                    timestamp = default;
                     return false;
                 }
             }
 
             return DateTime.TryParseExact(
                 timestampText,
-                shape switch
+                match.Shape switch
                 {
                     WhatsAppHeaderShape.TimeFirst => TimeFirstTimestampFormat,
                     WhatsAppHeaderShape.DayFirst => DayFirstTimestampFormat,

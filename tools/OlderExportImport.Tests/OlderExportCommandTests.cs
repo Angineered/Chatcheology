@@ -142,6 +142,32 @@ namespace Chatcheology.Tools.OlderExportImport.Tests
             Assert.Contains("Stopped", error, StringComparison.Ordinal);
             AssertNoSecrets(error);
             AssertNoSecrets(output);
+
+            // Refused before --create acted: no empty older-exports file is left behind.
+            Assert.False(File.Exists(Path.Combine(_root, "workspace", "older-exports.db")));
+            Assert.DoesNotContain("Created", output, StringComparison.Ordinal);
+        }
+
+        [Fact]
+        public void Import_WithCreate_FailingAfterCreation_RemovesTheNewFile()
+        {
+            string error;
+            int code;
+
+            // A media file held open exclusively makes the import fail after the file was created.
+            using (new FileStream(Path.Combine(Folder("olderzz"), "snapzz.jpg"), FileMode.Open, FileAccess.Read, FileShare.None))
+            {
+                (code, _, error) = Run(
+                    "import", Folder("olderzz"),
+                    "--workspace-folder", Path.Combine(_root, "workspace"),
+                    "--local", "Alex Example", "--other", "Sam Sample",
+                    "--position", "1", "--shown", "yes", "--create");
+            }
+
+            Assert.Equal(1, code);
+            Assert.Contains("rolled back", error, StringComparison.Ordinal);
+            AssertNoSecrets(error);
+            Assert.False(File.Exists(Path.Combine(_root, "workspace", "older-exports.db")));
         }
 
         [Fact]

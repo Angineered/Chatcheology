@@ -13,7 +13,7 @@ namespace Chatcheology.Core.Tests.Importing
     /// </remarks>
     public class WhatsAppAndroidChatParserOlderLayoutTests
     {
-        private const string LeftToRightMark = "‎";
+        private const string LeftToRightMark = "\u200E";
 
         [Fact]
         public void ShapeA_TwoDigitDay_ParsesTimestampSenderAndContent()
@@ -287,6 +287,57 @@ namespace Chatcheology.Core.Tests.Importing
 
             Assert.True(message.IsMediaPlaceholder);
             Assert.Null(message.AttachedFileName);
+        }
+
+        [Theory]
+        [InlineData("10:00, 3 Aug 2014 - Alex Example: x", "10:00, 3 Sept 2014 - Sam Sample: y")]
+        [InlineData("10:00, 3 Aug 2014 - Alex Example: x", "9:00, 4 Aug 2014 - Sam Sample: y")]
+        [InlineData("10:00, 3 Aug 2014 - Alex Example: x", "10:0, 4 Aug 2014 - Sam Sample: y")]
+        [InlineData("10:00, 3 Aug 2014 - Alex Example: x", "10:00, 4 August 2014 - Sam Sample: y")]
+        [InlineData("10/04/2015, 08:01 - Alex Example: x", "1/05/2015, 08:02 - Sam Sample: y")]
+        [InlineData("10/04/2015, 08:01 - Alex Example: x", "10/5/2015, 08:02 - Sam Sample: y")]
+        [InlineData("10/04/2015, 08:01 - Alex Example: x", "10/05/2015, 8:02 - Sam Sample: y")]
+        [InlineData("2026/01/05, 14:03 - Alex: x", "2026/1/05, 14:04 - Sam: y")]
+        [InlineData("2026/01/05, 14:03 - Alex: x", "2026/01/5, 14:04 - Sam: y")]
+        [InlineData("2026/01/05, 14:03 - Alex: x", "2026/01/05, 9:04 - Sam: y")]
+        public void NearMissHeader_StopsWithTheLineNumberInsteadOfBeingAbsorbed(string first, string second)
+        {
+            var exception = Assert.Throws<FormatException>(() => ParseExport($"{first}\n{second}"));
+
+            Assert.Contains("Line 2", exception.Message, StringComparison.Ordinal);
+            Assert.Contains("timestamp", exception.Message, StringComparison.Ordinal);
+            Assert.DoesNotContain("Sam", exception.Message, StringComparison.Ordinal);
+        }
+
+        [Theory]
+        [InlineData("9:00, 4 Aug 2014 - Sam Sample: y")]
+        [InlineData("1/05/2015, 08:02 - Sam Sample: y")]
+        [InlineData("2026/1/05, 14:04 - Sam: y")]
+        public void NearMissHeader_AsTheFirstLine_StopsAtLineOne(string line)
+        {
+            var exception = Assert.Throws<FormatException>(() => ParseExport(line));
+
+            Assert.Contains("Line 1", exception.Message, StringComparison.Ordinal);
+            Assert.Contains("timestamp", exception.Message, StringComparison.Ordinal);
+        }
+
+        [Theory]
+        [InlineData("08:01, 10 Apr 2015 - ")]
+        [InlineData("10/04/2015, 08:01 - ")]
+        [InlineData("2015/04/10, 08:01 - ")]
+        public void ContinuationLinesThatMerelyStartWithATimeOrDate_StayContinuation(string prefix)
+        {
+            var messages = ParseExport(
+                $"{prefix}Alex Example: when?\n" +
+                "10:00 works for me\n" +
+                "10:00, maybe 11 - or later\n" +
+                "10/04 - the day after\n" +
+                "3 Aug 2014 - a date on its own").Messages;
+
+            var message = Assert.Single(messages);
+            Assert.Equal(
+                "when?\n10:00 works for me\n10:00, maybe 11 - or later\n10/04 - the day after\n3 Aug 2014 - a date on its own",
+                message.MessageContent);
         }
 
         private static ParsedChatExport ParseExport(string text)

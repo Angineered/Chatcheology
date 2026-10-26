@@ -68,8 +68,7 @@ namespace Chatcheology.Data.OlderExports
                         "The fallback media folder does not exist. Nothing has been read.");
                 }
 
-                fallbackNames = new HashSet<string>(
-                    OlderExportSource.ListFileNames(fallbackFolder), StringComparer.Ordinal);
+                fallbackNames = OlderExportSource.ListFallbackMediaFileNames(fallbackFolder);
             }
 
             int present = 0, absent = 0, inFallback = 0;

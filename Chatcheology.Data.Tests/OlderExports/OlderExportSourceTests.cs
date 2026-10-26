@@ -133,6 +133,22 @@ namespace Chatcheology.Data.Tests.OlderExports
         }
 
         [Fact]
+        public void Summary_FallbackFolderChatFile_IsNotCountedAsMedia()
+        {
+            using var folders = new SyntheticExportFolders();
+            var fallback = folders.CreateExport("20161209", "10/04/2015, 08:01 - Alex Example: x");
+            var folder = folders.CreateExport(
+                "20170906",
+                $"10/04/2015, 08:01 - Alex Example: {SyntheticExportFolders.ChatFileName} (file attached)");
+
+            var summary = OlderExportSummary.From(OlderExportSource.Load(folder), fallback);
+
+            Assert.Equal(0, summary.FileAttachedPresentCount);
+            Assert.Equal(1, summary.FileAttachedAbsentCount);
+            Assert.Equal(0, summary.FileAttachedAbsentButInFallbackCount);
+        }
+
+        [Fact]
         public void CountBySender_ListsNamesWithCounts()
         {
             using var folders = new SyntheticExportFolders();
