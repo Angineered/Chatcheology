@@ -78,24 +78,22 @@ namespace Chatcheology.Tools.OlderExportImport
                 error.WriteLine($"Usage error: {exception.Message}");
                 return UsageError;
             }
-            catch (Exception exception) when (
-                exception is FormatException or InvalidOperationException or ArgumentException)
-            {
-                // These are the library's deliberate refusals, whose messages carry counts and
-                // reasons only.
-                error.WriteLine($"Stopped: {exception.Message}");
-                return Failed;
-            }
             catch (Exception exception)
             {
-                // Anything else may carry a path or other source detail in its message, so only
-                // its type is reported.
-                error.WriteLine(
-                    $"Stopped: {exception.GetType().Name} (details suppressed because they may " +
-                    $"contain a path).");
+                error.WriteLine($"Stopped: {DescribeStop(exception)}");
                 return Failed;
             }
         }
+
+        /// <summary>
+        /// The printable reason for a stop. The library's deliberate refusals carry counts and
+        /// reasons only, so their message is shown; anything else may carry a path or other source
+        /// detail, so only its type is.
+        /// </summary>
+        private static string DescribeStop(Exception exception) =>
+            exception is FormatException or InvalidOperationException or ArgumentException
+                ? exception.Message
+                : $"{exception.GetType().Name} (details suppressed because they may contain a path).";
 
         private static int RunDryRun(ParsedArguments parsed, TextWriter output)
         {
@@ -106,10 +104,26 @@ namespace Chatcheology.Tools.OlderExportImport
 
             output.WriteLine("Dry run: nothing is written.");
 
+            // One export that stops must not hide the others: each is reported on its own, and
+            // the exit code says whether anything stopped.
+            var anyStopped = false;
+
             for (var index = 0; index < parsed.ExportFolders.Count; index++)
             {
-                var export = OlderExportSource.Load(parsed.ExportFolders[index]);
-                var summary = OlderExportSummary.From(export, parsed.FallbackFolder);
+                OlderExportSummary summary;
+
+                try
+                {
+                    var export = OlderExportSource.Load(parsed.ExportFolders[index]);
+                    summary = OlderExportSummary.From(export, parsed.FallbackFolder);
+                }
+                catch (Exception exception)
+                {
+                    anyStopped = true;
+                    output.WriteLine();
+                    output.WriteLine($"Export {index + 1}: Stopped: {DescribeStop(exception)}");
+                    continue;
+                }
 
                 output.WriteLine();
                 output.WriteLine($"Export {index + 1}");
@@ -137,15 +151,29 @@ namespace Chatcheology.Tools.OlderExportImport
                 output.WriteLine($"  Media omitted: {summary.MediaOmittedCount}");
                 output.WriteLine($"  Distinct senders: {summary.DistinctSenderCount}");
                 output.WriteLine($"  Largest message, source lines: {summary.LargestMessageLineCount}");
+                output.WriteLine($"  Year supplied by rule: {summary.YearSuppliedByRuleCount}");
             }
 
             if (parsed.OverlapFolders is { } overlapFolders)
             {
-                var inner = OlderExportSource.Load(overlapFolders.Inner);
-                var outer = OlderExportSource.Load(overlapFolders.Outer);
-                var overlap = OlderExportOverlap.Analyse(inner.Messages, outer.Messages);
-
                 output.WriteLine();
+
+                OlderExportOverlapBreakdown overlap;
+
+                try
+                {
+                    var inner = LoadForOverlap(overlapFolders.Inner, "first");
+                    var outer = LoadForOverlap(overlapFolders.Outer, "second");
+                    overlap = OlderExportOverlap.Analyse(inner.Messages, outer.Messages);
+                }
+                catch (OverlapStoppedException exception)
+                {
+                    output.WriteLine(
+                        $"Overlap: Stopped ({exception.Which} --overlap export): " +
+                        $"{DescribeStop(exception.InnerException!)}");
+                    return Failed;
+                }
+
                 output.WriteLine(
                     $"Overlap: {overlap.NotFoundCount} of {overlap.InnerCount} lines of the first " +
                     $"--overlap export are not found exactly in the second.");
@@ -170,7 +198,27 @@ namespace Chatcheology.Tools.OlderExportImport
                     $"first's period are not found exactly in the first.");
             }
 
-            return Success;
+            return anyStopped ? Failed : Success;
+        }
+
+        /// <summary>Loads one of the two overlap exports, marking which one stopped.</summary>
+        private static OlderExportSource LoadForOverlap(string folder, string which)
+        {
+            try
+            {
+                return OlderExportSource.Load(folder);
+            }
+            catch (Exception exception)
+            {
+                throw new OverlapStoppedException(which, exception);
+            }
+        }
+
+        /// <summary>One of the overlap exports could not be read; carries which one.</summary>
+        private sealed class OverlapStoppedException(string which, Exception inner)
+            : Exception(null, inner)
+        {
+            internal string Which { get; } = which;
         }
 
         private static int RunSenders(ParsedArguments parsed, TextWriter output)

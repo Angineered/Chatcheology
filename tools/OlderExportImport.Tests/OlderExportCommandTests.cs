@@ -73,6 +73,7 @@ namespace Chatcheology.Tools.OlderExportImport.Tests
             Assert.Contains("Media omitted: 1", output, StringComparison.Ordinal);
             Assert.Contains("Distinct senders: 2", output, StringComparison.Ordinal);
             Assert.Contains("Largest message, source lines: 2", output, StringComparison.Ordinal);
+            Assert.Contains("Year supplied by rule: 0", output, StringComparison.Ordinal);
             Assert.Contains("Overlap: 5 of 5 lines", output, StringComparison.Ordinal);
             Assert.Contains("media omitted (same time and sender): 0", output, StringComparison.Ordinal);
             Assert.Contains("no line in the second with the same time and sender: 5", output, StringComparison.Ordinal);
@@ -81,7 +82,7 @@ namespace Chatcheology.Tools.OlderExportImport.Tests
         }
 
         [Fact]
-        public void DryRun_YearlessHeader_StopsWithTheLineNumberOnly()
+        public void DryRun_ReportsYearsSuppliedByTheRule()
         {
             CreateExport(
                 "yearlesszz",
@@ -89,11 +90,55 @@ namespace Chatcheology.Tools.OlderExportImport.Tests
 
             var (code, output, error) = Run(Folder("yearlesszz"));
 
+            Assert.Equal(0, code);
+            Assert.Equal(string.Empty, error);
+            Assert.Contains("Last: 2015-03-22 20:29", output, StringComparison.Ordinal);
+            Assert.Contains("Year supplied by rule: 1", output, StringComparison.Ordinal);
+            AssertNoSecrets(output);
+        }
+
+        [Fact]
+        public void DryRun_YearlessFirstHeader_StopsWithTheLineNumberOnly()
+        {
+            CreateExport("yearlesszz", "20:29, 22 Mar - Sam Sample: wibble");
+
+            var (code, output, _) = Run(Folder("yearlesszz"));
+
             Assert.Equal(1, code);
-            Assert.Contains("Line 2", error, StringComparison.Ordinal);
-            Assert.Contains("no year", error, StringComparison.Ordinal);
-            AssertNoSecrets(error);
-            Assert.DoesNotContain("yearlesszz", output + error, StringComparison.Ordinal);
+            Assert.Contains("Export 1: Stopped: Line 1", output, StringComparison.Ordinal);
+            Assert.Contains("no year", output, StringComparison.Ordinal);
+            AssertNoSecrets(output);
+            Assert.DoesNotContain("yearlesszz", output, StringComparison.Ordinal);
+        }
+
+        [Fact]
+        public void DryRun_AStoppedExport_DoesNotHideTheOthers()
+        {
+            CreateExport("mixedzz", "10/04/2015, 08:01 - Alex Example: a\n08:02, 10 Apr 2015 - Sam Sample: zorbly");
+
+            var (code, output, error) = Run(Folder("olderzz"), Folder("mixedzz"), Folder("supersetzz"));
+
+            Assert.Equal(1, code);
+            Assert.Equal(string.Empty, error);
+            Assert.Contains("Export 1\n", output.ReplaceLineEndings("\n"), StringComparison.Ordinal);
+            Assert.Contains("Export 2: Stopped: Line 2", output, StringComparison.Ordinal);
+            Assert.Contains("Export 3\n", output.ReplaceLineEndings("\n"), StringComparison.Ordinal);
+            Assert.Contains("Shape: B", output, StringComparison.Ordinal);
+            AssertNoSecrets(output);
+        }
+
+        [Fact]
+        public void DryRun_OverlapWithAStoppedExport_ReportsItsOwnStop()
+        {
+            CreateExport("mixedzz", "10/04/2015, 08:01 - Alex Example: a\n08:02, 10 Apr 2015 - Sam Sample: zorbly");
+
+            var (code, output, _) = Run(
+                Folder("olderzz"), "--overlap", Folder("supersetzz"), Folder("mixedzz"));
+
+            Assert.Equal(1, code);
+            Assert.Contains("Export 1\n", output.ReplaceLineEndings("\n"), StringComparison.Ordinal);
+            Assert.Contains("Overlap: Stopped (second --overlap export): Line 2", output, StringComparison.Ordinal);
+            AssertNoSecrets(output);
         }
 
         [Fact]
@@ -197,8 +242,9 @@ namespace Chatcheology.Tools.OlderExportImport.Tests
             Directory.CreateDirectory(empty);
             File.WriteAllText(Path.Combine(Folder("supersetzz"), "notes.txt"), "zorbly");
 
-            var (zeroCode, _, zeroError) = Run(empty);
-            var (twoCode, _, twoError) = Run(Folder("supersetzz"));
+            // Dry-run stops are reported per export in the output.
+            var (zeroCode, zeroError, _) = Run(empty);
+            var (twoCode, twoError, _) = Run(Folder("supersetzz"));
 
             Assert.Equal(1, zeroCode);
             Assert.Contains("0 .txt", zeroError, StringComparison.Ordinal);
@@ -212,9 +258,10 @@ namespace Chatcheology.Tools.OlderExportImport.Tests
         [Fact]
         public void MissingFolder_StopsWithoutThePath()
         {
-            var (code, _, error) = Run(Path.Combine(_root, "nowherezz"));
+            var (code, error, _) = Run(Path.Combine(_root, "nowherezz"));
 
             Assert.Equal(1, code);
+            Assert.Contains("Export 1: Stopped: DirectoryNotFoundException", error, StringComparison.Ordinal);
             Assert.DoesNotContain("nowherezz", error, StringComparison.Ordinal);
             Assert.DoesNotContain(_root, error, StringComparison.OrdinalIgnoreCase);
         }
@@ -233,11 +280,23 @@ namespace Chatcheology.Tools.OlderExportImport.Tests
         {
             CreateExport("mixedzz", "10/04/2015, 08:01 - Alex Example: a\n08:02, 10 Apr 2015 - Sam Sample: zorbly");
 
-            var (code, _, error) = Run(Folder("mixedzz"));
+            var (code, output, _) = Run(Folder("mixedzz"));
 
             Assert.Equal(1, code);
-            Assert.Contains("Line 2", error, StringComparison.Ordinal);
-            AssertNoSecrets(error);
+            Assert.Contains("Line 2", output, StringComparison.Ordinal);
+            AssertNoSecrets(output);
+
+            // Import keeps stopping as before, on the error stream.
+            var (importCode, _, importError) = Run(
+                "import", Folder("mixedzz"),
+                "--workspace-folder", Path.Combine(_root, "workspace"),
+                "--local", "Alex Example", "--other", "Sam Sample",
+                "--position", "1", "--shown", "yes", "--create");
+
+            Assert.Equal(1, importCode);
+            Assert.Contains("Stopped: Line 2", importError, StringComparison.Ordinal);
+            AssertNoSecrets(importError);
+            Assert.False(File.Exists(Path.Combine(_root, "workspace", "older-exports.db")));
         }
 
         private static void AssertNoSecrets(string text)

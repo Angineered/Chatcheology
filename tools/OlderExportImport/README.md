@@ -22,7 +22,13 @@ Run with `dotnet run --project tools\OlderExportImport\OlderExportImport.csproj 
 layout, first/last timestamp, messages per year, system lines, `(file attached)` lines with the
 file present/absent in the export's own folder, `<Media omitted>` lines, distinct sender count,
 and the largest number of source lines one message spans (a large value means header lines the
-parser did not recognise were absorbed as continuation text).
+parser did not recognise were absorbed as continuation text), and how many messages had their year
+supplied by the year rule (D6: a final run of shape A headers written without a year takes the
+year after the last dated header).
+
+An export that stops prints `Export N: Stopped: <reason>` and the others are still reported; the
+overlap section prints its own stop reason. The exit code is 1 if anything stopped. `import`
+stops on the first problem as before.
 
 ```
 dry-run <export-folder>... [--fallback-folder <folder>] [--overlap <inner-folder> <outer-folder>]

@@ -150,6 +150,23 @@ namespace Chatcheology.Data.Tests.OlderExports
         }
 
         [Fact]
+        public void LoadAndSummary_CarryTheYearSuppliedByRuleCount()
+        {
+            using var folders = new SyntheticExportFolders();
+            var folder = folders.CreateExport(
+                "20150422",
+                "07:18, 31 Dec 2014 - Alex Example: a\n20:29, 1 Jan - Sam Sample: b\n20:30, 22 Mar - Sam Sample: c");
+
+            var export = OlderExportSource.Load(folder);
+            var summary = OlderExportSummary.From(export);
+
+            Assert.Equal(2, export.YearSuppliedByRuleCount);
+            Assert.Equal(2, summary.YearSuppliedByRuleCount);
+            Assert.Equal(new DateTime(2015, 3, 22, 20, 30, 0), summary.Last);
+            Assert.Equal([new(2014, 1), new KeyValuePair<int, int>(2015, 2)], summary.MessagesPerYear);
+        }
+
+        [Fact]
         public void CountBySender_ListsNamesWithCounts()
         {
             using var folders = new SyntheticExportFolders();

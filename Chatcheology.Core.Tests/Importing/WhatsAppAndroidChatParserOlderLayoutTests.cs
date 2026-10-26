@@ -309,20 +309,115 @@ namespace Chatcheology.Core.Tests.Importing
             Assert.DoesNotContain("Sam", exception.Message, StringComparison.Ordinal);
         }
 
+        [Fact]
+        public void YearRule_YearlessRunAfterDatedHeaders_TakesTheNextYear()
+        {
+            var export = ParseExport(
+                """
+                09:00, 3 Jun 2013 - Alex Example: early
+                07:18, 31 Dec 2014 - Alex Example: x
+                more of x
+                20:29, 1 Jan - Sam Sample: y
+                20:29, 1 Jan - Messages to this chat are now secured.
+                08:05, 22 Mar - Alex Example: z
+                """);
+
+            Assert.Equal(WhatsAppHeaderShape.TimeFirst, export.Shape);
+            Assert.Equal(5, export.Messages.Count);
+            Assert.Equal(3, export.YearSuppliedByRuleCount);
+            Assert.Equal(new DateTime(2015, 1, 1, 20, 29, 0), export.Messages[2].MessageDateTime);
+            Assert.Equal(new DateTime(2015, 1, 1, 20, 29, 0), export.Messages[3].MessageDateTime);
+            Assert.Equal(MessageType.System, export.Messages[3].MessageType);
+            Assert.Equal(new DateTime(2015, 3, 22, 8, 5, 0), export.Messages[4].MessageDateTime);
+            Assert.Equal("Sam Sample", export.Messages[2].Sender);
+            Assert.Equal("y", export.Messages[2].MessageContent);
+            Assert.Equal("20:29, 1 Jan - Sam Sample: y", export.Messages[2].RawContent);
+            Assert.Equal("x\nmore of x", export.Messages[1].MessageContent);
+        }
+
+        [Fact]
+        public void YearRule_UsesTheLastDatedHeadersYear_NotTheLatest()
+        {
+            // Source order decides "last", even if an earlier header carried a later year.
+            var export = ParseExport(
+                "09:00, 3 Jun 2015 - Alex Example: a\n09:00, 3 Jun 2013 - Alex Example: b\n10:00, 4 Jun - Sam Sample: c");
+
+            Assert.Equal(new DateTime(2014, 6, 4, 10, 0, 0), export.Messages[2].MessageDateTime);
+        }
+
+        [Fact]
+        public void YearRule_DatedFilesReportZeroSupplied()
+        {
+            Assert.Equal(0, ParseExport("09:00, 3 Jun 2013 - Alex Example: a").YearSuppliedByRuleCount);
+            Assert.Equal(0, ParseExport("10/04/2015, 08:01 - Alex Example: a").YearSuppliedByRuleCount);
+        }
+
+        [Fact]
+        public void YearRule_DatedHeaderAfterAYearlessOne_Stops()
+        {
+            var exception = Assert.Throws<FormatException>(
+                () => ParseExport(
+                    "07:18, 31 Dec 2014 - Alex Example: x\n20:29, 1 Jan - Sam Sample: y\n20:30, 1 Jan 2015 - Sam Sample: z"));
+
+            Assert.Contains("Line 3", exception.Message, StringComparison.Ordinal);
+            Assert.Contains("dated header follows", exception.Message, StringComparison.Ordinal);
+            Assert.DoesNotContain("Sam", exception.Message, StringComparison.Ordinal);
+        }
+
+        [Fact]
+        public void YearRule_BackwardsStep_Stops()
+        {
+            var exception = Assert.Throws<FormatException>(
+                () => ParseExport(
+                    "07:18, 31 Dec 2014 - Alex Example: x\n20:29, 3 Feb - Sam Sample: y\n20:29, 2 Feb - Sam Sample: z"));
+
+            Assert.Contains("Line 3", exception.Message, StringComparison.Ordinal);
+            Assert.Contains("earlier than the one before it", exception.Message, StringComparison.Ordinal);
+        }
+
+        [Fact]
+        public void YearRule_EqualTimestamps_AreNotABackwardsStep()
+        {
+            var export = ParseExport(
+                "07:18, 31 Dec 2014 - Alex Example: x\n20:29, 3 Feb - Sam Sample: y\n20:29, 3 Feb - Sam Sample: z");
+
+            Assert.Equal(2, export.YearSuppliedByRuleCount);
+        }
+
+        [Fact]
+        public void YearRule_DateMissingFromTheSuppliedYear_Stops()
+        {
+            // 2014 + 1 = 2015, which has no 29 February.
+            var exception = Assert.Throws<FormatException>(
+                () => ParseExport("07:18, 31 Dec 2014 - Alex Example: x\n20:29, 29 Feb - Sam Sample: y"));
+
+            Assert.Contains("Line 2", exception.Message, StringComparison.Ordinal);
+            Assert.Contains("supplied year", exception.Message, StringComparison.Ordinal);
+        }
+
+        [Fact]
+        public void YearRule_LeapDayInALeapSuppliedYear_IsAccepted()
+        {
+            var export = ParseExport("07:18, 31 Dec 2015 - Alex Example: x\n20:29, 29 Feb - Sam Sample: y");
+
+            Assert.Equal(new DateTime(2016, 2, 29, 20, 29, 0), export.Messages[1].MessageDateTime);
+        }
+
         [Theory]
-        [InlineData("20:29, 22 Mar - Sam Sample: y")]
         [InlineData("9:05, 1 Jan - Sam Sample: y")]
+        [InlineData("20:5, 1 Jan - Sam Sample: y")]
         [InlineData("20:29, 22 March - Sam Sample: y")]
-        [InlineData("20:29, 22 Mar - Messages to this chat are now secured.")]
-        public void YearlessShapeA_AfterAFullHeader_StopsWithTheLineNumber(string second)
+        [InlineData("20:29, 22 mar - Sam Sample: y")]
+        [InlineData("20:29, 32 Mar - Sam Sample: y")]
+        [InlineData("20:29, 31 Apr - Sam Sample: y")]
+        public void YearRule_NearMissYearlessHeaders_StillStop(string second)
         {
             var exception = Assert.Throws<FormatException>(
                 () => ParseExport($"07:18, 31 Dec 2014 - Alex Example: x\nmore of x\n{second}"));
 
             Assert.Contains("Line 3", exception.Message, StringComparison.Ordinal);
-            Assert.Contains("no year", exception.Message, StringComparison.Ordinal);
+            Assert.Contains("not a valid", exception.Message, StringComparison.Ordinal);
             Assert.DoesNotContain("Sam", exception.Message, StringComparison.Ordinal);
-            Assert.DoesNotContain("secured", exception.Message, StringComparison.Ordinal);
         }
 
         [Fact]

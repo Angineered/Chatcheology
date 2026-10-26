@@ -17,5 +17,11 @@ namespace Chatcheology.Core.Models
 
         /// <summary>The logical messages in source order, numbered from 1.</summary>
         public required IReadOnlyList<ParsedMessage> Messages { get; init; }
+
+        /// <summary>
+        /// How many messages had their year supplied by the time-first year rule (D6) because
+        /// their header was written without one. Zero for every other layout.
+        /// </summary>
+        public int YearSuppliedByRuleCount { get; init; }
     }
 }

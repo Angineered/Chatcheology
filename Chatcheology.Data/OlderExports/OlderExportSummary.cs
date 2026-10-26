@@ -58,6 +58,9 @@ namespace Chatcheology.Data.OlderExports
         /// </remarks>
         public required int LargestMessageLineCount { get; init; }
 
+        /// <summary>Messages whose year was supplied by the time-first year rule.</summary>
+        public required int YearSuppliedByRuleCount { get; init; }
+
         /// <summary>
         /// Summarises <paramref name="export"/>. With <paramref name="fallbackFolder"/>, also
         /// counts the absent file names a file of exactly that name in that folder would resolve.
@@ -126,6 +129,7 @@ namespace Chatcheology.Data.OlderExports
                 LargestMessageLineCount = messages.Count == 0
                     ? 0
                     : messages.Max(message => message.SourceLineEnd - message.SourceLineStart + 1),
+                YearSuppliedByRuleCount = export.YearSuppliedByRuleCount,
             };
         }
 

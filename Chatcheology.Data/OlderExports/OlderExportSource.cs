@@ -47,6 +47,11 @@ namespace Chatcheology.Data.OlderExports
         public required IReadOnlyList<ParsedMessage> Messages { get; init; }
 
         /// <summary>
+        /// How many messages had their year supplied by the parser's time-first year rule.
+        /// </summary>
+        public required int YearSuppliedByRuleCount { get; init; }
+
+        /// <summary>
         /// The names of the other files directly in the folder (the chat file excluded), compared
         /// ordinally, so a lookup is exact and case-sensitive whatever the file system does.
         /// </summary>
@@ -128,6 +133,7 @@ namespace Chatcheology.Data.OlderExports
                 SHA256 = sha256,
                 Shape = parsed.Shape,
                 Messages = parsed.Messages,
+                YearSuppliedByRuleCount = parsed.YearSuppliedByRuleCount,
                 MediaFileNames = mediaFileNames,
             };
         }

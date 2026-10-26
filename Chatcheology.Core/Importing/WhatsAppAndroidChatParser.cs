@@ -19,8 +19,16 @@ namespace Chatcheology.Core.Importing
     /// different supported layout later in the same file stops the parse with its line number;
     /// it is never read as continuation text and never as a message of its own. A line that is
     /// recognisably a header but not in an accepted format (a one-digit hour, <c>Sept</c>, a
-    /// one-digit day or month in a numeric layout, a time-first header written without a year)
-    /// stops the parse in the same way, rather than being absorbed into the previous message.
+    /// one-digit day or month in a numeric layout) stops the parse in the same way, rather than
+    /// being absorbed into the previous message.
+    /// <para>
+    /// Time-first exports write their final year's headers without a year
+    /// (<c>HH:mm, d MMM - </c>). Such a header is accepted only under the approved year rule:
+    /// it takes the year after the last dated header, and only as part of one final, non-decreasing
+    /// run of yearless headers that follows at least one dated header. Every other case stops with
+    /// the line number. <see cref="ParsedChatExport.YearSuppliedByRuleCount"/> reports how many
+    /// messages were dated this way.
+    /// </para>
     /// <para>
     /// The three layouts cannot be confused with one another: <see cref="WhatsAppHeaderShape.TimeFirst"/>
     /// starts with <c>dd:</c>, <see cref="WhatsAppHeaderShape.YearFirst"/> with <c>dddd/</c> and
@@ -130,6 +138,7 @@ namespace Chatcheology.Core.Importing
             var messages = new List<ParsedMessage>();
             PendingMessage? pending = null;
             WhatsAppHeaderShape? fileShape = null;
+            var yearRule = new YearRule();
             var lineNumber = 0;
 
             string? line;
@@ -165,7 +174,7 @@ namespace Chatcheology.Core.Importing
                     // Header-shaped lines are held to the exact format, whether or not a message
                     // is already open. Degrading one to continuation text would silently absorb
                     // data that was probably meant to be a message of its own.
-                    var header = ReadHeader(workingLine, lineNumber, match);
+                    var header = ReadHeader(workingLine, lineNumber, match, yearRule);
 
                     if (pending is not null)
                     {
@@ -206,6 +215,7 @@ namespace Chatcheology.Core.Importing
             {
                 Shape = fileShape,
                 Messages = messages,
+                YearSuppliedByRuleCount = yearRule.SuppliedCount,
             };
         }
 
@@ -356,7 +366,8 @@ namespace Chatcheology.Core.Importing
         /// The shape <c>d[d]:d[d], d[d] LLL… dddd - </c>, with a month of three or more letters.
         /// Exact when hour and minute have two digits and the month has three letters; the day
         /// may have one or two digits in the accepted format too. The same shape with no year,
-        /// <c>d[d]:d[d], d[d] LLL… - </c>, is also matched, as a header that is never accepted.
+        /// <c>d[d]:d[d], d[d] LLL… - </c>, is also matched, with the same exact widths; whether
+        /// it is accepted is the year rule's decision.
         /// </summary>
         private static bool TryMatchTimeFirstShape(string line, out HeaderShapeMatch match)
         {
@@ -381,15 +392,17 @@ namespace Chatcheology.Core.Importing
                 return false;
             }
 
-            // Old exports appear to write current-year lines with no year at all
-            // ("HH:mm, d MMM - "). That is recognised as a header so that it stops the parse with
-            // its line number, but never accepted: which year it means is a rule still to be
-            // approved, and guessing it would date messages wrongly.
+            // Old exports write current-year lines with no year at all ("HH:mm, d MMM - "). The
+            // same widths are exact as for the dated form; whether a year can be supplied is the
+            // year rule's decision (see YearRule), not the shape test's.
             if (line.Length >= position + HeaderSeparator.Length
                 && string.CompareOrdinal(line, position, HeaderSeparator, 0, HeaderSeparator.Length) == 0)
             {
                 match = new HeaderShapeMatch(
-                    WhatsAppHeaderShape.TimeFirst, position, HasExactWidths: false, IsMissingYear: true);
+                    WhatsAppHeaderShape.TimeFirst,
+                    position,
+                    HasExactWidths: hour == 2 && minute == 2 && month == 3,
+                    IsMissingYear: true);
                 return true;
             }
 
@@ -513,21 +526,30 @@ namespace Chatcheology.Core.Importing
         private static MessageHeader ReadHeader(
             string line,
             int lineNumber,
-            HeaderShapeMatch match)
+            HeaderShapeMatch match,
+            YearRule yearRule)
         {
+            var timestampText = line.Substring(0, match.TimestampLength);
+
+            DateTime timestamp;
+
             if (match.IsMissingYear)
             {
-                throw new FormatException(
-                    $"Line {lineNumber}: the line has the {Describe(match.Shape)} message header " +
-                    $"shape but its timestamp has no year ('HH:mm, d MMM'). A header without a year " +
-                    $"is not accepted, because which year it means has not been decided.");
+                timestamp = yearRule.SupplyYear(timestampText, match, lineNumber);
             }
-
-            if (!TryParseTimestamp(line.Substring(0, match.TimestampLength), match, out var timestamp))
+            else
             {
-                throw new FormatException(
-                    $"Line {lineNumber}: the line has the {Describe(match.Shape)} message header " +
-                    $"shape but the timestamp is not a valid '{FormatPattern(match.Shape)}' value.");
+                if (!TryParseTimestamp(timestampText, match, out timestamp))
+                {
+                    throw new FormatException(
+                        $"Line {lineNumber}: the line has the {Describe(match.Shape)} message header " +
+                        $"shape but the timestamp is not a valid '{FormatPattern(match.Shape)}' value.");
+                }
+
+                if (match.Shape == WhatsAppHeaderShape.TimeFirst)
+                {
+                    yearRule.RecordDated(timestamp, lineNumber);
+                }
             }
 
             var remainder = line.Substring(match.TimestampLength + HeaderSeparator.Length);
@@ -622,6 +644,96 @@ namespace Chatcheology.Core.Importing
             WhatsAppHeaderShape.DayFirst => "dd/MM/yyyy, HH:mm",
             _ => "yyyy/MM/dd, HH:mm",
         };
+
+        /// <summary>
+        /// The approved year rule (D6) for time-first exports, which write headers in the
+        /// export's final year without a year: <c>HH:mm, d MMM - </c>.
+        /// </summary>
+        /// <remarks>
+        /// A yearless header is accepted, with the year after the year of the last dated header,
+        /// only when every condition holds; anything else stops the parse with the line number:
+        /// <list type="bullet">
+        /// <item>its fields have the accepted widths and an exact month abbreviation, as for the
+        /// dated form;</item>
+        /// <item>at least one dated header precedes it;</item>
+        /// <item>no dated header follows the first yearless one, so the yearless headers are one
+        /// final run;</item>
+        /// <item>yearless timestamps never step backwards in source order (a backwards step
+        /// would mean the run crosses a year end the rule cannot see);</item>
+        /// <item>the date exists in the supplied year (29 Feb in a non-leap year does not).</item>
+        /// </list>
+        /// Only the parsed timestamp carries the supplied year; <c>RawContent</c> keeps the line
+        /// as written.
+        /// </remarks>
+        private sealed class YearRule
+        {
+            /// <summary>A leap year, used only to check a yearless header's day and month.</summary>
+            private const int ValidationYear = 2000;
+
+            private int? _lastDatedYear;
+            private bool _yearlessStarted;
+            private DateTime? _lastYearlessTimestamp;
+
+            /// <summary>How many headers had their year supplied.</summary>
+            internal int SuppliedCount { get; private set; }
+
+            /// <summary>Records a dated time-first header, refusing one after a yearless run.</summary>
+            internal void RecordDated(DateTime timestamp, int lineNumber)
+            {
+                if (_yearlessStarted)
+                {
+                    throw new FormatException(
+                        $"Line {lineNumber}: a dated header follows a header written without a " +
+                        $"year. The year rule applies only to a final run of headers without a " +
+                        $"year, so the parse stops here.");
+                }
+
+                _lastDatedYear = timestamp.Year;
+            }
+
+            /// <summary>Returns the timestamp of a yearless header with its year supplied.</summary>
+            internal DateTime SupplyYear(string timestampText, HeaderShapeMatch match, int lineNumber)
+            {
+                if (!TryParseTimestamp(WithYear(timestampText, ValidationYear), match, out _))
+                {
+                    throw new FormatException(
+                        $"Line {lineNumber}: the line has the time-first (A) message header shape " +
+                        $"without a year, but the timestamp is not a valid 'HH:mm, d MMM' value.");
+                }
+
+                if (_lastDatedYear is not { } lastDatedYear)
+                {
+                    throw new FormatException(
+                        $"Line {lineNumber}: the line has the time-first (A) message header shape " +
+                        $"but its timestamp has no year ('HH:mm, d MMM'), and no dated header " +
+                        $"precedes it, so no year can be supplied.");
+                }
+
+                if (!TryParseTimestamp(WithYear(timestampText, lastDatedYear + 1), match, out var timestamp))
+                {
+                    throw new FormatException(
+                        $"Line {lineNumber}: the header without a year is not a valid date in the " +
+                        $"supplied year (the year after the last dated header).");
+                }
+
+                if (_lastYearlessTimestamp is { } previous && timestamp < previous)
+                {
+                    throw new FormatException(
+                        $"Line {lineNumber}: this header without a year is earlier than the one " +
+                        $"before it. The supplied year would date it wrongly, so the parse stops " +
+                        $"here.");
+                }
+
+                _yearlessStarted = true;
+                _lastYearlessTimestamp = timestamp;
+                SuppliedCount++;
+
+                return timestamp;
+            }
+
+            private static string WithYear(string timestampText, int year) =>
+                $"{timestampText} {year.ToString("D4", CultureInfo.InvariantCulture)}";
+        }
 
         private readonly record struct MessageHeader(
             DateTime Timestamp,
