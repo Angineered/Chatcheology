@@ -7,4 +7,6 @@
   <Project Path="Chatcheology.Data/Chatcheology.Data.csproj" />
   <Project Path="Chatcheology.Desktop.Tests/Chatcheology.Desktop.Tests.csproj" />
   <Project Path="Chatcheology.Desktop/Chatcheology.Desktop.csproj" />
+  <Project Path="tools/OlderExportImport.Tests/OlderExportImport.Tests.csproj" />
+  <Project Path="tools/OlderExportImport/OlderExportImport.csproj" />
 </Solution>

@@ -108,5 +108,58 @@ namespace Chatcheology.Core.Models
         /// </remarks>
         public bool IsMediaPlaceholder =>
             string.Equals(MessageContent, MediaPlaceholderContent, StringComparison.Ordinal);
+
+        /// <summary>
+        /// The exact suffix that marks the first content line of a user message as naming an
+        /// attached file, in the older export layouts: <c>NAME (file attached)</c>.
+        /// </summary>
+        public const string FileAttachedSuffix = " (file attached)";
+
+        /// <summary>
+        /// The file name a <see cref="MessageType.User"/> message says was attached, or null when
+        /// it says no such thing.
+        /// </summary>
+        /// <remarks>
+        /// Set only when the first line of <see cref="MessageContent"/> ends with
+        /// <see cref="FileAttachedSuffix"/>, compared ordinally, and the text before the suffix is
+        /// a usable file name: not empty, not whitespace only, and free of <c>/</c> and <c>\</c>.
+        /// Anything else is not a media line and stays ordinary text. The name is the text before
+        /// the suffix exactly as written (direction marks already removed, nothing trimmed).
+        /// <para>
+        /// Any following lines are a caption and stay part of <see cref="MessageContent"/>, which,
+        /// like <see cref="RawContent"/>, is not altered by this property. Computed, so it cannot
+        /// drift from the content. Nothing here checks whether such a file exists; that is the
+        /// importer's question, answered by exact name only.
+        /// </para>
+        /// </remarks>
+        public string? AttachedFileName
+        {
+            get
+            {
+                if (MessageType != MessageType.User)
+                {
+                    return null;
+                }
+
+                var separatorIndex = MessageContent.IndexOf(LineSeparator, StringComparison.Ordinal);
+                var firstLine = separatorIndex < 0
+                    ? MessageContent
+                    : MessageContent.Substring(0, separatorIndex);
+
+                if (!firstLine.EndsWith(FileAttachedSuffix, StringComparison.Ordinal))
+                {
+                    return null;
+                }
+
+                var name = firstLine.Substring(0, firstLine.Length - FileAttachedSuffix.Length);
+
+                if (string.IsNullOrWhiteSpace(name) || name.AsSpan().IndexOfAny('/', '\\') >= 0)
+                {
+                    return null;
+                }
+
+                return name;
+            }
+        }
     }
 }
