@@ -26,6 +26,11 @@ namespace Chatcheology.Data.ArchiveExport
     /// <para><strong>Media.</strong> One file per distinct payload. The recorded copies are tried in
     /// the location reader's order; the first whose bytes, hashed while copying, equal the recorded
     /// SHA-256 is kept. A restored attachment with no good copy stops the export.</para>
+    /// <para><strong>Format version 2.</strong> The older-exports file and the memories file beside the
+    /// workspace (fixed names; absent means none) are read with it through
+    /// <see cref="ArchiveCombinedSource"/>: older messages first in one timeline, exact-name older files
+    /// copied and checked against their recorded SHA-256, and the memory tables with entry images. The
+    /// expected counts stay the workspace conversation's.</para>
     /// <para><strong>Deterministic.</strong> The same workspace gives the same rows and the same
     /// media bytes; only the creation time differs. It prints nothing; progress goes to the callback.</para>
     /// </remarks>

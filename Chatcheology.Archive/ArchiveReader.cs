@@ -23,6 +23,9 @@ namespace Chatcheology.Archive
     /// text where a number belongs or a number too large for its field. Such a value is refused with
     /// <see cref="ArchiveFormatException"/>, never converted, truncated or thrown as a cast or
     /// overflow error.</para>
+    /// <para><strong>Versions 1 and 2.</strong> A version 1 archive reads as version 2 with every
+    /// message's source <see cref="ArchiveMessageSource.Workspace"/>, no export periods and no
+    /// memories.</para>
     /// <para>This reader opens archive files only; it does not check them against
     /// <see cref="ArchiveFormat.ContentsFileName"/>. <see cref="ArchiveContents.Check"/> does that.</para>
     /// </remarks>

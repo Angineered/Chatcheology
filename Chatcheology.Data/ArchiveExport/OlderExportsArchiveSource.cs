@@ -402,7 +402,7 @@ namespace Chatcheology.Data.ArchiveExport
             if (!DateTime.TryParse(
                     text,
                     CultureInfo.InvariantCulture,
-                    DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal | DateTimeStyles.RoundtripKind,
+                    DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal,
                     out var value))
             {
                 throw new ArchiveExportRefusedException(
