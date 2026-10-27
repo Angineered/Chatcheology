@@ -7,7 +7,7 @@
         xmlns:vm="clr-namespace:Chatcheology.Desktop.ViewModels"
         xmlns:controls="clr-namespace:Chatcheology.Desktop.Controls"
         mc:Ignorable="d"
-        Title="Chatcheology" Height="720" Width="1000"
+        Title="Chatcheology" Icon="Resources/app.ico" Height="720" Width="1000"
         Background="#FFF4F2EE">
 
     <Window.Resources>
