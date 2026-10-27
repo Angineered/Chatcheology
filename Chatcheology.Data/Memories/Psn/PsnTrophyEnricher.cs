@@ -133,6 +133,23 @@ namespace Chatcheology.Data.Memories.Psn
                 }
             }
 
+            // Stored definitions the file does not mention: an item re-imported since may now have
+            // another type, and a wrong definition must not stay.
+            var inFile = definitions.Definitions.Select(d => (d.SetId, d.ItemId)).ToHashSet();
+
+            foreach (var (key, existing) in stored)
+            {
+                if (!inFile.Contains(key)
+                    && itemTypes.TryGetValue(key, out var types)
+                    && types.Any(type => !string.Equals(type, existing.ItemType, StringComparison.OrdinalIgnoreCase)))
+                {
+                    mismatched.Add(key);
+                    actions.Add((WriteKind.Remove,
+                        new PsnTrophyDefinition(key.Item1, key.Item2, existing.ItemType, null, null, null, null, null)));
+                    removed++;
+                }
+            }
+
             // Definitions stored after the run: what was there, less removals, plus the file's matching ones.
             var after = stored.Keys.Where(key => !mismatched.Contains(key)).ToHashSet();
             after.UnionWith(definitions.Definitions.Select(d => (d.SetId, d.ItemId)).Where(key => !mismatched.Contains(key)));

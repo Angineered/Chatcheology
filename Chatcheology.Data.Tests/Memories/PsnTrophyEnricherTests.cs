@@ -181,6 +181,41 @@ namespace Chatcheology.Data.Tests.Memories
         }
 
         [Fact]
+        public void StoredDefinitionNotInTheFile_ThatNowMismatchesAReImportedItem_IsRemovedAndCounted()
+        {
+            using var folder = new MemoriesTestFolder();
+            var path = ImportStandard(folder);
+            PsnTrophyEnricher.Enrich(path, Definitions());
+
+            // Re-import with the Racer local item (set NPWR88888_00, trophy 5) now gold.
+            var psn = Standard();
+            psn.Events[1].Local[0] = psn.Events[1].Local[0] with { Type = "gold" };
+            Assert.Equal(1, new PsnImporter().Import(path, PsnSharedActivityReader.Parse(psn.ToBytes(), LocalPrefix, OtherPrefix, psn.PairAPrefix)).Updated);
+
+            // The next definitions file does not carry the Racer set at all.
+            var file = SyntheticTrophyDefinitions.Standard();
+            file.Sets.RemoveAt(1);
+
+            var dry = PsnTrophyEnricher.DryRun(path, Definitions(file));
+            var result = PsnTrophyEnricher.Enrich(path, Definitions(file));
+
+            Assert.Equal(dry, result);
+            Assert.Equal(1, result.RemovedForMismatch);
+            Assert.Equal(1, result.TypeMismatches);
+            Assert.Equal(1, result.ItemsTypeMismatch);
+            Assert.Equal(4, result.ItemsWithDefinition);
+            Assert.Equal(1, result.ItemsWithoutDefinition);
+            Assert.Equal(1, result.Changes);
+            Assert.Equal(0, folder.Scalar("SELECT COUNT(*) FROM ItemDefinition WHERE SetId = 'NPWR88888_00';"));
+
+            var again = PsnTrophyEnricher.Enrich(path, Definitions(file));
+
+            Assert.Equal(0, again.Changes);
+            Assert.Equal(0, again.ItemsTypeMismatch);
+            Assert.Equal(2, again.ItemsWithoutDefinition);
+        }
+
+        [Fact]
         public void ItemsWithoutADefinition_AreCounted()
         {
             using var folder = new MemoriesTestFolder();

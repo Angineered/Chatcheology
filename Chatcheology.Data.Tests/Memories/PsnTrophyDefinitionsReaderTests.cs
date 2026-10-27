@@ -168,7 +168,20 @@ namespace Chatcheology.Data.Tests.Memories
         }
 
         [Fact]
-        public void TwoFieldsDifferingOnlyByCase_Stop() =>
-            Refused(root => Trophy(root, 0, 0)["TrophyName"] = "Invented copy");
+        public void TwoFieldsDifferingOnlyByCase_StopWithTheSetAndTrophyIndex()
+        {
+            var exception = Refused(root => Trophy(root, 0, 1)["TrophyName"] = "Invented copy");
+
+            Assert.StartsWith("Set at index 0, trophy at index 1", exception.Message, StringComparison.Ordinal);
+            Assert.Contains("differ only by case", exception.Message, StringComparison.Ordinal);
+        }
+
+        [Fact]
+        public void TwoSetFieldsDifferingOnlyByCase_StopWithTheSetIndex()
+        {
+            var exception = Refused(root => root["sets"]![1]!["NPCommunicationId"] = "NPWR11111_00");
+
+            Assert.StartsWith("Set at index 1", exception.Message, StringComparison.Ordinal);
+        }
     }
 }

@@ -87,19 +87,19 @@ namespace Chatcheology.Data.Memories.Psn
                 var root = document.RootElement;
 
                 if (root.ValueKind != JsonValueKind.Object
-                    || !TryGet(root, "format", out var format)
+                    || !TryGet(root, "format", "The file root", out var format)
                     || format.ValueKind != JsonValueKind.String
                     || !string.Equals(format.GetString(), Format, StringComparison.Ordinal))
                 {
                     throw new FormatException($"The file is not format {Format}; no other format is accepted.");
                 }
 
-                if (!TryGet(root, "fetchedUtc", out var fetched) || fetched.ValueKind != JsonValueKind.String)
+                if (!TryGet(root, "fetchedUtc", "The file root", out var fetched) || fetched.ValueKind != JsonValueKind.String)
                 {
                     throw new FormatException("The file has no fetchedUtc text.");
                 }
 
-                if (!TryGet(root, "sets", out var sets) || sets.ValueKind != JsonValueKind.Array)
+                if (!TryGet(root, "sets", "The file root", out var sets) || sets.ValueKind != JsonValueKind.Array)
                 {
                     throw new FormatException("The file has no sets array.");
                 }
@@ -126,7 +126,7 @@ namespace Chatcheology.Data.Memories.Psn
                         throw new FormatException($"{where} repeats an earlier set.");
                     }
 
-                    if (!TryGet(set, "trophies", out var trophies) || trophies.ValueKind != JsonValueKind.Array)
+                    if (!TryGet(set, "trophies", where, out var trophies) || trophies.ValueKind != JsonValueKind.Array)
                     {
                         throw new FormatException($"{where} has no trophies array.");
                     }
@@ -172,7 +172,7 @@ namespace Chatcheology.Data.Memories.Psn
 
         private static string RequireId(JsonElement element, string at)
         {
-            if (TryGet(element, "trophyId", out var value)
+            if (TryGet(element, "trophyId", at, out var value)
                 && value.ValueKind == JsonValueKind.Number
                 && value.TryGetInt64(out var number)
                 && number >= 0)
@@ -185,7 +185,7 @@ namespace Chatcheology.Data.Memories.Psn
 
         private static string RequireText(JsonElement element, string name, string at)
         {
-            if (TryGet(element, name, out var value)
+            if (TryGet(element, name, at, out var value)
                 && value.ValueKind == JsonValueKind.String
                 && !string.IsNullOrWhiteSpace(value.GetString()))
             {
@@ -197,7 +197,7 @@ namespace Chatcheology.Data.Memories.Psn
 
         private static string? OptionalText(JsonElement element, string name, string at)
         {
-            if (!TryGet(element, name, out var value))
+            if (!TryGet(element, name, at, out var value))
             {
                 throw new FormatException($"{at} has no {name} field (null is allowed, a missing field is not).");
             }
@@ -212,7 +212,7 @@ namespace Chatcheology.Data.Memories.Psn
 
         private static bool? OptionalBool(JsonElement element, string name, string at)
         {
-            if (!TryGet(element, name, out var value))
+            if (!TryGet(element, name, at, out var value))
             {
                 throw new FormatException($"{at} has no {name} field (null is allowed, a missing field is not).");
             }
@@ -227,7 +227,7 @@ namespace Chatcheology.Data.Memories.Psn
         }
 
         /// <summary>Case-insensitive property lookup; two properties differing only by case are refused.</summary>
-        private static bool TryGet(JsonElement element, string name, out JsonElement value)
+        private static bool TryGet(JsonElement element, string name, string at, out JsonElement value)
         {
             var found = false;
             value = default;
@@ -238,7 +238,7 @@ namespace Chatcheology.Data.Memories.Psn
                 {
                     if (found)
                     {
-                        throw new FormatException("The file has two fields whose names differ only by case.");
+                        throw new FormatException($"{at} has two fields whose names differ only by case.");
                     }
 
                     value = property.Value;
