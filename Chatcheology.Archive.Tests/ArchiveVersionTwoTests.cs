@@ -18,6 +18,10 @@ namespace Chatcheology.Archive.Tests
 
         private static string ImageSha => ArchiveHashing.Hex(SHA256.HashData(ImageBytes));
 
+        private static readonly byte[] IconBytes = Encoding.ASCII.GetBytes("synthetic trophy icon");
+
+        private static string IconSha => ArchiveHashing.Hex(SHA256.HashData(IconBytes));
+
         // ---------------------------------------------------------------------------------------
         // Version 1.
         // ---------------------------------------------------------------------------------------
@@ -81,6 +85,7 @@ namespace Chatcheology.Archive.Tests
             Assert.Equal(2, counts.WorkspaceMessages);
             Assert.Equal(1, counts.ExportPeriods);
             Assert.Equal(2, counts.EntryLinks);
+            Assert.Equal(2, counts.ItemDefinitions);
             Assert.Equal(
                 [new ArchiveCollectionCounts(1, 1, 2, 3), new ArchiveCollectionCounts(2, 1, 0, 0)],
                 counts.Collections);
@@ -134,6 +139,106 @@ namespace Chatcheology.Archive.Tests
             Assert.Equal(10L, links[0].ToEntryID);
             Assert.Equal(3, links[1].ToMessageSequenceNumber);
             Assert.Equal(2, reader.ReadAllLinks().Count);
+        }
+
+        [Fact]
+        public void ItemDefinitions_RoundTrip_WithTheirIcons_ForAnEntrysItemsOnly()
+        {
+            WriteMemoryArchive(_folder.Path);
+
+            var result = ArchiveValidator.Validate(_folder.Path);
+            Assert.True(result.Passed, string.Join(", ", result.FirstProblems));
+
+            using var reader = ArchiveReader.Open(_folder.Path);
+
+            var definitions = reader.ReadItemDefinitions(10);
+            Assert.Equal([("setA", "1"), ("setB", "2")], definitions.Select(d => (d.SetId, d.ItemId)));
+
+            var named = definitions[0];
+            Assert.Equal("Invented First Steps", named.Name);
+            Assert.Equal("Reach the invented first door.", named.Detail);
+            Assert.True(named.Hidden);
+            Assert.Equal("default", named.GroupId);
+            Assert.Equal(IconSha, named.IconSha256);
+            Assert.Equal("media/" + IconSha + ".png", named.IconRelativePath);
+            Assert.True(File.Exists(reader.IconFullPath(named)));
+            Assert.Equal("Image", reader.ReadMediaOf(IconSha)!.MediaType);
+
+            // A definition without a name or icon is carried as it is.
+            Assert.Null(definitions[1].Name);
+            Assert.Null(definitions[1].IconRelativePath);
+            Assert.Null(reader.IconFullPath(definitions[1]));
+
+            // Item 3 (setB, "3") has no definition; the personal entry has no items.
+            Assert.Empty(reader.ReadItemDefinitions(20));
+            Assert.Equal(2, reader.ReadAllItemDefinitions().Count);
+        }
+
+        [Fact]
+        public void AnItemIconWhoseFileIsGoneOrDifferent_FailsMedia()
+        {
+            WriteMemoryArchive(_folder.Path);
+            var icon = Path.Combine(_folder.Path, "media", IconSha + ".png");
+            File.WriteAllBytes(icon, Encoding.ASCII.GetBytes("altered"));
+
+            Assert.Equal(1, ArchiveValidator.Validate(_folder.Path).ProblemCounts[ArchiveProblemKind.ItemIconFileDiffers]);
+
+            File.Delete(icon);
+            var result = ArchiveValidator.Validate(_folder.Path);
+
+            Assert.Equal(1, result.ProblemCounts[ArchiveProblemKind.ItemIconFileMissing]);
+            Assert.False(result.Checks.Single(c => c.Check == ArchiveCheck.Media).Passed);
+        }
+
+        [Fact]
+        public void AnUnusedItemDefinition_IsFound_AndTheWriterRefusesOne()
+        {
+            WriteMemoryArchive(_folder.Path);
+            ArchiveSample.Tamper(_folder.Path, "INSERT INTO ItemDefinition (SetId, ItemId, ItemType) VALUES ('setZ', '99', 'gold');");
+
+            var result = ArchiveValidator.Validate(_folder.Path);
+
+            Assert.Equal(1, result.ProblemCounts[ArchiveProblemKind.ItemDefinitionUnused]);
+            Assert.Equal(1, result.ProblemCounts[ArchiveProblemKind.ManifestCountDiffers]);
+            Assert.False(result.Checks.Single(c => c.Check == ArchiveCheck.LinksAndBasis).Passed);
+
+            var database = Path.Combine(_folder.Path, "second.db");
+
+            using var writer = Begin(database);
+            writer.WriteItemDefinition(new ArchiveItemDefinition
+            {
+                SetId = "setZ",
+                ItemId = "99",
+                ItemType = "gold",
+                Name = null,
+                Detail = null,
+                Hidden = null,
+                GroupId = null,
+                IconSha256 = null,
+                IconExtension = null,
+            });
+
+            var refusal = Assert.Throws<InvalidOperationException>(() => writer.Complete());
+            Assert.Contains("item definitions", refusal.Message, StringComparison.Ordinal);
+        }
+
+        [Fact]
+        public void TheWriter_RefusesAnIconWithoutAnExtension()
+        {
+            using var writer = Begin(Path.Combine(_folder.Path, ArchiveFormat.DatabaseFileName));
+
+            Assert.Throws<InvalidOperationException>(() => writer.WriteItemDefinition(new ArchiveItemDefinition
+            {
+                SetId = "setA",
+                ItemId = "1",
+                ItemType = "bronze",
+                Name = null,
+                Detail = null,
+                Hidden = null,
+                GroupId = null,
+                IconSha256 = IconSha,
+                IconExtension = null,
+            }));
         }
 
         [Fact]
@@ -400,12 +505,49 @@ namespace Chatcheology.Archive.Tests
                 writer.WriteEntryLink(new ArchiveEntryLink { EntryLinkID = 1, FromEntryID = 20, ToEntryID = 10, ToMessageSequenceNumber = null });
                 writer.WriteEntryLink(new ArchiveEntryLink { EntryLinkID = 2, FromEntryID = 20, ToEntryID = null, ToMessageSequenceNumber = 3 });
 
+                writer.WriteMedia(new ArchiveMedia
+                {
+                    Sha256 = IconSha,
+                    MediaType = "Image",
+                    SizeBytes = IconBytes.Length,
+                    DurationMS = null,
+                    Width = null,
+                    Height = null,
+                });
+
+                writer.WriteItemDefinition(new ArchiveItemDefinition
+                {
+                    SetId = "setA",
+                    ItemId = "1",
+                    ItemType = "bronze",
+                    Name = "Invented First Steps",
+                    Detail = "Reach the invented first door.",
+                    Hidden = true,
+                    GroupId = "default",
+                    IconSha256 = IconSha,
+                    IconExtension = ".png",
+                });
+
+                writer.WriteItemDefinition(new ArchiveItemDefinition
+                {
+                    SetId = "setB",
+                    ItemId = "2",
+                    ItemType = "bronze",
+                    Name = null,
+                    Detail = null,
+                    Hidden = null,
+                    GroupId = null,
+                    IconSha256 = null,
+                    IconExtension = null,
+                });
+
                 counts = writer.Complete();
             }
 
             var media = Path.Combine(folder, ArchiveFormat.MediaFolderName);
             Directory.CreateDirectory(media);
             File.WriteAllBytes(Path.Combine(media, ImageSha + ".png"), ImageBytes);
+            File.WriteAllBytes(Path.Combine(media, IconSha + ".png"), IconBytes);
 
             File.WriteAllBytes(
                 Path.Combine(folder, ArchiveFormat.ManifestFileName),

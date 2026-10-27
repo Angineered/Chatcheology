@@ -25,7 +25,7 @@ namespace Chatcheology.Archive.Tests
                 Database, "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name;");
 
             Assert.Equal(ArchiveFormat.TableNamesOf(ArchiveFormat.FormatVersion).Order(StringComparer.Ordinal), tables);
-            Assert.Equal(11, tables.Count);
+            Assert.Equal(12, tables.Count);
         }
 
         [Fact]

@@ -380,6 +380,41 @@ namespace Chatcheology.Archive
             command.ExecuteNonQuery();
         }
 
+        /// <summary>Writes one item definition (format version 2). Only definitions an item uses may be written.</summary>
+        /// <exception cref="InvalidOperationException">The row breaks a format rule, or the archive is version 1.</exception>
+        public void WriteItemDefinition(ArchiveItemDefinition definition)
+        {
+            ArgumentNullException.ThrowIfNull(definition);
+            var transaction = RequireMemories();
+
+            if ((definition.IconSha256 is null) != (definition.IconExtension is null)
+                || (definition.IconSha256 is { } sha && !ArchiveFormat.IsSha256(sha))
+                || (definition.IconExtension is { } extension
+                    && ArchiveFormat.SafeExtension(extension) != extension))
+            {
+                throw new InvalidOperationException(
+                    "An item icon must have both a media hash of 64 lower-case hexadecimal digits and a plain " +
+                    "lower-case extension, or neither.");
+            }
+
+            using var command = Command(
+                transaction,
+                """
+                INSERT INTO ItemDefinition (SetId, ItemId, ItemType, Name, Detail, Hidden, GroupId, IconSha256, IconExtension)
+                VALUES ($set, $item, $type, $name, $detail, $hidden, $group, $sha, $extension);
+                """);
+            command.Parameters.AddWithValue("$set", definition.SetId);
+            command.Parameters.AddWithValue("$item", definition.ItemId);
+            command.Parameters.AddWithValue("$type", definition.ItemType);
+            command.Parameters.AddWithValue("$name", (object?)definition.Name ?? DBNull.Value);
+            command.Parameters.AddWithValue("$detail", (object?)definition.Detail ?? DBNull.Value);
+            command.Parameters.AddWithValue("$hidden", Flag(definition.Hidden));
+            command.Parameters.AddWithValue("$group", (object?)definition.GroupId ?? DBNull.Value);
+            command.Parameters.AddWithValue("$sha", (object?)definition.IconSha256 ?? DBNull.Value);
+            command.Parameters.AddWithValue("$extension", (object?)definition.IconExtension ?? DBNull.Value);
+            command.ExecuteNonQuery();
+        }
+
         /// <summary>
         /// Checks the cross-row rules, stamps the format version, commits, and compacts the file.
         /// </summary>
@@ -403,20 +438,21 @@ namespace Chatcheology.Archive
             RequireCount(
                 transaction,
                 v2
-                    ? "SELECT COUNT(*) FROM Media WHERE Sha256 NOT IN (SELECT MediaSha256 FROM Attachment " +
-                      "WHERE MediaSha256 IS NOT NULL) AND Sha256 NOT IN (SELECT ImageSha256 FROM Entry " +
-                      "WHERE ImageSha256 IS NOT NULL);"
+                    ? ArchiveMemoryRules.MediaUnusedVersionTwo
                     : "SELECT COUNT(*) FROM Media WHERE Sha256 NOT IN (SELECT MediaSha256 FROM Attachment " +
                       "WHERE MediaSha256 IS NOT NULL);",
                 0,
                 v2
-                    ? "Every media payload must be named by at least one restored attachment or entry image."
+                    ? "Every media payload must be named by at least one restored attachment, entry image or item icon."
                     : "Every media payload must be named by at least one restored attachment.");
 
             if (v2)
             {
                 RequireCount(transaction, ArchiveMemoryRules.LinksNotFromPersonal, 0,
                     "A link must start at an entry of a personal collection.");
+
+                RequireCount(transaction, ArchiveMemoryRules.DefinitionsUnused, 0,
+                    "Only item definitions that an item of the archive uses may be written.");
 
                 using (var command = Command(transaction, ArchiveMemoryRules.PeriodCountsDiffer))
                 {
@@ -440,7 +476,7 @@ namespace Chatcheology.Archive
 
             RequireCount(transaction, "SELECT COUNT(*) FROM pragma_foreign_key_check;", 0,
                 v2
-                    ? "A message, attachment, basis line, entry, period, item or link refers to a row the archive " +
+                    ? "A message, attachment, basis line, entry, period, item, link or item definition refers to a row the archive " +
                       "does not hold."
                     : "A message, attachment or basis line refers to a row the archive does not hold.");
 
@@ -455,6 +491,7 @@ namespace Chatcheology.Archive
                     ExportMessages = (int)Count(transaction, "SELECT COUNT(*) FROM Message WHERE Source = 'Export';"),
                     ExportPeriods = _info.ExportPeriods.Count,
                     EntryLinks = (int)Count(transaction, "SELECT COUNT(*) FROM EntryLink;"),
+                    ItemDefinitions = (int)Count(transaction, "SELECT COUNT(*) FROM ItemDefinition;"),
                     Collections = ReadCollectionCounts(transaction),
                 };
             }
@@ -799,6 +836,9 @@ namespace Chatcheology.Archive
         /// <summary>Version 2: links from personal entries.</summary>
         public int EntryLinks { get; init; }
 
+        /// <summary>Version 2: item definitions (those some item uses).</summary>
+        public int ItemDefinitions { get; init; }
+
         /// <summary>Version 2: entries, periods and items of each collection, ordered by collection.</summary>
         public IReadOnlyList<ArchiveCollectionCounts> Collections { get; init; } = [];
 
@@ -816,6 +856,7 @@ namespace Chatcheology.Archive
             && ExportMessages == other.ExportMessages
             && ExportPeriods == other.ExportPeriods
             && EntryLinks == other.EntryLinks
+            && ItemDefinitions == other.ItemDefinitions
             && (Collections ?? []).SequenceEqual(other.Collections ?? []);
 
         /// <inheritdoc />
@@ -826,7 +867,7 @@ namespace Chatcheology.Archive
                 ExportMessages,
                 ExportPeriods,
                 EntryLinks,
-                (Collections ?? []).Count);
+                HashCode.Combine(ItemDefinitions, (Collections ?? []).Count));
     }
 
     /// <summary>Version 2: how many rows one collection holds.</summary>

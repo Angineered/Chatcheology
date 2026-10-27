@@ -345,7 +345,7 @@ namespace Chatcheology.Data.ArchiveExport
 
         /// <summary>
         /// Every payload once, by hash: the workspace's resolved payloads as the workspace describes them,
-        /// then the shown older restored payloads, then the entry images (recorded size only).
+        /// then the shown older restored payloads, then the entry images and item icons (recorded size only).
         /// </summary>
         internal IReadOnlyList<ArchiveMedia> ToArchiveMedia()
         {
@@ -442,6 +442,22 @@ namespace Chatcheology.Data.ArchiveExport
                         TimeLocal = item.TimeLocal,
                     }).ToList(),
                 }).ToList(),
+            }).ToList()
+            ?? [];
+
+        /// <summary>The item definitions some item uses, each icon under the extension <paramref name="iconExtension"/> gives (as for entry images).</summary>
+        internal IReadOnlyList<ArchiveItemDefinition> ToArchiveItemDefinitions(Func<string, string, string> iconExtension) =>
+            Memories?.Definitions.Select(d => new ArchiveItemDefinition
+            {
+                SetId = d.SetId,
+                ItemId = d.ItemId,
+                ItemType = d.ItemType,
+                Name = d.Name,
+                Detail = d.Detail,
+                Hidden = d.Hidden,
+                GroupId = d.GroupId,
+                IconSha256 = d.IconSha256,
+                IconExtension = d.IconSha256 is { } sha ? iconExtension(sha, d.IconExtension!) : null,
             }).ToList()
             ?? [];
 

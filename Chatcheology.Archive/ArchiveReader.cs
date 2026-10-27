@@ -306,6 +306,33 @@ namespace Chatcheology.Archive
         }
 
         /// <summary>
+        /// Every message's local wall-clock time, in chat order: element <c>i</c> is the time of the
+        /// message with sequence number <c>i + 1</c>. Times only, for placing other rows among the messages.
+        /// </summary>
+        /// <exception cref="ArchiveFormatException">The sequence numbers are not 1..n without a gap.</exception>
+        public IReadOnlyList<DateTime> ReadMessageTimes()
+        {
+            using var command = _connection.CreateCommand();
+            command.CommandText = "SELECT SequenceNumber, DateTimeLocal FROM Message ORDER BY SequenceNumber;";
+
+            var times = new List<DateTime>();
+
+            using var reader = command.ExecuteReader();
+
+            while (reader.Read())
+            {
+                if (Integer(reader, 0) != times.Count + 1)
+                {
+                    throw new ArchiveFormatException("The archive's sequence numbers are not numbered from 1 without a gap.");
+                }
+
+                times.Add(ArchiveFormat.ParseLocal(Text(reader, 1)));
+            }
+
+            return times;
+        }
+
+        /// <summary>
         /// The sequence number of the first message on or after <paramref name="day"/>, or
         /// <see langword="null"/> when none is.
         /// </summary>
@@ -603,6 +630,97 @@ namespace Chatcheology.Archive
                 "SELECT EntryLinkID, FromEntryID, ToEntryID, ToMessageSequenceNumber FROM EntryLink ORDER BY EntryLinkID;";
 
             return ReadLinkRows(command);
+        }
+
+        /// <summary>
+        /// The definitions of the items of one entry (format version 2), ordered by set and item. An item
+        /// with no definition has none here; a version 1 archive returns none.
+        /// </summary>
+        public IReadOnlyList<ArchiveItemDefinition> ReadItemDefinitions(long entryID)
+        {
+            if (!HasMemories)
+            {
+                return [];
+            }
+
+            using var command = _connection.CreateCommand();
+            command.CommandText =
+                $"""
+                {DefinitionColumns}
+                WHERE EXISTS (SELECT 1 FROM EntryItem AS i WHERE i.EntryID = $entry AND i.SetId = d.SetId AND i.ItemId = d.ItemId)
+                ORDER BY d.SetId, d.ItemId;
+                """;
+            command.Parameters.AddWithValue("$entry", entryID);
+
+            return ReadDefinitionRows(command);
+        }
+
+        /// <summary>Every item definition, ordered by set and item. For the validator and the comparer.</summary>
+        public IReadOnlyList<ArchiveItemDefinition> ReadAllItemDefinitions()
+        {
+            if (!HasMemories)
+            {
+                return [];
+            }
+
+            using var command = _connection.CreateCommand();
+            command.CommandText = $"{DefinitionColumns} ORDER BY d.SetId, d.ItemId;";
+
+            return ReadDefinitionRows(command);
+        }
+
+        /// <summary>
+        /// The full path of an item definition's icon file, or <see langword="null"/> when it has none.
+        /// Composing the path is not a claim the file is there.
+        /// </summary>
+        public string? IconFullPath(ArchiveItemDefinition definition)
+        {
+            ArgumentNullException.ThrowIfNull(definition);
+
+            if (definition.IconSha256 is { } sha && !ArchiveFormat.IsSha256(sha))
+            {
+                throw new ArchiveFormatException("An item definition names an icon hash that is not 64 lower-case hex digits.");
+            }
+
+            if (definition.IconExtension is { } extension && ArchiveFormat.SafeExtension(extension) != extension)
+            {
+                throw new ArchiveFormatException("An item definition names an icon extension that is not a plain one.");
+            }
+
+            return definition.IconRelativePath is { } relative
+                ? Path.Combine(FolderPath, relative.Replace('/', Path.DirectorySeparatorChar))
+                : null;
+        }
+
+        private const string DefinitionColumns =
+            """
+            SELECT d.SetId, d.ItemId, d.ItemType, d.Name, d.Detail, d.Hidden, d.GroupId, d.IconSha256, d.IconExtension
+            FROM ItemDefinition AS d
+            """;
+
+        private static List<ArchiveItemDefinition> ReadDefinitionRows(SqliteCommand command)
+        {
+            var definitions = new List<ArchiveItemDefinition>();
+
+            using var reader = command.ExecuteReader();
+
+            while (reader.Read())
+            {
+                definitions.Add(new ArchiveItemDefinition
+                {
+                    SetId = Text(reader, 0),
+                    ItemId = Text(reader, 1),
+                    ItemType = Text(reader, 2),
+                    Name = NullableText(reader, 3),
+                    Detail = NullableText(reader, 4),
+                    Hidden = NullableInteger(reader, 5) is { } hidden ? hidden == 1 : null,
+                    GroupId = NullableText(reader, 6),
+                    IconSha256 = NullableText(reader, 7),
+                    IconExtension = NullableText(reader, 8),
+                });
+            }
+
+            return definitions;
         }
 
         private const string EntryColumns =
