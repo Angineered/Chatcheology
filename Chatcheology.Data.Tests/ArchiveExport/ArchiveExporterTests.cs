@@ -193,7 +193,7 @@ namespace Chatcheology.Data.Tests.ArchiveExport
             Assert.Equal(ArchiveAttachmentState.Unmatched, byID[scenario.Unmatched].State);
             Assert.Equal(ArchiveAttachmentState.Unmatched, byID[scenario.LowQualityCopy].State);
 
-            Assert.Equal(new ArchiveCounts(2, expected.Count, 6, 3, 1, 2, 2), result.Counts);
+            Assert.Equal(new ArchiveCounts(2, expected.Count, 6, 3, 1, 2, 2) { WorkspaceMessages = expected.Count }, result.Counts);
             Assert.True(ArchiveContents.Check(output).Ok);
         }
 
@@ -265,7 +265,7 @@ namespace Chatcheology.Data.Tests.ArchiveExport
             Assert.Equal(2, messages.Values.Count(m => m.IsForwarded is not null));
 
             // Filling the columns does not change the format version.
-            Assert.Equal(1, reader.Info.FormatVersion);
+            Assert.Equal(ArchiveFormat.FormatVersion, reader.Info.FormatVersion);
         }
 
         [Fact]
@@ -824,7 +824,7 @@ namespace Chatcheology.Data.Tests.ArchiveExport
                     tables.Add(reader.GetString(0));
                 }
 
-                Assert.Equal(ArchiveFormat.TableNames.Order(StringComparer.Ordinal), tables);
+                Assert.Equal(ArchiveFormat.TableNamesOf(ArchiveFormat.FormatVersion).Order(StringComparer.Ordinal), tables);
             }
 
             // Byte search of the whole file, in both encodings SQLite could have used.
@@ -1084,7 +1084,7 @@ namespace Chatcheology.Data.Tests.ArchiveExport
 
             var rows = new List<string>();
 
-            foreach (var table in ArchiveFormat.TableNames)
+            foreach (var table in ArchiveFormat.TableNamesOf(ArchiveFormat.FormatVersion))
             {
                 using var command = connection.CreateCommand();
                 command.CommandText = table == "ArchiveInfo"

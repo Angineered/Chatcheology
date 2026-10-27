@@ -1,7 +1,7 @@
 namespace Chatcheology.Archive
 {
     /// <summary>
-    /// The <c>archive.db</c> tables of format version 1, one statement per element, in creation
+    /// The <c>archive.db</c> tables of each format version, one statement per element, in creation
     /// order.
     /// </summary>
     /// <remarks>
@@ -15,28 +15,24 @@ namespace Chatcheology.Archive
     /// <para>Indexes: <c>UNIQUE (SequenceNumber)</c> is the sequence index, and
     /// <c>UNIQUE (MessageID, Ordinal)</c> serves lookups by message, so neither needs a second one.
     /// Day jumps get their own index on <c>DateTimeLocal</c>.</para>
+    /// <para>Version 2 differs from version 1 in two ways only: <c>Message</c> gains <c>Source</c>,
+    /// and the five memory tables are added. Every version 1 table and meaning is otherwise the
+    /// same.</para>
     /// </remarks>
     internal static class ArchiveSchema
     {
-        internal static readonly string[] Statements =
-        [
-            """
-            CREATE TABLE ArchiveInfo (
-                Key   TEXT PRIMARY KEY,
-                Value TEXT NOT NULL
-            );
-            """,
+        /// <summary>The statements that create an archive of <paramref name="formatVersion"/>, in order.</summary>
+        /// <exception cref="ArgumentOutOfRangeException">Not a version this build knows.</exception>
+        internal static IReadOnlyList<string> StatementsOf(int formatVersion) => formatVersion switch
+        {
+            1 => Statements(MessageV1),
+            2 => [.. Statements(MessageV2), .. MemoryStatements],
+            _ => throw new ArgumentOutOfRangeException(
+                nameof(formatVersion), formatVersion, "Not a format version this build knows."),
+        };
 
-            """
-            CREATE TABLE Participant (
-                ParticipantID INTEGER PRIMARY KEY,
-                DisplayName   TEXT NOT NULL,
-                IsLocal       INTEGER NOT NULL,
-
-                CHECK (IsLocal IN (0, 1))
-            );
-            """,
-
+        /// <summary>Version 1's <c>Message</c> table.</summary>
+        private const string MessageV1 =
             """
             CREATE TABLE Message (
                 MessageID           INTEGER PRIMARY KEY,
@@ -62,7 +58,70 @@ namespace Chatcheology.Archive
                 FOREIGN KEY (SenderParticipantID) REFERENCES Participant (ParticipantID)
                     DEFERRABLE INITIALLY DEFERRED
             );
+            """;
+
+        /// <summary>
+        /// Version 2's <c>Message</c> table: version 1's, plus <c>Source</c>, the file the message came
+        /// from (the main workspace, or an older chat export). Recorded, never displayed (CH-33 D4). An
+        /// older export has no forwarded facts, so its messages have none.
+        /// </summary>
+        private const string MessageV2 =
+            """
+            CREATE TABLE Message (
+                MessageID           INTEGER PRIMARY KEY,
+                SequenceNumber      INTEGER NOT NULL,
+                DateTimeLocal       TEXT NOT NULL,
+                Kind                TEXT NOT NULL,
+                SenderParticipantID INTEGER NULL,
+                Text                TEXT NOT NULL,
+                IsForwarded         INTEGER NULL,
+                ForwardScore        INTEGER NULL,
+                Source              TEXT NOT NULL,
+
+                UNIQUE (SequenceNumber),
+
+                CHECK (SequenceNumber > 0),
+                CHECK (length(DateTimeLocal) = 19),
+                CHECK (Kind IN ('User', 'System')),
+                CHECK (
+                    (Kind = 'User' AND SenderParticipantID IS NOT NULL)
+                    OR (Kind = 'System' AND SenderParticipantID IS NULL)
+                ),
+                CHECK (IsForwarded IS NULL OR IsForwarded IN (0, 1)),
+                CHECK (Source IN ('Workspace', 'Export')),
+                CHECK (Source = 'Workspace' OR (IsForwarded IS NULL AND ForwardScore IS NULL)),
+
+                FOREIGN KEY (SenderParticipantID) REFERENCES Participant (ParticipantID)
+                    DEFERRABLE INITIALLY DEFERRED
+            );
+            """;
+
+        private const string LocalGlob =
+            "'[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]'";
+
+        private const string UtcGlob =
+            "'[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z'";
+
+        private static string[] Statements(string message) =>
+        [
+            """
+            CREATE TABLE ArchiveInfo (
+                Key   TEXT PRIMARY KEY,
+                Value TEXT NOT NULL
+            );
             """,
+
+            """
+            CREATE TABLE Participant (
+                ParticipantID INTEGER PRIMARY KEY,
+                DisplayName   TEXT NOT NULL,
+                IsLocal       INTEGER NOT NULL,
+
+                CHECK (IsLocal IN (0, 1))
+            );
+            """,
+
+            message,
 
             """
             CREATE INDEX IX_Message_DateTimeLocal ON Message (DateTimeLocal);
@@ -133,6 +192,159 @@ namespace Chatcheology.Archive
                 FOREIGN KEY (AttachmentID) REFERENCES Attachment (AttachmentID)
                     DEFERRABLE INITIALLY DEFERRED
             );
+            """,
+        ];
+
+        /// <summary>
+        /// The memory tables of version 2 (CH-42): the memories file's tables with the same meanings and
+        /// checks, less what the archive does not carry (image source URLs, item names and icons,
+        /// anything naming a source account). An item names the archive participant instead of a role.
+        /// An entry image is a <c>Media</c> payload, stored as <c>media/&lt;sha256&gt;&lt;ImageExtension&gt;</c>.
+        /// </summary>
+        private static readonly string[] MemoryStatements =
+        [
+            """
+            CREATE TABLE Collection (
+                CollectionID      INTEGER PRIMARY KEY,
+                Kind              TEXT NOT NULL,
+                Name              TEXT NOT NULL,
+                SourceDescription TEXT NULL,
+                ShownByDefault    INTEGER NOT NULL,
+                PeriodGapMinutes  INTEGER NULL,
+
+                UNIQUE (Kind, Name),
+
+                CHECK (Kind IN ('Imported', 'Personal')),
+                CHECK (length(trim(Name)) > 0),
+                CHECK (ShownByDefault IN (0, 1)),
+                CHECK ((Kind = 'Imported' AND PeriodGapMinutes IS NOT NULL AND PeriodGapMinutes > 0)
+                    OR (Kind = 'Personal' AND PeriodGapMinutes IS NULL))
+            );
+            """,
+
+            $"""
+            CREATE TABLE Entry (
+                EntryID        INTEGER PRIMARY KEY,
+                CollectionID   INTEGER NOT NULL,
+                SourceKey      TEXT NULL,
+                Title          TEXT NOT NULL,
+                StartLocal     TEXT NOT NULL,
+                EndLocal       TEXT NULL,
+                StartUtc       TEXT NULL,
+                EndUtc         TEXT NULL,
+                DatePrecision  TEXT NOT NULL,
+                Summary        TEXT NULL,
+                ImageSha256    TEXT NULL,
+                ImageExtension TEXT NULL,
+                Source         TEXT NULL,
+                DayLevel       TEXT NULL,
+
+                UNIQUE (CollectionID, SourceKey),
+
+                CHECK (length(trim(Title)) > 0),
+                CHECK (SourceKey IS NULL OR length(SourceKey) > 0),
+                CHECK (DatePrecision IN ('Second', 'Day', 'Month')),
+                CHECK (StartLocal GLOB {LocalGlob}),
+                CHECK (EndLocal IS NULL OR (EndLocal GLOB {LocalGlob} AND EndLocal >= StartLocal)),
+                CHECK (StartUtc IS NULL OR StartUtc GLOB {UtcGlob}),
+                CHECK (EndUtc IS NULL OR (EndUtc GLOB {UtcGlob} AND StartUtc IS NOT NULL AND EndUtc >= StartUtc)),
+                CHECK (DayLevel IS NULL OR DayLevel IN ('strong', 'supporting', 'same-day')),
+                CHECK ((ImageSha256 IS NULL) = (ImageExtension IS NULL)),
+                CHECK (ImageSha256 IS NULL OR (length(ImageSha256) = 64 AND ImageSha256 = lower(ImageSha256))),
+                CHECK (ImageExtension IS NULL
+                    OR (substr(ImageExtension, 1, 1) = '.' AND length(ImageExtension) BETWEEN 2 AND 11
+                        AND ImageExtension = lower(ImageExtension))),
+
+                FOREIGN KEY (CollectionID) REFERENCES Collection (CollectionID)
+                    DEFERRABLE INITIALLY DEFERRED,
+                FOREIGN KEY (ImageSha256) REFERENCES Media (Sha256)
+                    DEFERRABLE INITIALLY DEFERRED
+            );
+            """,
+
+            """
+            CREATE INDEX IX_Entry_StartLocal ON Entry (StartLocal);
+            """,
+
+            """
+            CREATE INDEX IX_Entry_Collection ON Entry (CollectionID, StartLocal);
+            """,
+
+            $"""
+            CREATE TABLE EntryPeriod (
+                EntryID        INTEGER NOT NULL,
+                PeriodIndex    INTEGER NOT NULL,
+                StartUtc       TEXT NOT NULL,
+                EndUtc         TEXT NOT NULL,
+                StartLocal     TEXT NOT NULL,
+                EndLocal       TEXT NOT NULL,
+                Label          TEXT NOT NULL,
+                LocalItemCount INTEGER NOT NULL,
+                OtherItemCount INTEGER NOT NULL,
+
+                PRIMARY KEY (EntryID, PeriodIndex),
+
+                CHECK (PeriodIndex >= 0),
+                CHECK (StartUtc GLOB {UtcGlob} AND EndUtc GLOB {UtcGlob} AND EndUtc >= StartUtc),
+                CHECK (StartLocal GLOB {LocalGlob} AND EndLocal GLOB {LocalGlob}),
+                CHECK (Label IN ('strong', 'supporting', 'same-period', 'one-account')),
+                CHECK (LocalItemCount >= 0 AND OtherItemCount >= 0 AND LocalItemCount + OtherItemCount > 0),
+                CHECK ((Label = 'one-account') = (LocalItemCount = 0 OR OtherItemCount = 0)),
+
+                FOREIGN KEY (EntryID) REFERENCES Entry (EntryID)
+                    DEFERRABLE INITIALLY DEFERRED
+            );
+            """,
+
+            $"""
+            CREATE TABLE EntryItem (
+                EntryItemID   INTEGER PRIMARY KEY,
+                EntryID       INTEGER NOT NULL,
+                PeriodIndex   INTEGER NOT NULL,
+                ParticipantID INTEGER NOT NULL,
+                SetId         TEXT NOT NULL,
+                ItemId        TEXT NOT NULL,
+                ItemType      TEXT NOT NULL,
+                TimeUtc       TEXT NOT NULL,
+                TimeLocal     TEXT NOT NULL,
+
+                CHECK (length(SetId) > 0 AND length(ItemId) > 0 AND length(ItemType) > 0),
+                CHECK (TimeUtc GLOB {UtcGlob}),
+                CHECK (TimeLocal GLOB {LocalGlob}),
+
+                FOREIGN KEY (EntryID, PeriodIndex) REFERENCES EntryPeriod (EntryID, PeriodIndex)
+                    DEFERRABLE INITIALLY DEFERRED,
+                FOREIGN KEY (ParticipantID) REFERENCES Participant (ParticipantID)
+                    DEFERRABLE INITIALLY DEFERRED
+            );
+            """,
+
+            """
+            CREATE INDEX IX_EntryItem_Entry ON EntryItem (EntryID, PeriodIndex);
+            """,
+
+            """
+            CREATE TABLE EntryLink (
+                EntryLinkID             INTEGER PRIMARY KEY,
+                FromEntryID             INTEGER NOT NULL,
+                ToEntryID               INTEGER NULL,
+                ToMessageSequenceNumber INTEGER NULL,
+
+                CHECK ((ToEntryID IS NULL) <> (ToMessageSequenceNumber IS NULL)),
+                CHECK (ToMessageSequenceNumber IS NULL OR ToMessageSequenceNumber > 0),
+                CHECK (ToEntryID IS NULL OR ToEntryID <> FromEntryID),
+
+                FOREIGN KEY (FromEntryID) REFERENCES Entry (EntryID)
+                    DEFERRABLE INITIALLY DEFERRED,
+                FOREIGN KEY (ToEntryID) REFERENCES Entry (EntryID)
+                    DEFERRABLE INITIALLY DEFERRED,
+                FOREIGN KEY (ToMessageSequenceNumber) REFERENCES Message (SequenceNumber)
+                    DEFERRABLE INITIALLY DEFERRED
+            );
+            """,
+
+            """
+            CREATE INDEX IX_EntryLink_From ON EntryLink (FromEntryID);
             """,
         ];
     }

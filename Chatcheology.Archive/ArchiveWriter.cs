@@ -74,7 +74,7 @@ namespace Chatcheology.Archive
 
                 var transaction = connection.BeginTransaction();
 
-                foreach (var statement in ArchiveSchema.Statements)
+                foreach (var statement in ArchiveSchema.StatementsOf(info.FormatVersion))
                 {
                     Execute(connection, transaction, statement);
                 }
@@ -164,15 +164,45 @@ namespace Chatcheology.Archive
                     "wrong reading.");
             }
 
+            if (!Enum.IsDefined(message.Source))
+            {
+                throw new InvalidOperationException("A message's source must be Workspace or Export.");
+            }
+
+            if (_info.FormatVersion < 2 && message.Source != ArchiveMessageSource.Workspace)
+            {
+                throw new InvalidOperationException("A version 1 archive holds workspace messages only.");
+            }
+
+            if (message.Source == ArchiveMessageSource.Export
+                && (message.IsForwarded is not null || message.ForwardScore is not null))
+            {
+                throw new InvalidOperationException(
+                    "A message from an older export has no forwarded fact: its forwarded status and score " +
+                    "must be null.");
+            }
+
             using (var command = Command(
                        transaction,
-                       """
-                       INSERT INTO Message (
-                           MessageID, SequenceNumber, DateTimeLocal, Kind, SenderParticipantID, Text,
-                           IsForwarded, ForwardScore)
-                       VALUES ($id, $sequence, $time, $kind, $sender, $text, $forwarded, $score);
-                       """))
+                       _info.FormatVersion < 2
+                           ? """
+                             INSERT INTO Message (
+                                 MessageID, SequenceNumber, DateTimeLocal, Kind, SenderParticipantID, Text,
+                                 IsForwarded, ForwardScore)
+                             VALUES ($id, $sequence, $time, $kind, $sender, $text, $forwarded, $score);
+                             """
+                           : """
+                             INSERT INTO Message (
+                                 MessageID, SequenceNumber, DateTimeLocal, Kind, SenderParticipantID, Text,
+                                 IsForwarded, ForwardScore, Source)
+                             VALUES ($id, $sequence, $time, $kind, $sender, $text, $forwarded, $score, $source);
+                             """))
             {
+                if (_info.FormatVersion >= 2)
+                {
+                    command.Parameters.AddWithValue("$source", FormatSource(message.Source));
+                }
+
                 command.Parameters.AddWithValue("$id", message.MessageID);
                 command.Parameters.AddWithValue("$sequence", message.SequenceNumber);
                 command.Parameters.AddWithValue("$time", ArchiveFormat.FormatLocal(message.DateTimeLocal));
@@ -190,6 +220,164 @@ namespace Chatcheology.Archive
             }
 
             _messages++;
+        }
+
+        /// <summary>Writes one collection (format version 2).</summary>
+        /// <exception cref="InvalidOperationException">The row breaks a format rule, or the archive is version 1.</exception>
+        public void WriteCollection(ArchiveCollection collection)
+        {
+            ArgumentNullException.ThrowIfNull(collection);
+            var transaction = RequireMemories();
+
+            if (collection.Kind is not (ArchiveMemoryVocabulary.KindImported or ArchiveMemoryVocabulary.KindPersonal)
+                || (collection.Kind == ArchiveMemoryVocabulary.KindImported) != collection.PeriodGapMinutes is > 0
+                || (collection.Kind == ArchiveMemoryVocabulary.KindPersonal && collection.PeriodGapMinutes is not null))
+            {
+                throw new InvalidOperationException(
+                    "A collection must be Imported with a positive period gap, or Personal with none.");
+            }
+
+            using var command = Command(
+                transaction,
+                """
+                INSERT INTO Collection (CollectionID, Kind, Name, SourceDescription, ShownByDefault, PeriodGapMinutes)
+                VALUES ($id, $kind, $name, $source, $shown, $gap);
+                """);
+            command.Parameters.AddWithValue("$id", collection.CollectionID);
+            command.Parameters.AddWithValue("$kind", collection.Kind);
+            command.Parameters.AddWithValue("$name", collection.Name);
+            command.Parameters.AddWithValue("$source", (object?)collection.SourceDescription ?? DBNull.Value);
+            command.Parameters.AddWithValue("$shown", collection.ShownByDefault ? 1 : 0);
+            command.Parameters.AddWithValue("$gap", (object?)collection.PeriodGapMinutes ?? DBNull.Value);
+            command.ExecuteNonQuery();
+        }
+
+        /// <summary>Writes one entry with its periods and their items (format version 2).</summary>
+        /// <exception cref="InvalidOperationException">A row breaks a format rule, or the archive is version 1.</exception>
+        public void WriteEntry(ArchiveEntry entry)
+        {
+            ArgumentNullException.ThrowIfNull(entry);
+            var transaction = RequireMemories();
+
+            if ((entry.ImageSha256 is null) != (entry.ImageExtension is null)
+                || (entry.ImageSha256 is { } sha && !ArchiveFormat.IsSha256(sha))
+                || (entry.ImageExtension is { } extension
+                    && (extension.Length < 2 || ArchiveFormat.SafeExtension(extension) != extension)))
+            {
+                throw new InvalidOperationException(
+                    "An entry image must have both a media hash of 64 lower-case hexadecimal digits and a plain " +
+                    "lower-case extension, or neither.");
+            }
+
+            foreach (var time in new DateTime?[] { entry.StartLocal, entry.EndLocal })
+            {
+                if (time is { Kind: DateTimeKind.Utc })
+                {
+                    throw new InvalidOperationException("An entry's local times must not be marked as UTC.");
+                }
+            }
+
+            using (var command = Command(
+                       transaction,
+                       """
+                       INSERT INTO Entry (
+                           EntryID, CollectionID, SourceKey, Title, StartLocal, EndLocal, StartUtc, EndUtc,
+                           DatePrecision, Summary, ImageSha256, ImageExtension, Source, DayLevel)
+                       VALUES ($id, $collection, $key, $title, $startLocal, $endLocal, $startUtc, $endUtc,
+                               $precision, $summary, $sha, $extension, $source, $level);
+                       """))
+            {
+                command.Parameters.AddWithValue("$id", entry.EntryID);
+                command.Parameters.AddWithValue("$collection", entry.CollectionID);
+                command.Parameters.AddWithValue("$key", (object?)entry.SourceKey ?? DBNull.Value);
+                command.Parameters.AddWithValue("$title", entry.Title);
+                command.Parameters.AddWithValue("$startLocal", ArchiveFormat.FormatLocal(entry.StartLocal));
+                command.Parameters.AddWithValue("$endLocal", Local(entry.EndLocal));
+                command.Parameters.AddWithValue("$startUtc", Utc(entry.StartUtc));
+                command.Parameters.AddWithValue("$endUtc", Utc(entry.EndUtc));
+                command.Parameters.AddWithValue("$precision", entry.DatePrecision);
+                command.Parameters.AddWithValue("$summary", (object?)entry.Summary ?? DBNull.Value);
+                command.Parameters.AddWithValue("$sha", (object?)entry.ImageSha256 ?? DBNull.Value);
+                command.Parameters.AddWithValue("$extension", (object?)entry.ImageExtension ?? DBNull.Value);
+                command.Parameters.AddWithValue("$source", (object?)entry.Source ?? DBNull.Value);
+                command.Parameters.AddWithValue("$level", (object?)entry.DayLevel ?? DBNull.Value);
+                command.ExecuteNonQuery();
+            }
+
+            foreach (var period in entry.Periods)
+            {
+                if (period.EntryID != entry.EntryID)
+                {
+                    throw new InvalidOperationException("A period must be written with the entry it belongs to.");
+                }
+
+                using (var command = Command(
+                           transaction,
+                           """
+                           INSERT INTO EntryPeriod (
+                               EntryID, PeriodIndex, StartUtc, EndUtc, StartLocal, EndLocal, Label,
+                               LocalItemCount, OtherItemCount)
+                           VALUES ($entry, $index, $startUtc, $endUtc, $startLocal, $endLocal, $label, $local, $other);
+                           """))
+                {
+                    command.Parameters.AddWithValue("$entry", period.EntryID);
+                    command.Parameters.AddWithValue("$index", period.PeriodIndex);
+                    command.Parameters.AddWithValue("$startUtc", ArchiveFormat.FormatUtc(period.StartUtc));
+                    command.Parameters.AddWithValue("$endUtc", ArchiveFormat.FormatUtc(period.EndUtc));
+                    command.Parameters.AddWithValue("$startLocal", ArchiveFormat.FormatLocal(period.StartLocal));
+                    command.Parameters.AddWithValue("$endLocal", ArchiveFormat.FormatLocal(period.EndLocal));
+                    command.Parameters.AddWithValue("$label", period.Label);
+                    command.Parameters.AddWithValue("$local", period.LocalItemCount);
+                    command.Parameters.AddWithValue("$other", period.OtherItemCount);
+                    command.ExecuteNonQuery();
+                }
+
+                foreach (var item in period.Items)
+                {
+                    if (item.EntryID != entry.EntryID || item.PeriodIndex != period.PeriodIndex)
+                    {
+                        throw new InvalidOperationException("An item must be written with the period it belongs to.");
+                    }
+
+                    using var command = Command(
+                        transaction,
+                        """
+                        INSERT INTO EntryItem (
+                            EntryItemID, EntryID, PeriodIndex, ParticipantID, SetId, ItemId, ItemType, TimeUtc, TimeLocal)
+                        VALUES ($id, $entry, $index, $participant, $set, $item, $type, $utc, $local);
+                        """);
+                    command.Parameters.AddWithValue("$id", item.EntryItemID);
+                    command.Parameters.AddWithValue("$entry", item.EntryID);
+                    command.Parameters.AddWithValue("$index", item.PeriodIndex);
+                    command.Parameters.AddWithValue("$participant", item.ParticipantID);
+                    command.Parameters.AddWithValue("$set", item.SetId);
+                    command.Parameters.AddWithValue("$item", item.ItemId);
+                    command.Parameters.AddWithValue("$type", item.ItemType);
+                    command.Parameters.AddWithValue("$utc", ArchiveFormat.FormatUtc(item.TimeUtc));
+                    command.Parameters.AddWithValue("$local", ArchiveFormat.FormatLocal(item.TimeLocal));
+                    command.ExecuteNonQuery();
+                }
+            }
+        }
+
+        /// <summary>Writes one link from a personal entry (format version 2).</summary>
+        /// <exception cref="InvalidOperationException">The row breaks a format rule, or the archive is version 1.</exception>
+        public void WriteEntryLink(ArchiveEntryLink link)
+        {
+            ArgumentNullException.ThrowIfNull(link);
+            var transaction = RequireMemories();
+
+            using var command = Command(
+                transaction,
+                """
+                INSERT INTO EntryLink (EntryLinkID, FromEntryID, ToEntryID, ToMessageSequenceNumber)
+                VALUES ($id, $from, $toEntry, $toMessage);
+                """);
+            command.Parameters.AddWithValue("$id", link.EntryLinkID);
+            command.Parameters.AddWithValue("$from", link.FromEntryID);
+            command.Parameters.AddWithValue("$toEntry", (object?)link.ToEntryID ?? DBNull.Value);
+            command.Parameters.AddWithValue("$toMessage", (object?)link.ToMessageSequenceNumber ?? DBNull.Value);
+            command.ExecuteNonQuery();
         }
 
         /// <summary>
@@ -210,12 +398,38 @@ namespace Chatcheology.Archive
                 "The archive must have exactly one local participant, and it must be a participant of " +
                 "the conversation.");
 
+            var v2 = _info.FormatVersion >= 2;
+
             RequireCount(
                 transaction,
-                "SELECT COUNT(*) FROM Media WHERE Sha256 NOT IN (SELECT MediaSha256 FROM Attachment " +
-                "WHERE MediaSha256 IS NOT NULL);",
+                v2
+                    ? "SELECT COUNT(*) FROM Media WHERE Sha256 NOT IN (SELECT MediaSha256 FROM Attachment " +
+                      "WHERE MediaSha256 IS NOT NULL) AND Sha256 NOT IN (SELECT ImageSha256 FROM Entry " +
+                      "WHERE ImageSha256 IS NOT NULL);"
+                    : "SELECT COUNT(*) FROM Media WHERE Sha256 NOT IN (SELECT MediaSha256 FROM Attachment " +
+                      "WHERE MediaSha256 IS NOT NULL);",
                 0,
-                "Every media payload must be named by at least one restored attachment.");
+                v2
+                    ? "Every media payload must be named by at least one restored attachment or entry image."
+                    : "Every media payload must be named by at least one restored attachment.");
+
+            if (v2)
+            {
+                RequireCount(transaction, ArchiveMemoryRules.LinksNotFromPersonal, 0,
+                    "A link must start at an entry of a personal collection.");
+
+                using (var command = Command(transaction, ArchiveMemoryRules.PeriodCountsDiffer))
+                {
+                    command.Parameters.AddWithValue("$local", _info.LocalParticipantID);
+
+                    if (Convert.ToInt64(command.ExecuteScalar(), CultureInfo.InvariantCulture) != 0)
+                    {
+                        throw new InvalidOperationException(
+                            "A period's local and other item counts must equal its items of the local and the " +
+                            "other participant. Nothing was committed.");
+                    }
+                }
+            }
 
             RequireCount(
                 transaction,
@@ -225,12 +439,30 @@ namespace Chatcheology.Archive
                 "Every restored attachment, and only a restored attachment, must have one basis line.");
 
             RequireCount(transaction, "SELECT COUNT(*) FROM pragma_foreign_key_check;", 0,
-                "A message, attachment or basis line refers to a row the archive does not hold.");
+                v2
+                    ? "A message, attachment, basis line, entry, period, item or link refers to a row the archive " +
+                      "does not hold."
+                    : "A message, attachment or basis line refers to a row the archive does not hold.");
+
+            var counts = new ArchiveCounts(
+                _participants, _messages, _attachments, _restored, _missing, _unmatched, _media);
+
+            if (v2)
+            {
+                counts = counts with
+                {
+                    WorkspaceMessages = (int)Count(transaction, "SELECT COUNT(*) FROM Message WHERE Source = 'Workspace';"),
+                    ExportMessages = (int)Count(transaction, "SELECT COUNT(*) FROM Message WHERE Source = 'Export';"),
+                    ExportPeriods = _info.ExportPeriods.Count,
+                    EntryLinks = (int)Count(transaction, "SELECT COUNT(*) FROM EntryLink;"),
+                    Collections = ReadCollectionCounts(transaction),
+                };
+            }
 
             Execute(
                 _connection,
                 transaction,
-                $"PRAGMA user_version = {ArchiveFormat.FormatVersion.ToString(CultureInfo.InvariantCulture)};");
+                $"PRAGMA user_version = {_info.FormatVersion.ToString(CultureInfo.InvariantCulture)};");
 
             transaction.Commit();
             transaction.Dispose();
@@ -244,7 +476,7 @@ namespace Chatcheology.Archive
 
             _connection.Close();
 
-            return new ArchiveCounts(_participants, _messages, _attachments, _restored, _missing, _unmatched, _media);
+            return counts;
         }
 
         /// <summary>
@@ -288,7 +520,16 @@ namespace Chatcheology.Archive
                 [ArchiveInfo.Keys.LocalParticipantID] = _info.LocalParticipantID.ToString(CultureInfo.InvariantCulture),
             };
 
-            foreach (var key in ArchiveInfo.Keys.All)
+            var keys = ArchiveInfo.Keys.All.ToList();
+
+            for (var index = 0; index < _info.ExportPeriods.Count; index++)
+            {
+                var key = ArchiveInfo.ExportPeriodKey(index + 1);
+                values[key] = _info.ExportPeriods[index].Format();
+                keys.Add(key);
+            }
+
+            foreach (var key in keys)
             {
                 using var command = Command(
                     _transaction!, "INSERT INTO ArchiveInfo (Key, Value) VALUES ($key, $value);");
@@ -296,6 +537,23 @@ namespace Chatcheology.Archive
                 command.Parameters.AddWithValue("$value", values[key]);
                 command.ExecuteNonQuery();
             }
+        }
+
+        private List<ArchiveCollectionCounts> ReadCollectionCounts(SqliteTransaction transaction)
+        {
+            using var command = Command(transaction, ArchiveMemoryRules.CollectionCounts);
+
+            var counts = new List<ArchiveCollectionCounts>();
+
+            using var reader = command.ExecuteReader();
+
+            while (reader.Read())
+            {
+                counts.Add(new ArchiveCollectionCounts(
+                    reader.GetInt64(0), reader.GetInt32(1), reader.GetInt32(2), reader.GetInt32(3)));
+            }
+
+            return counts;
         }
 
         private void WriteAttachment(SqliteTransaction transaction, long messageID, ArchiveAttachment attachment)
@@ -411,13 +669,60 @@ namespace Chatcheology.Archive
             _ => throw new ArgumentOutOfRangeException(nameof(state), state, "Not an attachment state of the format."),
         };
 
+        internal static string FormatSource(ArchiveMessageSource source) => source switch
+        {
+            ArchiveMessageSource.Workspace => "Workspace",
+            ArchiveMessageSource.Export => "Export",
+            _ => throw new ArgumentOutOfRangeException(nameof(source), source, "Not a message source of the format."),
+        };
+
+        private static object Local(DateTime? value) =>
+            value is { } time ? ArchiveFormat.FormatLocal(time) : DBNull.Value;
+
+        private static object Utc(DateTime? value) =>
+            value is { } time ? ArchiveFormat.FormatUtc(time) : DBNull.Value;
+
+        private SqliteTransaction RequireMemories()
+        {
+            var transaction = RequireOpen();
+
+            return _info.FormatVersion >= 2
+                ? transaction
+                : throw new InvalidOperationException("A version 1 archive has no memory tables.");
+        }
+
+        private long Count(SqliteTransaction transaction, string sql)
+        {
+            using var command = Command(transaction, sql);
+
+            return Convert.ToInt64(command.ExecuteScalar(), CultureInfo.InvariantCulture);
+        }
+
         private static void ValidateInfo(ArchiveInfo info)
         {
-            if (info.FormatVersion != ArchiveFormat.FormatVersion)
+            // The current version is what an export writes; version 1 is kept writable so a build can
+            // prove it still reads what earlier builds wrote.
+            if (!ArchiveFormat.IsKnownVersion(info.FormatVersion))
             {
                 throw new InvalidOperationException(
-                    "This build writes only format version " +
-                    ArchiveFormat.FormatVersion.ToString(CultureInfo.InvariantCulture) + ".");
+                    "This build writes format versions " +
+                    ArchiveFormat.MinimumFormatVersion.ToString(CultureInfo.InvariantCulture) + " to " +
+                    ArchiveFormat.FormatVersion.ToString(CultureInfo.InvariantCulture) + " only.");
+            }
+
+            if (info.FormatVersion < 2 && info.ExportPeriods.Count > 0)
+            {
+                throw new InvalidOperationException("A version 1 archive records no export periods.");
+            }
+
+            foreach (var period in info.ExportPeriods)
+            {
+                if (period is null || period.LastLocal < period.FirstLocal
+                    || period.FirstLocal.Kind == DateTimeKind.Utc || period.LastLocal.Kind == DateTimeKind.Utc)
+                {
+                    throw new InvalidOperationException(
+                        "An export period must be two local wall-clock times, the first not after the last.");
+                }
             }
 
             if (info.SourceExportSha256.Length != 0 && !ArchiveFormat.IsSha256(info.SourceExportSha256))
@@ -474,7 +779,60 @@ namespace Chatcheology.Archive
     /// <param name="Restored">Attachments in the Restored state.</param>
     /// <param name="Missing">Attachments in the Missing state.</param>
     /// <param name="Unmatched">Attachments in the Unmatched state.</param>
-    /// <param name="MediaFiles">Distinct media payloads, one file each.</param>
+    /// <param name="MediaFiles">Distinct media payloads (Media rows).</param>
+    /// <remarks>
+    /// The members after the positional ones are format version 2's counts. A version 1 manifest has
+    /// none of them, and they read as zero and empty.
+    /// </remarks>
     public sealed record ArchiveCounts(
-        int Participants, int Messages, int Attachments, int Restored, int Missing, int Unmatched, int MediaFiles);
+        int Participants, int Messages, int Attachments, int Restored, int Missing, int Unmatched, int MediaFiles)
+    {
+        /// <summary>Version 2: messages from the main workspace.</summary>
+        public int WorkspaceMessages { get; init; }
+
+        /// <summary>Version 2: messages from older chat exports.</summary>
+        public int ExportMessages { get; init; }
+
+        /// <summary>Version 2: shown older exports, one info period each.</summary>
+        public int ExportPeriods { get; init; }
+
+        /// <summary>Version 2: links from personal entries.</summary>
+        public int EntryLinks { get; init; }
+
+        /// <summary>Version 2: entries, periods and items of each collection, ordered by collection.</summary>
+        public IReadOnlyList<ArchiveCollectionCounts> Collections { get; init; } = [];
+
+        /// <summary>Equal when every count is equal, the collections' counts included.</summary>
+        public bool Equals(ArchiveCounts? other) =>
+            other is not null
+            && Participants == other.Participants
+            && Messages == other.Messages
+            && Attachments == other.Attachments
+            && Restored == other.Restored
+            && Missing == other.Missing
+            && Unmatched == other.Unmatched
+            && MediaFiles == other.MediaFiles
+            && WorkspaceMessages == other.WorkspaceMessages
+            && ExportMessages == other.ExportMessages
+            && ExportPeriods == other.ExportPeriods
+            && EntryLinks == other.EntryLinks
+            && (Collections ?? []).SequenceEqual(other.Collections ?? []);
+
+        /// <inheritdoc />
+        public override int GetHashCode() =>
+            HashCode.Combine(
+                HashCode.Combine(Participants, Messages, Attachments, Restored, Missing, Unmatched, MediaFiles),
+                WorkspaceMessages,
+                ExportMessages,
+                ExportPeriods,
+                EntryLinks,
+                (Collections ?? []).Count);
+    }
+
+    /// <summary>Version 2: how many rows one collection holds.</summary>
+    /// <param name="CollectionID">The collection.</param>
+    /// <param name="Entries">Its entries.</param>
+    /// <param name="Periods">Its entries' periods.</param>
+    /// <param name="Items">Its entries' items.</param>
+    public sealed record ArchiveCollectionCounts(long CollectionID, int Entries, int Periods, int Items);
 }

@@ -199,9 +199,9 @@ namespace Chatcheology.Archive.Tests
         }
 
         /// <summary>Writes a whole archive folder: database, media, manifest and contents list.</summary>
-        internal static void WriteFolder(string folder, bool gapless = false)
+        internal static void WriteFolder(string folder, bool gapless = false, int formatVersion = ArchiveFormat.FormatVersion)
         {
-            var counts = WriteDatabase(folder, gapless: gapless);
+            var counts = WriteDatabase(folder, formatVersion, gapless);
 
             var media = System.IO.Path.Combine(folder, ArchiveFormat.MediaFolderName);
             Directory.CreateDirectory(media);
@@ -209,7 +209,7 @@ namespace Chatcheology.Archive.Tests
             File.WriteAllBytes(System.IO.Path.Combine(media, ArchiveFormat.MediaFileName(BetaSha, BetaName)), BetaBytes);
 
             var manifest = new ArchiveManifest(
-                ArchiveManifest.FormatName, ArchiveFormat.FormatVersion, "Synthetic producer 1.0", Created, counts);
+                ArchiveManifest.FormatName, formatVersion, "Synthetic producer 1.0", Created, counts);
 
             File.WriteAllBytes(System.IO.Path.Combine(folder, ArchiveFormat.ManifestFileName), manifest.ToBytes());
             File.WriteAllBytes(System.IO.Path.Combine(folder, ArchiveContents.FileName), ArchiveContents.Build(folder));

@@ -23,6 +23,9 @@ namespace Chatcheology.Archive
     /// text where a number belongs or a number too large for its field. Such a value is refused with
     /// <see cref="ArchiveFormatException"/>, never converted, truncated or thrown as a cast or
     /// overflow error.</para>
+    /// <para><strong>Versions 1 and 2.</strong> A version 1 archive reads as version 2 with every
+    /// message's source <see cref="ArchiveMessageSource.Workspace"/>, no export periods and no
+    /// memories.</para>
     /// <para>This reader opens archive files only; it does not check them against
     /// <see cref="ArchiveFormat.ContentsFileName"/>. <see cref="ArchiveContents.Check"/> does that.</para>
     /// </remarks>
@@ -33,12 +36,20 @@ namespace Chatcheology.Archive
 
         private readonly SqliteConnection _connection;
 
+        private readonly string _messageColumns;
+
         private ArchiveReader(string folderPath, SqliteConnection connection, ArchiveInfo info)
         {
             FolderPath = folderPath;
             _connection = connection;
             Info = info;
+
+            // A version 1 archive has no Source column: every message in it is a workspace message.
+            _messageColumns = info.FormatVersion >= 2 ? MessageColumnsV2 : MessageColumnsV1;
         }
+
+        /// <summary>Whether the archive has the memory tables (format version 2 and later).</summary>
+        public bool HasMemories => Info.FormatVersion >= 2;
 
         /// <summary>The archive folder, as a full path.</summary>
         public string FolderPath { get; }
@@ -100,7 +111,13 @@ namespace Chatcheology.Archive
                         "Use a newer viewer.");
                 }
 
-                RequireTables(connection);
+                if (!ArchiveFormat.IsKnownVersion(version))
+                {
+                    throw new ArchiveFormatException(
+                        "The archive database records a format version this reader does not know.");
+                }
+
+                RequireTables(connection, version);
 
                 var info = ReadInfo(connection);
 
@@ -166,7 +183,7 @@ namespace Chatcheology.Archive
             using var command = _connection.CreateCommand();
             command.CommandText =
                 $"""
-                {MessageColumns}
+                {_messageColumns}
                 WHERE SequenceNumber >= $start
                 ORDER BY SequenceNumber
                 LIMIT $pageSize;
@@ -188,7 +205,7 @@ namespace Chatcheology.Archive
             using var command = _connection.CreateCommand();
             command.CommandText =
                 $"""
-                {MessageColumns}
+                {_messageColumns}
                 WHERE SequenceNumber < $before
                 ORDER BY SequenceNumber DESC
                 LIMIT $pageSize;
@@ -259,7 +276,7 @@ namespace Chatcheology.Archive
             using var command = _connection.CreateCommand();
             command.CommandText =
                 $"""
-                {MessageColumns}
+                {_messageColumns}
                 WHERE DateTimeLocal >= $from AND DateTimeLocal < $to
                 ORDER BY SequenceNumber;
                 """;
@@ -335,6 +352,327 @@ namespace Chatcheology.Archive
                 : null;
         }
 
+        // -------------------------------------------------------------------------------------
+        // Memories (format version 2). A version 1 archive has none, and every method returns none.
+        // -------------------------------------------------------------------------------------
+
+        /// <summary>Every collection, ordered by identifier.</summary>
+        public IReadOnlyList<ArchiveCollection> ReadCollections()
+        {
+            if (!HasMemories)
+            {
+                return [];
+            }
+
+            using var command = _connection.CreateCommand();
+            command.CommandText =
+                """
+                SELECT CollectionID, Kind, Name, SourceDescription, ShownByDefault, PeriodGapMinutes
+                FROM Collection ORDER BY CollectionID;
+                """;
+
+            var collections = new List<ArchiveCollection>();
+
+            using var reader = command.ExecuteReader();
+
+            while (reader.Read())
+            {
+                collections.Add(new ArchiveCollection
+                {
+                    CollectionID = Integer(reader, 0),
+                    Kind = ParseVocabulary(
+                        Text(reader, 1),
+                        [ArchiveMemoryVocabulary.KindImported, ArchiveMemoryVocabulary.KindPersonal],
+                        "A collection in the archive has a kind the format does not define."),
+                    Name = Text(reader, 2),
+                    SourceDescription = NullableText(reader, 3),
+                    ShownByDefault = Integer(reader, 4) == 1,
+                    PeriodGapMinutes = NullableInt32(reader, 5),
+                });
+            }
+
+            return collections;
+        }
+
+        /// <summary>
+        /// Every entry whose start (local wall clock) is at or after <paramref name="fromLocal"/> and
+        /// before <paramref name="toLocal"/>, of any collection, in start order: the entries to place
+        /// beside a page of messages. Periods are not included; see <see cref="ReadPeriods"/>.
+        /// </summary>
+        public IReadOnlyList<ArchiveEntry> ReadEntries(DateTime fromLocal, DateTime toLocal)
+        {
+            if (!HasMemories)
+            {
+                return [];
+            }
+
+            using var command = _connection.CreateCommand();
+            command.CommandText =
+                $"""
+                {EntryColumns}
+                WHERE StartLocal >= $from AND StartLocal < $to
+                ORDER BY StartLocal, EntryID;
+                """;
+            command.Parameters.AddWithValue("$from", ArchiveFormat.FormatLocal(fromLocal));
+            command.Parameters.AddWithValue("$to", ArchiveFormat.FormatLocal(toLocal));
+
+            return ReadEntryRows(command);
+        }
+
+        /// <summary>Every entry of one collection, in start order. Periods are not included.</summary>
+        public IReadOnlyList<ArchiveEntry> ReadEntriesOf(long collectionID)
+        {
+            if (!HasMemories)
+            {
+                return [];
+            }
+
+            using var command = _connection.CreateCommand();
+            command.CommandText =
+                $"""
+                {EntryColumns}
+                WHERE CollectionID = $collection
+                ORDER BY StartLocal, EntryID;
+                """;
+            command.Parameters.AddWithValue("$collection", collectionID);
+
+            return ReadEntryRows(command);
+        }
+
+        /// <summary>The periods of one entry in index order, each with its items in time order.</summary>
+        public IReadOnlyList<ArchiveEntryPeriod> ReadPeriods(long entryID)
+        {
+            if (!HasMemories)
+            {
+                return [];
+            }
+
+            var items = new Dictionary<int, List<ArchiveEntryItem>>();
+
+            using (var command = _connection.CreateCommand())
+            {
+                command.CommandText =
+                    """
+                    SELECT EntryItemID, EntryID, PeriodIndex, ParticipantID, SetId, ItemId, ItemType, TimeUtc, TimeLocal
+                    FROM EntryItem WHERE EntryID = $entry
+                    ORDER BY PeriodIndex, TimeUtc, EntryItemID;
+                    """;
+                command.Parameters.AddWithValue("$entry", entryID);
+
+                using var reader = command.ExecuteReader();
+
+                while (reader.Read())
+                {
+                    var item = new ArchiveEntryItem
+                    {
+                        EntryItemID = Integer(reader, 0),
+                        EntryID = Integer(reader, 1),
+                        PeriodIndex = Int32(reader, 2),
+                        ParticipantID = Integer(reader, 3),
+                        SetId = Text(reader, 4),
+                        ItemId = Text(reader, 5),
+                        ItemType = Text(reader, 6),
+                        TimeUtc = ArchiveFormat.ParseUtc(Text(reader, 7)),
+                        TimeLocal = ArchiveFormat.ParseLocal(Text(reader, 8)),
+                    };
+
+                    if (!items.TryGetValue(item.PeriodIndex, out var list))
+                    {
+                        list = [];
+                        items[item.PeriodIndex] = list;
+                    }
+
+                    list.Add(item);
+                }
+            }
+
+            using (var command = _connection.CreateCommand())
+            {
+                command.CommandText =
+                    """
+                    SELECT EntryID, PeriodIndex, StartUtc, EndUtc, StartLocal, EndLocal, Label, LocalItemCount, OtherItemCount
+                    FROM EntryPeriod WHERE EntryID = $entry
+                    ORDER BY PeriodIndex;
+                    """;
+                command.Parameters.AddWithValue("$entry", entryID);
+
+                var periods = new List<ArchiveEntryPeriod>();
+
+                using var reader = command.ExecuteReader();
+
+                while (reader.Read())
+                {
+                    var index = Int32(reader, 1);
+
+                    periods.Add(new ArchiveEntryPeriod
+                    {
+                        EntryID = Integer(reader, 0),
+                        PeriodIndex = index,
+                        StartUtc = ArchiveFormat.ParseUtc(Text(reader, 2)),
+                        EndUtc = ArchiveFormat.ParseUtc(Text(reader, 3)),
+                        StartLocal = ArchiveFormat.ParseLocal(Text(reader, 4)),
+                        EndLocal = ArchiveFormat.ParseLocal(Text(reader, 5)),
+                        Label = ParseVocabulary(
+                            Text(reader, 6),
+                            ArchiveMemoryVocabulary.PeriodLabels,
+                            "A period in the archive has a label the format does not define."),
+                        LocalItemCount = Int32(reader, 7),
+                        OtherItemCount = Int32(reader, 8),
+                        Items = items.TryGetValue(index, out var carried) ? carried : [],
+                    });
+                }
+
+                return periods;
+            }
+        }
+
+        /// <summary>The links that start at one entry, ordered by identifier.</summary>
+        public IReadOnlyList<ArchiveEntryLink> ReadLinks(long fromEntryID)
+        {
+            if (!HasMemories)
+            {
+                return [];
+            }
+
+            using var command = _connection.CreateCommand();
+            command.CommandText =
+                """
+                SELECT EntryLinkID, FromEntryID, ToEntryID, ToMessageSequenceNumber
+                FROM EntryLink WHERE FromEntryID = $from ORDER BY EntryLinkID;
+                """;
+            command.Parameters.AddWithValue("$from", fromEntryID);
+
+            return ReadLinkRows(command);
+        }
+
+        /// <summary>The recorded description of one media payload, or <see langword="null"/> when the archive has none.</summary>
+        public ArchiveMedia? ReadMediaOf(string sha256)
+        {
+            ArgumentNullException.ThrowIfNull(sha256);
+
+            return ReadMedia([sha256]).GetValueOrDefault(sha256);
+        }
+
+        /// <summary>
+        /// The full path of an entry's image file, or <see langword="null"/> when it has none. Composing
+        /// the path is not a claim the file is there.
+        /// </summary>
+        public string? ImageFullPath(ArchiveEntry entry)
+        {
+            ArgumentNullException.ThrowIfNull(entry);
+
+            if (entry.ImageSha256 is { } sha && !ArchiveFormat.IsSha256(sha))
+            {
+                throw new ArchiveFormatException("An entry names an image hash that is not 64 lower-case hex digits.");
+            }
+
+            if (entry.ImageExtension is { } extension && ArchiveFormat.SafeExtension(extension) != extension)
+            {
+                throw new ArchiveFormatException("An entry names an image extension that is not a plain one.");
+            }
+
+            return entry.ImageRelativePath is { } relative
+                ? Path.Combine(FolderPath, relative.Replace('/', Path.DirectorySeparatorChar))
+                : null;
+        }
+
+        /// <summary>Every entry, ordered by identifier. For the validator and the comparer.</summary>
+        public IReadOnlyList<ArchiveEntry> ReadAllEntries()
+        {
+            if (!HasMemories)
+            {
+                return [];
+            }
+
+            using var command = _connection.CreateCommand();
+            command.CommandText = $"{EntryColumns} ORDER BY EntryID;";
+
+            return ReadEntryRows(command);
+        }
+
+        /// <summary>Every link, ordered by identifier. For the validator and the comparer.</summary>
+        public IReadOnlyList<ArchiveEntryLink> ReadAllLinks()
+        {
+            if (!HasMemories)
+            {
+                return [];
+            }
+
+            using var command = _connection.CreateCommand();
+            command.CommandText =
+                "SELECT EntryLinkID, FromEntryID, ToEntryID, ToMessageSequenceNumber FROM EntryLink ORDER BY EntryLinkID;";
+
+            return ReadLinkRows(command);
+        }
+
+        private const string EntryColumns =
+            """
+            SELECT EntryID, CollectionID, SourceKey, Title, StartLocal, EndLocal, StartUtc, EndUtc, DatePrecision,
+                   Summary, ImageSha256, ImageExtension, Source, DayLevel
+            FROM Entry
+            """;
+
+        private static List<ArchiveEntry> ReadEntryRows(SqliteCommand command)
+        {
+            var entries = new List<ArchiveEntry>();
+
+            using var reader = command.ExecuteReader();
+
+            while (reader.Read())
+            {
+                entries.Add(new ArchiveEntry
+                {
+                    EntryID = Integer(reader, 0),
+                    CollectionID = Integer(reader, 1),
+                    SourceKey = NullableText(reader, 2),
+                    Title = Text(reader, 3),
+                    StartLocal = ArchiveFormat.ParseLocal(Text(reader, 4)),
+                    EndLocal = NullableText(reader, 5) is { } end ? ArchiveFormat.ParseLocal(end) : null,
+                    StartUtc = NullableText(reader, 6) is { } startUtc ? ArchiveFormat.ParseUtc(startUtc) : null,
+                    EndUtc = NullableText(reader, 7) is { } endUtc ? ArchiveFormat.ParseUtc(endUtc) : null,
+                    DatePrecision = ParseVocabulary(
+                        Text(reader, 8),
+                        ArchiveMemoryVocabulary.DatePrecisions,
+                        "An entry in the archive has a date precision the format does not define."),
+                    Summary = NullableText(reader, 9),
+                    ImageSha256 = NullableText(reader, 10),
+                    ImageExtension = NullableText(reader, 11),
+                    Source = NullableText(reader, 12),
+                    DayLevel = NullableText(reader, 13) is { } level
+                        ? ParseVocabulary(
+                            level,
+                            ArchiveMemoryVocabulary.DayLevels,
+                            "An entry in the archive has a day level the format does not define.")
+                        : null,
+                });
+            }
+
+            return entries;
+        }
+
+        private static List<ArchiveEntryLink> ReadLinkRows(SqliteCommand command)
+        {
+            var links = new List<ArchiveEntryLink>();
+
+            using var reader = command.ExecuteReader();
+
+            while (reader.Read())
+            {
+                links.Add(new ArchiveEntryLink
+                {
+                    EntryLinkID = Integer(reader, 0),
+                    FromEntryID = Integer(reader, 1),
+                    ToEntryID = NullableInteger(reader, 2),
+                    ToMessageSequenceNumber = NullableInt32(reader, 3),
+                });
+            }
+
+            return links;
+        }
+
+        private static string ParseVocabulary(string text, IReadOnlyList<string> allowed, string refusal) =>
+            allowed.Contains(text, StringComparer.Ordinal) ? text : throw new ArchiveFormatException(refusal);
+
         /// <summary>Closes the database.</summary>
         public void Dispose() => _connection.Dispose();
 
@@ -349,6 +687,35 @@ namespace Chatcheology.Archive
         /// <summary>The one whole number a fixed <c>SELECT</c> returns.</summary>
         internal long ReadCount(string sql) =>
             Convert.ToInt64(Scalar(_connection, sql), CultureInfo.InvariantCulture);
+
+        /// <summary>Entries, periods and items per collection (version 2), ordered by collection.</summary>
+        internal IReadOnlyList<ArchiveCollectionCounts> ReadCollectionCounts()
+        {
+            using var command = _connection.CreateCommand();
+            command.CommandText = ArchiveMemoryRules.CollectionCounts;
+
+            var counts = new List<ArchiveCollectionCounts>();
+
+            using var reader = command.ExecuteReader();
+
+            while (reader.Read())
+            {
+                counts.Add(new ArchiveCollectionCounts(
+                    reader.GetInt64(0), reader.GetInt32(1), reader.GetInt32(2), reader.GetInt32(3)));
+            }
+
+            return counts;
+        }
+
+        /// <summary>Periods whose counts differ from their items (version 2).</summary>
+        internal long ReadPeriodCountsDiffer()
+        {
+            using var command = _connection.CreateCommand();
+            command.CommandText = ArchiveMemoryRules.PeriodCountsDiffer;
+            command.Parameters.AddWithValue("$local", Info.LocalParticipantID);
+
+            return Convert.ToInt64(command.ExecuteScalar(), CultureInfo.InvariantCulture);
+        }
 
         /// <summary>The first column of every row a fixed <c>SELECT</c> returns, as identifiers.</summary>
         internal IReadOnlyList<long> ReadIdentifiers(string sql)
@@ -372,10 +739,17 @@ namespace Chatcheology.Archive
         // Reading.
         // -------------------------------------------------------------------------------------
 
-        private const string MessageColumns =
+        private const string MessageColumnsV1 =
             """
             SELECT MessageID, SequenceNumber, DateTimeLocal, Kind, SenderParticipantID, Text,
-                   IsForwarded, ForwardScore
+                   IsForwarded, ForwardScore, 'Workspace'
+            FROM Message
+            """;
+
+        private const string MessageColumnsV2 =
+            """
+            SELECT MessageID, SequenceNumber, DateTimeLocal, Kind, SenderParticipantID, Text,
+                   IsForwarded, ForwardScore, Source
             FROM Message
             """;
 
@@ -387,7 +761,8 @@ namespace Chatcheology.Archive
             long? SenderParticipantID,
             string Text,
             bool? IsForwarded,
-            int? ForwardScore);
+            int? ForwardScore,
+            ArchiveMessageSource Source);
 
         private static List<MessageRow> ReadMessageRows(SqliteCommand command)
         {
@@ -405,7 +780,8 @@ namespace Chatcheology.Archive
                     NullableInteger(reader, 4),
                     Text(reader, 5),
                     NullableInteger(reader, 6) is { } forwarded ? forwarded == 1 : null,
-                    NullableInt32(reader, 7)));
+                    NullableInt32(reader, 7),
+                    ParseSource(Text(reader, 8))));
             }
 
             return rows;
@@ -452,6 +828,7 @@ namespace Chatcheology.Archive
                     IsForwarded = row.IsForwarded,
                     ForwardScore = row.ForwardScore,
                     Attachments = attachments.TryGetValue(row.MessageID, out var carried) ? carried : [],
+                    Source = row.Source,
                 }).ToList(),
                 Media = ReadMedia(shas),
                 FirstSequenceNumber = first,
@@ -527,7 +904,8 @@ namespace Chatcheology.Archive
             return byMessage;
         }
 
-        private Dictionary<string, ArchiveMedia> ReadMedia(IReadOnlyList<string> shas)
+        /// <summary>The recorded description of each named payload the archive holds.</summary>
+        internal Dictionary<string, ArchiveMedia> ReadMedia(IReadOnlyList<string> shas)
         {
             var media = new Dictionary<string, ArchiveMedia>(StringComparer.Ordinal);
 
@@ -602,10 +980,32 @@ namespace Chatcheology.Archive
                     Value(ArchiveInfo.Keys.LocalParticipantID), NumberStyles.None, CultureInfo.InvariantCulture, out var local)
                     ? local
                     : throw new ArchiveFormatException("The archive's local participant is not a number."),
+                ExportPeriods = ReadExportPeriods(values),
             };
         }
 
-        private static void RequireTables(SqliteConnection connection)
+        /// <summary>
+        /// The export periods, <c>ExportPeriod.1</c> up: they must be numbered from 1 without a gap,
+        /// so none is silently skipped.
+        /// </summary>
+        private static List<ArchiveExportPeriod> ReadExportPeriods(Dictionary<string, string> values)
+        {
+            var periods = new List<ArchiveExportPeriod>();
+
+            while (values.TryGetValue(ArchiveInfo.ExportPeriodKey(periods.Count + 1), out var text))
+            {
+                periods.Add(ArchiveExportPeriod.Parse(text));
+            }
+
+            if (values.Keys.Count(key => key.StartsWith(ArchiveInfo.ExportPeriodKeyPrefix, StringComparison.Ordinal)) != periods.Count)
+            {
+                throw new ArchiveFormatException("The archive's export periods are not numbered from 1 without a gap.");
+            }
+
+            return periods;
+        }
+
+        private static void RequireTables(SqliteConnection connection, int version)
         {
             using var command = connection.CreateCommand();
             command.CommandText = "SELECT name FROM sqlite_master WHERE type = 'table';";
@@ -620,7 +1020,7 @@ namespace Chatcheology.Archive
                 }
             }
 
-            if (!ArchiveFormat.TableNames.All(tables.Contains))
+            if (!ArchiveFormat.TableNamesOf(version).All(tables.Contains))
             {
                 throw new ArchiveFormatException("The archive database is missing one of the format's tables.");
             }
@@ -663,6 +1063,13 @@ namespace Chatcheology.Archive
             "User" => ArchiveMessageKind.User,
             "System" => ArchiveMessageKind.System,
             _ => throw new ArchiveFormatException("A message in the archive has a kind the format does not define."),
+        };
+
+        private static ArchiveMessageSource ParseSource(string text) => text switch
+        {
+            "Workspace" => ArchiveMessageSource.Workspace,
+            "Export" => ArchiveMessageSource.Export,
+            _ => throw new ArchiveFormatException("A message in the archive has a source the format does not define."),
         };
 
         private static ArchiveAttachmentState ParseState(string text) => text switch

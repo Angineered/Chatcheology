@@ -24,7 +24,83 @@ namespace Chatcheology.Archive.Tests
             var tables = ArchiveSample.Rows(
                 Database, "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name;");
 
+            Assert.Equal(ArchiveFormat.TableNamesOf(ArchiveFormat.FormatVersion).Order(StringComparer.Ordinal), tables);
+            Assert.Equal(11, tables.Count);
+        }
+
+        [Fact]
+        public void AVersionOneDatabase_HoldsExactlyVersionOnesTables_AndNoSourceColumn()
+        {
+            ArchiveSample.WriteDatabase(_folder.Path, formatVersion: 1);
+
+            var tables = ArchiveSample.Rows(
+                Database, "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name;");
+
             Assert.Equal(ArchiveFormat.TableNames.Order(StringComparer.Ordinal), tables);
+            Assert.Equal(["1"], ArchiveSample.Rows(Database, "PRAGMA user_version;"));
+            Assert.Empty(ArchiveSample.Rows(Database, "SELECT name FROM pragma_table_info('Message') WHERE name = 'Source';"));
+        }
+
+        [Fact]
+        public void AVersionTwoMessage_RecordsItsSource()
+        {
+            ArchiveSample.WriteDatabase(_folder.Path);
+
+            Assert.Equal(
+                ["Workspace"],
+                ArchiveSample.Rows(Database, "SELECT DISTINCT Source FROM Message;"));
+        }
+
+        [Fact]
+        public void AVersionOneWriter_RefusesAnExportMessage_AndMemoryRows()
+        {
+            using var writer = ArchiveWriter.Create(Database, ArchiveSample.Info(1));
+
+            var message = ArchiveSample.Message(1, 1, "2026-03-02T09:00:00", ArchiveSample.Local, "x");
+
+            Assert.Throws<InvalidOperationException>(() => writer.WriteMessage(new ArchiveMessage
+            {
+                MessageID = message.MessageID,
+                SequenceNumber = message.SequenceNumber,
+                DateTimeLocal = message.DateTimeLocal,
+                Kind = message.Kind,
+                SenderParticipantID = message.SenderParticipantID,
+                Text = message.Text,
+                IsForwarded = null,
+                ForwardScore = null,
+                Attachments = [],
+                Source = ArchiveMessageSource.Export,
+            }));
+
+            Assert.Throws<InvalidOperationException>(() => writer.WriteCollection(new ArchiveCollection
+            {
+                CollectionID = 1,
+                Kind = ArchiveMemoryVocabulary.KindPersonal,
+                Name = "Holidays",
+                SourceDescription = null,
+                ShownByDefault = true,
+                PeriodGapMinutes = null,
+            }));
+        }
+
+        [Fact]
+        public void AVersionOneInfo_WithExportPeriods_IsRefused()
+        {
+            var info = ArchiveSample.Info(1);
+
+            Assert.Throws<InvalidOperationException>(() => ArchiveWriter.Create(Database, new ArchiveInfo
+            {
+                FormatVersion = 1,
+                CreatedUtc = info.CreatedUtc,
+                ProducerVersion = info.ProducerVersion,
+                ConversationTitle = info.ConversationTitle,
+                SourceExportSha256 = info.SourceExportSha256,
+                TimeZoneID = info.TimeZoneID,
+                LocalParticipantID = info.LocalParticipantID,
+                ExportPeriods = [new ArchiveExportPeriod(new DateTime(2015, 1, 1), new DateTime(2015, 2, 1))],
+            }));
+
+            Assert.False(File.Exists(Database));
         }
 
         [Fact]
@@ -55,11 +131,11 @@ namespace Chatcheology.Archive.Tests
         }
 
         [Fact]
-        public void Database_IsVersionOne_InRollbackJournalMode_WithNoCompanionFiles()
+        public void Database_IsTheCurrentVersion_InRollbackJournalMode_WithNoCompanionFiles()
         {
             ArchiveSample.WriteDatabase(_folder.Path);
 
-            Assert.Equal(["1"], ArchiveSample.Rows(Database, "PRAGMA user_version;"));
+            Assert.Equal(["2"], ArchiveSample.Rows(Database, "PRAGMA user_version;"));
             Assert.Equal(["delete"], ArchiveSample.Rows(Database, "PRAGMA journal_mode;"));
             Assert.Equal([Database], Directory.GetFiles(_folder.Path));
         }
@@ -166,7 +242,7 @@ namespace Chatcheology.Archive.Tests
 
             var refusal = Assert.Throws<ArchiveFormatException>(() => ArchiveReader.Open(_folder.Path));
 
-            Assert.Contains("format version 2", refusal.Message, StringComparison.Ordinal);
+            Assert.Contains("format version 3", refusal.Message, StringComparison.Ordinal);
         }
 
         [Fact]
@@ -219,7 +295,8 @@ namespace Chatcheology.Archive.Tests
         [Fact]
         public void Writer_RefusesAnotherFormatVersion()
         {
-            Assert.Throws<InvalidOperationException>(() => ArchiveWriter.Create(Database, ArchiveSample.Info(2)));
+            Assert.Throws<InvalidOperationException>(() => ArchiveWriter.Create(Database, ArchiveSample.Info(3)));
+            Assert.Throws<InvalidOperationException>(() => ArchiveWriter.Create(Database, ArchiveSample.Info(0)));
             Assert.False(File.Exists(Database));
         }
 

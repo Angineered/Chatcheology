@@ -30,7 +30,7 @@ namespace Chatcheology.Mobile.Tests
             using var folder = new TemporaryFolder();
             var counts = SyntheticArchive.Write(folder.Path, Options);
 
-            Assert.Equal(new ArchiveCounts(2, 3000, 46, 40, 3, 3, 40), counts);
+            Assert.Equal(new ArchiveCounts(2, 3000, 46, 40, 3, 3, 40) { WorkspaceMessages = 3000 }, counts);
 
             using var reader = ArchiveReader.Open(folder.Path);
             var days = reader.ReadDays();

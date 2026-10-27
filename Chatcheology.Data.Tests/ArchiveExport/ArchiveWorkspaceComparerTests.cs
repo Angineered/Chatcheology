@@ -409,7 +409,8 @@ namespace Chatcheology.Data.Tests.ArchiveExport
             AssertOnly(
                 result,
                 (ArchiveMismatchKind.MessageMissingFromArchive, 1),
-                (ArchiveMismatchKind.AttachmentMissingFromArchive, 1));
+                (ArchiveMismatchKind.AttachmentMissingFromArchive, 1),
+                (ArchiveMismatchKind.SourceCountDiffers, 1));
 
             Assert.Contains(new ArchiveMismatch(ArchiveMismatchKind.MessageMissingFromArchive, 50, null), result.FirstMismatches);
             Assert.Equal(9, result.MessagesCompared);

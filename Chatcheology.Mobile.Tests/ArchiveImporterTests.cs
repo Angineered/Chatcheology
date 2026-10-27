@@ -213,7 +213,7 @@ namespace Chatcheology.Mobile.Tests
         {
             SyntheticArchive.Write(_source, Small);
             var manifest = Path.Combine(_source, ArchiveFormat.ManifestFileName);
-            File.WriteAllText(manifest, File.ReadAllText(manifest).Replace("\"formatVersion\": 1", "\"formatVersion\": 2", StringComparison.Ordinal));
+            File.WriteAllText(manifest, File.ReadAllText(manifest).Replace("\"formatVersion\": 2", "\"formatVersion\": 3", StringComparison.Ordinal));
             Rebuild(_source);
 
             var source = new FolderSource(_source);
@@ -235,7 +235,7 @@ namespace Chatcheology.Mobile.Tests
             {
                 connection.Open();
                 using var command = connection.CreateCommand();
-                command.CommandText = "PRAGMA user_version = 2;";
+                command.CommandText = "PRAGMA user_version = 3;";
                 command.ExecuteNonQuery();
             }
 

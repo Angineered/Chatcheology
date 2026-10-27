@@ -24,9 +24,14 @@ namespace Chatcheology.Archive
         /// <remarks>
         /// A whole number, and it is the major version: a reader refuses any archive whose version is
         /// higher than the one it knows. Filling a column the format already has (such as a message's
-        /// forwarded status) does not change it.
+        /// forwarded status) does not change it. Version 2 adds <c>Message.Source</c>, one
+        /// <c>ArchiveInfo</c> period per shown older export, and the memory tables; every version 1
+        /// meaning is unchanged.
         /// </remarks>
-        public const int FormatVersion = 1;
+        public const int FormatVersion = 2;
+
+        /// <summary>The lowest format version this build reads (and can still write, for tests).</summary>
+        public const int MinimumFormatVersion = 1;
 
         /// <summary>The SQLite index, written once and then read-only.</summary>
         public const string DatabaseFileName = "archive.db";
@@ -56,6 +61,29 @@ namespace Chatcheology.Archive
             "Attachment",
             "AttachmentBasis",
         ];
+
+        /// <summary>The tables format version 2 adds to <see cref="TableNames"/>: the memory tables.</summary>
+        public static IReadOnlyList<string> MemoryTableNames { get; } =
+        [
+            "Collection",
+            "Entry",
+            "EntryPeriod",
+            "EntryItem",
+            "EntryLink",
+        ];
+
+        /// <summary>Every table of the given format version, and no others.</summary>
+        /// <exception cref="ArgumentOutOfRangeException">Not a version this build knows.</exception>
+        public static IReadOnlyList<string> TableNamesOf(int formatVersion) => formatVersion switch
+        {
+            1 => TableNames,
+            2 => [.. TableNames, .. MemoryTableNames],
+            _ => throw new ArgumentOutOfRangeException(nameof(formatVersion), formatVersion, "Not a format version this build knows."),
+        };
+
+        /// <summary>Whether this build reads and writes the given format version.</summary>
+        public static bool IsKnownVersion(int formatVersion) =>
+            formatVersion >= MinimumFormatVersion && formatVersion <= FormatVersion;
 
         // \z, not $: $ also matches before a trailing newline, which must never pass as a plain name.
         [GeneratedRegex("^\\.[a-z0-9]{1,10}\\z", RegexOptions.CultureInvariant)]

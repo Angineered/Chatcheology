@@ -219,7 +219,7 @@ namespace Chatcheology.Archive.Tests
             Assert.Equal(ArchiveManifest.FormatName, manifest.Format);
             Assert.Equal(ArchiveFormat.FormatVersion, manifest.FormatVersion);
             Assert.Equal(ArchiveSample.Created, manifest.CreatedUtc);
-            Assert.Equal(new ArchiveCounts(2, 6, 5, 3, 1, 1, 2), manifest.Counts);
+            Assert.Equal(new ArchiveCounts(2, 6, 5, 3, 1, 1, 2) { WorkspaceMessages = 6 }, manifest.Counts);
         }
 
         private List<string> Snapshot() =>
