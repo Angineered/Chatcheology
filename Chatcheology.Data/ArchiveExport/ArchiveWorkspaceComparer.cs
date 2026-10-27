@@ -48,11 +48,11 @@ namespace Chatcheology.Data.ArchiveExport
                 throw new ArchiveComparisonRefusedException("The WorkspacePath or the ArchivePath is empty.");
             }
 
-            ArchiveExportSource source;
+            ArchiveCombinedSource source;
 
             try
             {
-                source = ArchiveExportSource.Read(
+                source = ArchiveCombinedSource.Read(
                     request.WorkspacePath,
                     request.ConversationID,
                     request.LocalParticipantID,
@@ -106,35 +106,26 @@ namespace Chatcheology.Data.ArchiveExport
         private static string WithoutExportClosing(string message) =>
             message.EndsWith(ExportClosing, StringComparison.Ordinal) ? message[..^ExportClosing.Length] : message;
 
-        private static ArchiveComparisonResult Compare(ArchiveExportSource source, long localParticipantID, ArchiveReader reader)
+        private static ArchiveComparisonResult Compare(ArchiveCombinedSource combined, long localParticipantID, ArchiveReader reader)
         {
             var record = new Recorder();
+            var source = combined.Workspace;
 
-            CompareInfo(source, localParticipantID, reader.Info, record);
+            CompareInfo(combined, localParticipantID, reader.Info, record);
             CompareParticipants(source.ToArchiveParticipants(localParticipantID).ToList(), reader.ReadParticipants(), record);
 
-            // The expected rows, built exactly as the exporter builds them. No original file name: a
-            // comparison copies nothing, so it neither knows nor compares one.
-            var linksOutside = 0;
-            var expectedMessages = new Dictionary<long, ArchiveMessage>(source.Messages.Count);
-            var expectedAttachments = new Dictionary<long, ArchiveAttachment>();
+            // The expected rows, built exactly as the exporter builds them. No workspace original file
+            // name: a comparison copies nothing, so it neither knows nor compares one.
+            var expectedList = combined.ToArchiveMessages(static _ => null, out _);
+            var expectedMessages = expectedList.ToDictionary(m => m.MessageID);
+            var expectedAttachments = expectedList.SelectMany(m => m.Attachments).ToDictionary(a => a.AttachmentID);
 
-            foreach (var message in source.Messages)
-            {
-                var expected = source.ToArchiveMessage(message, static _ => null, ref linksOutside);
-                expectedMessages.Add(expected.MessageID, expected);
-
-                foreach (var attachment in expected.Attachments)
-                {
-                    expectedAttachments.Add(attachment.AttachmentID, attachment);
-                }
-            }
-
-            var expectedMedia = source.ToArchiveMedia().ToDictionary(m => m.Sha256, StringComparer.Ordinal);
+            var expectedMedia = combined.ToArchiveMedia().ToDictionary(m => m.Sha256, StringComparer.Ordinal);
             var actualMedia = new Dictionary<string, ArchiveMedia>(StringComparer.Ordinal);
 
             var seenMessages = new HashSet<long>();
             var seenAttachments = new HashSet<long>();
+            int workspaceMessages = 0, exportMessages = 0;
 
             // Refuses (ArchiveFormatException) an archive whose messages cannot all be read in order.
             foreach (var page in reader.ReadAllPages())
@@ -142,6 +133,15 @@ namespace Chatcheology.Data.ArchiveExport
                 foreach (var actual in page.Messages)
                 {
                     seenMessages.Add(actual.MessageID);
+
+                    if (actual.Source == ArchiveMessageSource.Export)
+                    {
+                        exportMessages++;
+                    }
+                    else
+                    {
+                        workspaceMessages++;
+                    }
 
                     if (expectedMessages.TryGetValue(actual.MessageID, out var expected))
                     {
@@ -173,7 +173,7 @@ namespace Chatcheology.Data.ArchiveExport
                 }
             }
 
-            foreach (var expected in source.Messages.Where(m => !seenMessages.Contains(m.MessageID)))
+            foreach (var expected in expectedList.Where(m => !seenMessages.Contains(m.MessageID)))
             {
                 record.Add(ArchiveMismatchKind.MessageMissingFromArchive, expected.SequenceNumber);
             }
@@ -186,33 +186,187 @@ namespace Chatcheology.Data.ArchiveExport
                     expected.AttachmentID);
             }
 
+            // Messages per source, proved against the files: the workspace conversation, and the shown
+            // part of the older exports.
+            if (workspaceMessages != source.Messages.Count)
+            {
+                record.Add(ArchiveMismatchKind.SourceCountDiffers, null);
+            }
+
+            if (exportMessages != combined.OlderTimeline.Count)
+            {
+                record.Add(ArchiveMismatchKind.SourceCountDiffers, null);
+            }
+
+            var actualEntries = reader.ReadAllEntries();
+
+            foreach (var entry in actualEntries.Where(e => e.ImageSha256 is not null))
+            {
+                if (!actualMedia.ContainsKey(entry.ImageSha256!) && reader.ReadMediaOf(entry.ImageSha256!) is { } media)
+                {
+                    actualMedia[entry.ImageSha256!] = media;
+                }
+            }
+
             CompareMedia(expectedMedia, actualMedia, record);
+
+            var expectedCollections = combined.CollectionCounts();
+            CompareMemories(combined, reader, actualEntries, record);
+
+            var attachments = expectedAttachments.Values.ToList();
 
             return record.Result(
                 participants: source.Participants.Count,
-                messages: source.Messages.Count,
-                attachments: expectedAttachments.Count,
-                restored: source.Resolved,
-                missing: source.MissingReviewed,
-                unmatched: source.Unmatched);
+                messages: expectedList.Count,
+                attachments: attachments.Count,
+                restored: attachments.Count(a => a.State == ArchiveAttachmentState.Restored),
+                missing: attachments.Count(a => a.State == ArchiveAttachmentState.Missing),
+                unmatched: attachments.Count(a => a.State == ArchiveAttachmentState.Unmatched),
+                workspaceMessages: source.Messages.Count,
+                exportMessages: combined.OlderTimeline.Count,
+                exports: combined.Older?.Exports
+                    .Select(e => new ArchiveComparisonExportCounts(e.Position, e.Shown, e.MessageCount, e.ShownMessages.Count, e.HiddenCount))
+                    .ToList() ?? [],
+                collections: expectedCollections);
         }
 
         // -------------------------------------------------------------------------------------
         // Field by field.
         // -------------------------------------------------------------------------------------
 
-        private static void CompareInfo(ArchiveExportSource source, long localParticipantID, ArchiveInfo info, Recorder record)
+        private static void CompareInfo(ArchiveCombinedSource combined, long localParticipantID, ArchiveInfo info, Recorder record)
         {
+            var source = combined.Workspace;
+
             var same = new[]
             {
                 info.ConversationTitle == source.ConversationTitle,
                 info.SourceExportSha256 == source.SourceExportSha256,
                 info.TimeZoneID == source.TimeZoneID,
                 info.LocalParticipantID == localParticipantID,
+                info.ExportPeriods.SequenceEqual(combined.ExportPeriods),
             };
 
             record.AddCount(ArchiveMismatchKind.ArchiveInfoDiffers, same.Count(s => !s));
         }
+
+        /// <summary>
+        /// Version 2's memory rows: each collection, entry (with its periods and items) and link, field
+        /// by field, and each collection's entry, period and item counts against the memories file. An
+        /// entry image's extension is not compared: it follows whichever file the payload is stored
+        /// under. A version 1 archive holds none, so anything in the memories file is missing from it.
+        /// </summary>
+        private static void CompareMemories(
+            ArchiveCombinedSource combined, ArchiveReader reader, IReadOnlyList<ArchiveEntry> actualEntries, Recorder record)
+        {
+            var expectedCollections = combined.ToArchiveCollections().ToDictionary(c => c.CollectionID);
+            var actualCollections = reader.ReadCollections().ToDictionary(c => c.CollectionID);
+
+            record.AddCount(
+                ArchiveMismatchKind.CollectionDiffers,
+                expectedCollections.Values.Count(e =>
+                    !actualCollections.TryGetValue(e.CollectionID, out var a)
+                    || a.Kind != e.Kind
+                    || a.Name != e.Name
+                    || a.SourceDescription != e.SourceDescription
+                    || a.ShownByDefault != e.ShownByDefault
+                    || a.PeriodGapMinutes != e.PeriodGapMinutes)
+                + actualCollections.Keys.Count(id => !expectedCollections.ContainsKey(id)));
+
+            var expectedEntries = combined.ToArchiveEntries((_, own) => own).ToDictionary(e => e.EntryID);
+            var actualByID = actualEntries.ToDictionary(e => e.EntryID);
+
+            foreach (var expected in expectedEntries.Values)
+            {
+                if (!actualByID.TryGetValue(expected.EntryID, out var actual)
+                    || !SameEntry(expected, actual)
+                    || !SamePeriods(expected.Periods, reader.ReadPeriods(expected.EntryID)))
+                {
+                    record.Add(ArchiveMismatchKind.EntryDiffers, null);
+                }
+            }
+
+            record.AddCount(ArchiveMismatchKind.EntryDiffers, actualByID.Keys.Count(id => !expectedEntries.ContainsKey(id)));
+
+            var expectedLinks = combined.ToArchiveLinks().ToDictionary(l => l.EntryLinkID);
+            var actualLinks = reader.ReadAllLinks().ToDictionary(l => l.EntryLinkID);
+
+            record.AddCount(
+                ArchiveMismatchKind.EntryLinkDiffers,
+                expectedLinks.Values.Count(e =>
+                    !actualLinks.TryGetValue(e.EntryLinkID, out var a)
+                    || a.FromEntryID != e.FromEntryID
+                    || a.ToEntryID != e.ToEntryID
+                    || a.ToMessageSequenceNumber != e.ToMessageSequenceNumber)
+                + actualLinks.Keys.Count(id => !expectedLinks.ContainsKey(id)));
+
+            // Counts per collection, proved against the memories file itself.
+            var expectedCounts = combined.CollectionCounts();
+            var actualCounts = reader.HasMemories
+                ? actualCollections.Keys.Order().Select(id =>
+                {
+                    var entries = actualEntries.Where(e => e.CollectionID == id).ToList();
+                    var periods = entries.SelectMany(e => reader.ReadPeriods(e.EntryID)).ToList();
+
+                    return new ArchiveCollectionCounts(id, entries.Count, periods.Count, periods.Sum(p => p.Items.Count));
+                }).ToList()
+                : [];
+
+            if (!expectedCounts.SequenceEqual(actualCounts))
+            {
+                record.Add(ArchiveMismatchKind.CollectionCountsDiffer, null);
+            }
+        }
+
+        private static bool SameEntry(ArchiveEntry e, ArchiveEntry a) =>
+            e.CollectionID == a.CollectionID
+            && e.SourceKey == a.SourceKey
+            && e.Title == a.Title
+            && SameLocal(e.StartLocal, a.StartLocal)
+            && SameLocal(e.EndLocal, a.EndLocal)
+            && SameUtc(e.StartUtc, a.StartUtc)
+            && SameUtc(e.EndUtc, a.EndUtc)
+            && e.DatePrecision == a.DatePrecision
+            && e.Summary == a.Summary
+            && e.ImageSha256 == a.ImageSha256
+            && e.Source == a.Source
+            && e.DayLevel == a.DayLevel;
+
+        private static bool SamePeriods(IReadOnlyList<ArchiveEntryPeriod> expected, IReadOnlyList<ArchiveEntryPeriod> actual) =>
+            expected.Count == actual.Count
+            && expected.Zip(actual).All(pair =>
+                pair.First.PeriodIndex == pair.Second.PeriodIndex
+                && SameUtc(pair.First.StartUtc, pair.Second.StartUtc)
+                && SameUtc(pair.First.EndUtc, pair.Second.EndUtc)
+                && SameLocal(pair.First.StartLocal, pair.Second.StartLocal)
+                && SameLocal(pair.First.EndLocal, pair.Second.EndLocal)
+                && pair.First.Label == pair.Second.Label
+                && pair.First.LocalItemCount == pair.Second.LocalItemCount
+                && pair.First.OtherItemCount == pair.Second.OtherItemCount
+                && SameItems(pair.First.Items, pair.Second.Items));
+
+        private static bool SameItems(IReadOnlyList<ArchiveEntryItem> expected, IReadOnlyList<ArchiveEntryItem> actual)
+        {
+            var byID = actual.ToDictionary(i => i.EntryItemID);
+
+            return expected.Count == actual.Count
+                   && expected.All(e =>
+                       byID.TryGetValue(e.EntryItemID, out var a)
+                       && a.ParticipantID == e.ParticipantID
+                       && a.SetId == e.SetId
+                       && a.ItemId == e.ItemId
+                       && a.ItemType == e.ItemType
+                       && SameUtc(e.TimeUtc, a.TimeUtc)
+                       && SameLocal(e.TimeLocal, a.TimeLocal));
+        }
+
+        private static bool SameLocal(DateTime? e, DateTime? a) =>
+            (e is null && a is null)
+            || (e is { } x && a is { } y && ArchiveFormat.FormatLocal(x) == ArchiveFormat.FormatLocal(y));
+
+        private static bool SameUtc(DateTime? e, DateTime? a) =>
+            (e is null && a is null)
+            || (e is { } x && a is { } y && ArchiveFormat.FormatUtc(x) == ArchiveFormat.FormatUtc(y));
 
         private static void CompareParticipants(
             IReadOnlyList<ArchiveParticipant> expected, IReadOnlyList<ArchiveParticipant> actual, Recorder record)
@@ -262,6 +416,11 @@ namespace Chatcheology.Data.ArchiveExport
             {
                 record.Add(ArchiveMismatchKind.MessageForwardedDiffers, sequence);
             }
+
+            if (expected.Source != actual.Source)
+            {
+                record.Add(ArchiveMismatchKind.MessageSourceDiffers, sequence);
+            }
         }
 
         private static void CompareAttachment(
@@ -279,7 +438,11 @@ namespace Chatcheology.Data.ArchiveExport
                 record.Add(ArchiveMismatchKind.AttachmentStateDiffers, sequence, id);
             }
 
-            if (!string.Equals(expected.MediaSha256, actual.MediaSha256, StringComparison.Ordinal))
+            // An older export's restored file is named by its line, so its name is known and compared;
+            // a workspace file's name follows the copy the export took, and is not.
+            if (!string.Equals(expected.MediaSha256, actual.MediaSha256, StringComparison.Ordinal)
+                || (expected.OriginalFileName is not null
+                    && !string.Equals(expected.OriginalFileName, actual.OriginalFileName, StringComparison.Ordinal)))
             {
                 record.Add(ArchiveMismatchKind.AttachmentMediaDiffers, sequence, id);
             }
@@ -363,7 +526,16 @@ namespace Chatcheology.Data.ArchiveExport
             }
 
             internal ArchiveComparisonResult Result(
-                int participants, int messages, int attachments, int restored, int missing, int unmatched) => new()
+                int participants,
+                int messages,
+                int attachments,
+                int restored,
+                int missing,
+                int unmatched,
+                int workspaceMessages,
+                int exportMessages,
+                IReadOnlyList<ArchiveComparisonExportCounts> exports,
+                IReadOnlyList<ArchiveCollectionCounts> collections) => new()
             {
                 ParticipantsCompared = participants,
                 MessagesCompared = messages,
@@ -373,6 +545,10 @@ namespace Chatcheology.Data.ArchiveExport
                 Unmatched = unmatched,
                 MismatchCounts = new Dictionary<ArchiveMismatchKind, int>(_counts),
                 FirstMismatches = _first.ToList(),
+                WorkspaceMessages = workspaceMessages,
+                ExportMessages = exportMessages,
+                Exports = exports,
+                Collections = collections,
             };
         }
     }
@@ -452,7 +628,37 @@ namespace Chatcheology.Data.ArchiveExport
 
         /// <summary>A payload's recorded description differs, or the payload is on one side only.</summary>
         MediaDetailsDiffer,
+
+        /// <summary>Version 2: a message's source (workspace or older export) differs.</summary>
+        MessageSourceDiffers,
+
+        /// <summary>
+        /// Version 2: the archive's messages of one source are not as many as that source file shows
+        /// (the workspace conversation, or the shown part of the older exports).
+        /// </summary>
+        SourceCountDiffers,
+
+        /// <summary>Version 2: a collection is on one side only, or differs.</summary>
+        CollectionDiffers,
+
+        /// <summary>Version 2: an entry is on one side only, or it, its periods or its items differ.</summary>
+        EntryDiffers,
+
+        /// <summary>Version 2: a link is on one side only, or differs (a message link as re-mapped).</summary>
+        EntryLinkDiffers,
+
+        /// <summary>Version 2: the entries, periods or items per collection differ from the memories file's.</summary>
+        CollectionCountsDiffer,
     }
+
+    /// <summary>One older export's messages as the older-exports file holds them. Counts only.</summary>
+    /// <param name="Position">Its place in the timeline of older exports.</param>
+    /// <param name="Shown">Whether it is shown.</param>
+    /// <param name="Messages">Its messages.</param>
+    /// <param name="ShownMessages">Messages in the archive: from its cut on, none when not shown.</param>
+    /// <param name="HiddenMessages">Messages kept as evidence only.</param>
+    public sealed record ArchiveComparisonExportCounts(
+        int Position, bool Shown, int Messages, int ShownMessages, int HiddenMessages);
 
     /// <summary>
     /// One listed mismatch: its kind, and at most the sequence number of its message and the
@@ -492,6 +698,18 @@ namespace Chatcheology.Data.ArchiveExport
 
         /// <summary>The first <see cref="ArchiveWorkspaceComparer.MaximumListedMismatches"/> mismatches found.</summary>
         public required IReadOnlyList<ArchiveMismatch> FirstMismatches { get; init; }
+
+        /// <summary>Version 2: the workspace conversation's messages.</summary>
+        public int WorkspaceMessages { get; init; }
+
+        /// <summary>Version 2: the older exports' shown messages, all exports together.</summary>
+        public int ExportMessages { get; init; }
+
+        /// <summary>Version 2: each older export's shown and hidden messages, in position order. Empty with no older-exports file.</summary>
+        public IReadOnlyList<ArchiveComparisonExportCounts> Exports { get; init; } = [];
+
+        /// <summary>Version 2: entries, periods and items per collection in the memories file. Empty with no memories file.</summary>
+        public IReadOnlyList<ArchiveCollectionCounts> Collections { get; init; } = [];
 
         /// <summary>The archive says exactly what the workspace says.</summary>
         public bool Passed => MismatchCounts.Values.All(count => count == 0);

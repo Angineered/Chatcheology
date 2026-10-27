@@ -80,8 +80,11 @@ namespace Chatcheology.Data.ArchiveExport
                 throw new ArchiveExportRefusedException("The WorkspacePath is empty. Nothing was written.");
             }
 
-            var source = ArchiveExportSource.Read(
-                workspacePath, conversationID, localParticipantID, PageSize, progress: null, cancellationToken);
+            // The three files are read exactly as an export reads them, so anything that would refuse the
+            // export refuses here; the counts are the workspace conversation's, which the export's
+            // expected counts are checked against.
+            var source = ArchiveCombinedSource.Read(
+                workspacePath, conversationID, localParticipantID, PageSize, progress: null, cancellationToken).Workspace;
 
             return new ArchiveExportPreview(
                 Messages: source.Messages.Count,
@@ -129,7 +132,15 @@ namespace Chatcheology.Data.ArchiveExport
             var output = OutputGuard.Check(request.OutputPath);
             var partial = output + PartialSuffix;
 
-            var source = ArchiveExportSource.Read(request, PageSize, progress, cancellationToken);
+            var combined = ArchiveCombinedSource.Read(
+                request.WorkspacePath,
+                request.ConversationID,
+                request.LocalParticipantID,
+                PageSize,
+                progress,
+                cancellationToken);
+
+            var source = combined.Workspace;
 
             if (source.Resolved != request.ExpectResolved)
             {
@@ -146,7 +157,7 @@ namespace Chatcheology.Data.ArchiveExport
                     $"{Count(request.ExpectMissingReviewed)}. Nothing was written.");
             }
 
-            foreach (var root in source.MediaRoots.Distinct(StringComparer.OrdinalIgnoreCase))
+            foreach (var root in combined.MediaRoots.Distinct(StringComparer.OrdinalIgnoreCase))
             {
                 if (IsWithinRoot(output, root))
                 {
@@ -176,7 +187,7 @@ namespace Chatcheology.Data.ArchiveExport
 
             try
             {
-                return Write(source, request, partial, output, progress, cancellationToken);
+                return Write(combined, request, partial, output, progress, cancellationToken);
             }
             catch (ArchiveExportStoppedException)
             {
@@ -227,13 +238,14 @@ namespace Chatcheology.Data.ArchiveExport
         }
 
         private ArchiveExportResult Write(
-            ArchiveExportSource source,
+            ArchiveCombinedSource combined,
             ArchiveExportRequest request,
             string partial,
             string output,
             IProgress<ArchiveExportProgress>? progress,
             CancellationToken cancellationToken)
         {
+            var source = combined.Workspace;
             var media = CopyMedia(source, partial, progress, cancellationToken);
 
             if (media.Failed > 0)
@@ -244,6 +256,14 @@ namespace Chatcheology.Data.ArchiveExport
                     $"not there or unreadable, {Count(media.Different)} with different bytes). No archive " +
                     "folder was written.");
             }
+
+            // Every stored file, by hash: the extensions a payload is already stored under.
+            var storedPaths = media.Stored
+                .Select(pair => ArchiveFormat.MediaFileName(source.AssetSha256[pair.Key], pair.Value))
+                .ToHashSet(StringComparer.Ordinal);
+
+            CopyOlderMedia(combined, partial, storedPaths, cancellationToken);
+            var imageExtensions = CopyEntryImages(combined, partial, storedPaths, cancellationToken);
 
             AfterMediaCopiedForTests?.Invoke(partial);
 
@@ -260,7 +280,7 @@ namespace Chatcheology.Data.ArchiveExport
             var created = new DateTime(now.Ticks - now.Ticks % TimeSpan.TicksPerSecond, DateTimeKind.Utc);
 
             var (counts, linksOutside) = WriteDatabase(
-                source, request, media.Stored, created, partial, progress, cancellationToken);
+                combined, request, media.Stored, imageExtensions, created, partial, progress, cancellationToken);
 
             // The ownership marker is not part of the archive. From here on a stop still removes the
             // folder: ownership was established when it was created.
@@ -302,14 +322,17 @@ namespace Chatcheology.Data.ArchiveExport
         // -------------------------------------------------------------------------------------
 
         private static (ArchiveCounts Counts, int LinksOutside) WriteDatabase(
-            ArchiveExportSource source,
+            ArchiveCombinedSource combined,
             ArchiveExportRequest request,
             IReadOnlyDictionary<long, string> originalFileNames,
+            IReadOnlyDictionary<string, string> imageExtensions,
             DateTime created,
             string partial,
             IProgress<ArchiveExportProgress>? progress,
             CancellationToken cancellationToken)
         {
+            var source = combined.Workspace;
+
             var info = new ArchiveInfo
             {
                 FormatVersion = ArchiveFormat.FormatVersion,
@@ -319,9 +342,8 @@ namespace Chatcheology.Data.ArchiveExport
                 SourceExportSha256 = source.SourceExportSha256,
                 TimeZoneID = source.TimeZoneID,
                 LocalParticipantID = request.LocalParticipantID,
+                ExportPeriods = combined.ExportPeriods,
             };
-
-            var linksOutside = 0;
 
             using var writer = ArchiveWriter.Create(Path.Combine(partial, ArchiveFormat.DatabaseFileName), info);
 
@@ -330,30 +352,231 @@ namespace Chatcheology.Data.ArchiveExport
                 writer.WriteParticipant(participant);
             }
 
-            foreach (var media in source.ToArchiveMedia())
+            foreach (var media in combined.ToArchiveMedia())
             {
                 writer.WriteMedia(media);
             }
 
+            var messages = combined.ToArchiveMessages(assetID => originalFileNames[assetID], out var linksOutside);
             var written = 0;
 
-            foreach (var message in source.Messages)
+            foreach (var message in messages)
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
-                writer.WriteMessage(
-                    source.ToArchiveMessage(message, assetID => originalFileNames[assetID], ref linksOutside));
+                writer.WriteMessage(message);
 
                 written++;
 
-                if (written % ConversationReader.MaximumPageSize == 0 || written == source.Messages.Count)
+                if (written % ConversationReader.MaximumPageSize == 0 || written == messages.Count)
                 {
                     progress?.Report(new ArchiveExportProgress(
-                        ArchiveExportStage.WritingArchive, written, source.Messages.Count));
+                        ArchiveExportStage.WritingArchive, written, messages.Count));
                 }
             }
 
+            foreach (var collection in combined.ToArchiveCollections())
+            {
+                writer.WriteCollection(collection);
+            }
+
+            foreach (var entry in combined.ToArchiveEntries((sha, _) => imageExtensions[sha]))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                writer.WriteEntry(entry);
+            }
+
+            foreach (var link in combined.ToArchiveLinks())
+            {
+                writer.WriteEntryLink(link);
+            }
+
             return (writer.Complete(), linksOutside);
+        }
+
+        // -------------------------------------------------------------------------------------
+        // Older-export media and entry images (format version 2).
+        // -------------------------------------------------------------------------------------
+
+        /// <summary>
+        /// Copies each older restored file the archive needs into <c>media/</c>, checking its bytes
+        /// against the SHA-256 recorded at import. The recorded copies are tried in the location
+        /// reader's order and the first whose bytes match is kept. A file already stored at the same
+        /// path (the same payload, under the same extension) is not copied again. A payload with no
+        /// matching copy stops the export.
+        /// </summary>
+        private static void CopyOlderMedia(
+            ArchiveCombinedSource combined, string partial, HashSet<string> storedPaths, CancellationToken cancellationToken)
+        {
+            var folder = Path.Combine(partial, ArchiveFormat.MediaFolderName);
+            int failed = 0, different = 0, unreadable = 0;
+
+            var needs = combined.OlderMediaNeeds();
+
+            foreach (var (sha, fileName, copies) in needs)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                var name = ArchiveFormat.MediaFileName(sha, fileName);
+
+                if (storedPaths.Contains(name))
+                {
+                    continue;
+                }
+
+                var taken = false;
+
+                foreach (var copy in copies)
+                {
+                    switch (TryCopy(copy.FullPath, Path.Combine(folder, name), sha))
+                    {
+                        case CopyOutcome.Copied:
+                            taken = true;
+                            break;
+
+                        case CopyOutcome.Different:
+                            different++;
+                            continue;
+
+                        default:
+                            unreadable++;
+                            continue;
+                    }
+
+                    break;
+                }
+
+                if (taken)
+                {
+                    storedPaths.Add(name);
+                }
+                else
+                {
+                    failed++;
+                }
+            }
+
+            if (failed > 0)
+            {
+                throw new ArchiveExportStoppedException(
+                    $"{Count(failed)} of {Count(needs.Count)} older-export media files have no readable copy whose " +
+                    $"bytes match the SHA-256 recorded at import ({Count(unreadable)} copies not there or " +
+                    $"unreadable, {Count(different)} with different bytes). No archive folder was written.");
+            }
+        }
+
+        /// <summary>
+        /// Copies each entry image into <c>media/</c> once, checking its bytes against its hash. An image
+        /// whose payload is already stored for an attachment keeps that file and its extension, so one
+        /// payload is one file. A missing or different image stops the export.
+        /// </summary>
+        /// <returns>The extension each image is stored under, by hash.</returns>
+        private static Dictionary<string, string> CopyEntryImages(
+            ArchiveCombinedSource combined, string partial, HashSet<string> storedPaths, CancellationToken cancellationToken)
+        {
+            var extensions = new Dictionary<string, string>(StringComparer.Ordinal);
+
+            if (combined.Memories is not { } memories)
+            {
+                return extensions;
+            }
+
+            var folder = Path.Combine(partial, ArchiveFormat.MediaFolderName);
+            int failed = 0, different = 0;
+
+            foreach (var image in memories.Images.Values.OrderBy(i => i.Sha256, StringComparer.Ordinal))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                var existing = storedPaths
+                    .Where(path => path.StartsWith(image.Sha256, StringComparison.Ordinal))
+                    .Order(StringComparer.Ordinal)
+                    .FirstOrDefault();
+
+                if (existing is not null && existing.Length > image.Sha256.Length)
+                {
+                    extensions[image.Sha256] = existing[image.Sha256.Length..];
+                    continue;
+                }
+
+                switch (TryCopy(image.FullPath, Path.Combine(folder, image.Sha256 + image.Extension), image.Sha256))
+                {
+                    case CopyOutcome.Copied:
+                        storedPaths.Add(image.Sha256 + image.Extension);
+                        extensions[image.Sha256] = image.Extension;
+                        break;
+
+                    case CopyOutcome.Different:
+                        different++;
+                        failed++;
+                        break;
+
+                    default:
+                        failed++;
+                        break;
+                }
+            }
+
+            if (failed > 0)
+            {
+                throw new ArchiveExportStoppedException(
+                    $"{Count(failed)} of {Count(memories.Images.Count)} entry images are not in the memories media " +
+                    $"folder with the bytes their hash names ({Count(different)} with different bytes). No archive " +
+                    "folder was written.");
+            }
+
+            return extensions;
+        }
+
+        private enum CopyOutcome
+        {
+            Copied,
+            Different,
+            Unreadable,
+        }
+
+        /// <summary>Copies one source file to <paramref name="target"/> through a temporary file, keeping it only when its bytes hash to <paramref name="expected"/>.</summary>
+        private static CopyOutcome TryCopy(string source, string target, string expected)
+        {
+            var temporary = target + ".tmp";
+            string actual;
+
+            try
+            {
+                if (!File.Exists(source))
+                {
+                    return CopyOutcome.Unreadable;
+                }
+
+                actual = ArchiveHashing.CopyWithHash(source, temporary).Sha256;
+            }
+            catch (ArchiveDestinationWriteException exception)
+            {
+                throw DestinationFailure(exception);
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                TryDelete(temporary);
+                return CopyOutcome.Unreadable;
+            }
+
+            if (actual != expected)
+            {
+                TryDelete(temporary);
+                return CopyOutcome.Different;
+            }
+
+            try
+            {
+                File.Move(temporary, target);
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                throw DestinationFailure(exception);
+            }
+
+            return CopyOutcome.Copied;
         }
 
         // -------------------------------------------------------------------------------------

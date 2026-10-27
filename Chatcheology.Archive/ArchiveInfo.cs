@@ -65,5 +65,52 @@ namespace Chatcheology.Archive
 
         /// <summary>The participant whose side of the conversation is "me".</summary>
         public required long LocalParticipantID { get; init; }
+
+        /// <summary>
+        /// Format version 2: the period of each shown older export, in timeline order, stored as one
+        /// info row each (<c>ExportPeriod.1</c>, <c>ExportPeriod.2</c>, ...). Period only: no file name.
+        /// Empty for a version 1 archive and for an archive without older exports.
+        /// </summary>
+        public IReadOnlyList<ArchiveExportPeriod> ExportPeriods { get; init; } = [];
+
+        /// <summary>The info key of the <paramref name="position"/>th (1-based) export period.</summary>
+        public static string ExportPeriodKey(int position) =>
+            ExportPeriodKeyPrefix + position.ToString(System.Globalization.CultureInfo.InvariantCulture);
+
+        /// <summary>The prefix of every export period key.</summary>
+        public const string ExportPeriodKeyPrefix = "ExportPeriod.";
+    }
+
+    /// <summary>
+    /// The shown part of one older export: its first and last shown message times, local wall clock.
+    /// Stored as <c>first/last</c> in the archive's local date-time form.
+    /// </summary>
+    /// <param name="FirstLocal">The first shown message's local time.</param>
+    /// <param name="LastLocal">The last shown message's local time.</param>
+    public sealed record ArchiveExportPeriod(DateTime FirstLocal, DateTime LastLocal)
+    {
+        /// <summary>The stored form.</summary>
+        public string Format() => ArchiveFormat.FormatLocal(FirstLocal) + "/" + ArchiveFormat.FormatLocal(LastLocal);
+
+        /// <summary>Reads the stored form back.</summary>
+        /// <exception cref="ArchiveFormatException">Not in the stored form.</exception>
+        public static ArchiveExportPeriod Parse(string text)
+        {
+            ArgumentNullException.ThrowIfNull(text);
+
+            var parts = text.Split('/');
+
+            if (parts.Length != 2)
+            {
+                throw new ArchiveFormatException("An export period in the archive's info table is not in its stored form.");
+            }
+
+            var first = ArchiveFormat.ParseLocal(parts[0]);
+            var last = ArchiveFormat.ParseLocal(parts[1]);
+
+            return last < first
+                ? throw new ArchiveFormatException("An export period in the archive's info table ends before it starts.")
+                : new ArchiveExportPeriod(first, last);
+        }
     }
 }

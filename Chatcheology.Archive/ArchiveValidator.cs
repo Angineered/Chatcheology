@@ -53,12 +53,18 @@ namespace Chatcheology.Archive
                 or ArchiveProblemKind.MediaFileDiffers
                 or ArchiveProblemKind.UnrestoredWithMedia
                 or ArchiveProblemKind.MediaRowUnused
-                or ArchiveProblemKind.MediaFileUnused => ArchiveCheck.Media,
+                or ArchiveProblemKind.MediaFileUnused
+                or ArchiveProblemKind.EntryImageWithoutMediaRow
+                or ArchiveProblemKind.EntryImageFileMissing
+                or ArchiveProblemKind.EntryImageFileDiffers => ArchiveCheck.Media,
 
             ArchiveProblemKind.LowQualityLinkDangling
                 or ArchiveProblemKind.AttachmentWithoutMessage
                 or ArchiveProblemKind.RestoredWithoutBasis
-                or ArchiveProblemKind.BasisOnUnrestored => ArchiveCheck.LinksAndBasis,
+                or ArchiveProblemKind.BasisOnUnrestored
+                or ArchiveProblemKind.MemoryRowDangling
+                or ArchiveProblemKind.LinkNotFromPersonal
+                or ArchiveProblemKind.PeriodCountsDiffer => ArchiveCheck.LinksAndBasis,
 
             ArchiveProblemKind.SequenceNumberInvalid
                 or ArchiveProblemKind.SequenceGap
@@ -163,16 +169,17 @@ namespace Chatcheology.Archive
                 return;
             }
 
-            // The reader has already refused any database version but this format's.
+            // The reader has already refused any database version it does not know; the manifest must
+            // record the database's own.
             var header = new[]
             {
-                manifest.FormatVersion == ArchiveFormat.FormatVersion,
+                manifest.FormatVersion == reader.Info.FormatVersion,
                 manifest.CreatedUtc.ToUniversalTime() == reader.Info.CreatedUtc,
             };
 
             var counted = manifest.Counts;
 
-            var counts = new (int Manifest, string Sql)[]
+            var counts = new List<(int Manifest, string Sql)>
             {
                 (counted.Participants, "SELECT COUNT(*) FROM Participant;"),
                 (counted.Messages, "SELECT COUNT(*) FROM Message;"),
@@ -183,9 +190,35 @@ namespace Chatcheology.Archive
                 (counted.MediaFiles, "SELECT COUNT(*) FROM Media;"),
             };
 
-            record.Examined(ArchiveCheck.Manifest, header.Length + counts.Length);
+            var differ = counts.Count(c => c.Manifest != reader.ReadCount(c.Sql));
+            var examined = header.Length + counts.Count;
+
+            if (reader.HasMemories)
+            {
+                // Version 2: messages per source, export periods, links, and each collection's rows.
+                var v2 = new (int Manifest, long Actual)[]
+                {
+                    (counted.WorkspaceMessages, reader.ReadCount("SELECT COUNT(*) FROM Message WHERE Source = 'Workspace';")),
+                    (counted.ExportMessages, reader.ReadCount("SELECT COUNT(*) FROM Message WHERE Source = 'Export';")),
+                    (counted.ExportPeriods, reader.Info.ExportPeriods.Count),
+                    (counted.EntryLinks, reader.ReadCount("SELECT COUNT(*) FROM EntryLink;")),
+                };
+
+                var actual = reader.ReadCollectionCounts();
+                var listed = counted.Collections ?? [];
+                var byID = listed.GroupBy(c => c.CollectionID).ToDictionary(g => g.Key, g => g.ToList());
+
+                var collectionsDiffer =
+                    actual.Count(a => !byID.TryGetValue(a.CollectionID, out var m) || m.Count != 1 || m[0] != a)
+                    + listed.Count(m => actual.All(a => a.CollectionID != m.CollectionID));
+
+                differ += v2.Count(c => c.Manifest != c.Actual) + collectionsDiffer;
+                examined += v2.Length + Math.Max(actual.Count, listed.Count);
+            }
+
+            record.Examined(ArchiveCheck.Manifest, examined);
             record.AddCount(ArchiveProblemKind.ManifestHeaderDiffers, header.Count(same => !same));
-            record.AddCount(ArchiveProblemKind.ManifestCountDiffers, counts.Count(c => c.Manifest != reader.ReadCount(c.Sql)));
+            record.AddCount(ArchiveProblemKind.ManifestCountDiffers, differ);
             record.Ran(ArchiveCheck.Manifest);
         }
 
@@ -301,13 +334,23 @@ namespace Chatcheology.Archive
                 record.Add(ArchiveProblemKind.BasisOnUnrestored, attachmentID: extra);
             }
 
+            var entryImages = reader.HasMemories
+                ? CheckMemories(reader, usedMediaPaths, fileHashes, record)
+                : 0;
+
             record.AddCount(
                 ArchiveProblemKind.MediaRowUnused,
                 (int)reader.ReadCount(
-                    """
-                    SELECT COUNT(*) FROM Media WHERE Sha256 NOT IN (
-                        SELECT MediaSha256 FROM Attachment WHERE State = 'Restored' AND MediaSha256 IS NOT NULL);
-                    """));
+                    reader.HasMemories
+                        ? """
+                          SELECT COUNT(*) FROM Media WHERE Sha256 NOT IN (
+                              SELECT MediaSha256 FROM Attachment WHERE State = 'Restored' AND MediaSha256 IS NOT NULL)
+                            AND Sha256 NOT IN (SELECT ImageSha256 FROM Entry WHERE ImageSha256 IS NOT NULL);
+                          """
+                        : """
+                          SELECT COUNT(*) FROM Media WHERE Sha256 NOT IN (
+                              SELECT MediaSha256 FROM Attachment WHERE State = 'Restored' AND MediaSha256 IS NOT NULL);
+                          """));
 
             var mediaFiles = ArchiveContents.RelativeFiles(folder)
                 .Where(r => r.StartsWith(MediaPrefix, StringComparison.Ordinal))
@@ -322,8 +365,11 @@ namespace Chatcheology.Archive
                 record.Add(ArchiveProblemKind.LocalParticipantWrong);
             }
 
-            record.Examined(ArchiveCheck.Media, restored + mediaFiles.Count);
-            record.Examined(ArchiveCheck.LinksAndBasis, (int)reader.ReadCount("SELECT COUNT(*) FROM Attachment;"));
+            record.Examined(ArchiveCheck.Media, restored + entryImages + mediaFiles.Count);
+            record.Examined(
+                ArchiveCheck.LinksAndBasis,
+                (int)reader.ReadCount("SELECT COUNT(*) FROM Attachment;")
+                + (reader.HasMemories ? (int)reader.ReadCount("SELECT COUNT(*) FROM Entry;") : 0));
             record.Examined(ArchiveCheck.SequenceAndSenders, messages);
 
             record.Ran(ArchiveCheck.Media);
@@ -372,6 +418,78 @@ namespace Chatcheology.Archive
             {
                 record.Add(ArchiveProblemKind.MediaFileDiffers, message.SequenceNumber, attachment.AttachmentID);
             }
+        }
+
+        /// <summary>
+        /// Version 2's memory rows: each entry image has its Media row and a media file with its hash
+        /// (Media check); every memory row points at rows that exist, links start at personal entries,
+        /// and each period's counts equal its items (links-and-basis check). Every entry, period and
+        /// item is read, so a value of the wrong kind or outside the format's vocabulary stops the
+        /// checks as for messages.
+        /// </summary>
+        /// <returns>How many entry images were examined.</returns>
+        private static int CheckMemories(
+            ArchiveReader reader,
+            HashSet<string> usedMediaPaths,
+            Dictionary<string, string?> fileHashes,
+            Recorder record)
+        {
+            var images = 0;
+            var entries = reader.ReadAllEntries();
+            var media = reader.ReadMedia(
+                entries.Select(e => e.ImageSha256).OfType<string>().Distinct(StringComparer.Ordinal).ToList());
+
+            foreach (var entry in entries)
+            {
+                // Reads and parses every period and item of the entry.
+                reader.ReadPeriods(entry.EntryID);
+
+                if (entry.ImageSha256 is not { } sha)
+                {
+                    continue;
+                }
+
+                images++;
+
+                if (!media.ContainsKey(sha))
+                {
+                    record.Add(ArchiveProblemKind.EntryImageWithoutMediaRow);
+                }
+
+                var path = reader.ImageFullPath(entry)!;
+                var relative = entry.ImageRelativePath!;
+                usedMediaPaths.Add(relative);
+
+                if (!fileHashes.TryGetValue(relative, out var actual))
+                {
+                    actual = HashOrNull(path);
+                    fileHashes[relative] = actual;
+                }
+
+                if (actual is null)
+                {
+                    record.Add(ArchiveProblemKind.EntryImageFileMissing);
+                }
+                else if (actual != sha)
+                {
+                    record.Add(ArchiveProblemKind.EntryImageFileDiffers);
+                }
+            }
+
+            reader.ReadAllLinks();
+
+            record.AddCount(
+                ArchiveProblemKind.MemoryRowDangling,
+                (int)reader.ReadCount(
+                    """
+                    SELECT COUNT(*) FROM pragma_foreign_key_check
+                    WHERE "table" IN ('Entry', 'EntryPeriod', 'EntryItem', 'EntryLink');
+                    """));
+
+            record.AddCount(ArchiveProblemKind.LinkNotFromPersonal, (int)reader.ReadCount(ArchiveMemoryRules.LinksNotFromPersonal));
+            record.AddCount(ArchiveProblemKind.PeriodCountsDiffer, (int)reader.ReadPeriodCountsDiffer());
+
+            return images;
         }
 
         /// <summary>The file's hash, or <see langword="null"/> when it is not there or cannot be read.</summary>
@@ -540,6 +658,27 @@ namespace Chatcheology.Archive
 
         /// <summary>Not exactly one participant is local, or it is not the recorded local participant.</summary>
         LocalParticipantWrong,
+
+        /// <summary>Version 2: an entry image names a hash with no Media row.</summary>
+        EntryImageWithoutMediaRow,
+
+        /// <summary>Version 2: an entry image's media file is not there or cannot be read.</summary>
+        EntryImageFileMissing,
+
+        /// <summary>Version 2: an entry image's media file does not hash to its recorded hash.</summary>
+        EntryImageFileDiffers,
+
+        /// <summary>
+        /// Version 2: an entry, period, item or link points at a collection, entry, period, participant
+        /// or message the archive does not hold.
+        /// </summary>
+        MemoryRowDangling,
+
+        /// <summary>Version 2: a link starts at an entry that is not in a personal collection.</summary>
+        LinkNotFromPersonal,
+
+        /// <summary>Version 2: a period's local or other item count differs from its items.</summary>
+        PeriodCountsDiffer,
     }
 
     /// <summary>

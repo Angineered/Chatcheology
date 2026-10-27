@@ -48,5 +48,21 @@ namespace Chatcheology.Archive
 
         /// <summary>The message's attachments, in ordinal order. Empty for most messages.</summary>
         public required IReadOnlyList<ArchiveAttachment> Attachments { get; init; }
+
+        /// <summary>
+        /// Which file the message came from (format version 2). Every message of a version 1 archive is
+        /// <see cref="ArchiveMessageSource.Workspace"/>. Recorded, never displayed (CH-33 D4).
+        /// </summary>
+        public ArchiveMessageSource Source { get; init; } = ArchiveMessageSource.Workspace;
+    }
+
+    /// <summary>The file a message of the combined conversation came from.</summary>
+    public enum ArchiveMessageSource
+    {
+        /// <summary>The main workspace's conversation.</summary>
+        Workspace,
+
+        /// <summary>An older chat export, shown before the workspace's conversation.</summary>
+        Export,
     }
 }
