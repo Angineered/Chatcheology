@@ -143,6 +143,52 @@ namespace Chatcheology.Data.Tests.Memories
         }
 
         [Fact]
+        public void Import_OtherGap_WithStoredEntriesMissingFromTheFile_IsRefused()
+        {
+            using var folder = new MemoriesTestFolder();
+            var path = folder.CreateMemories();
+            new PsnImporter().Import(path, Read(Standard()));
+            var smaller = Standard();
+            smaller.Events.RemoveAt(1);
+
+            var exception = Assert.Throws<InvalidOperationException>(() => new PsnImporter().Import(path, Read(smaller, gap: 240)));
+
+            Assert.Contains("full file", exception.Message, StringComparison.Ordinal);
+            Assert.Equal(60, folder.Scalar("SELECT PeriodGapMinutes FROM Collection;"));
+            Assert.Equal(4, folder.Scalar("SELECT COUNT(*) FROM EntryPeriod;"));
+        }
+
+        [Fact]
+        public void Import_SameGap_WithEntriesMissingFromTheFile_IsAllowed()
+        {
+            using var folder = new MemoriesTestFolder();
+            var path = folder.CreateMemories();
+            new PsnImporter().Import(path, Read(Standard()));
+            var smaller = Standard();
+            smaller.Events.RemoveAt(1);
+
+            Assert.Equal(1, new PsnImporter().Import(path, Read(smaller)).MissingFromFile);
+        }
+
+        [Fact]
+        public void Import_CollectionOfThatNameHoldingAnotherSource_IsRefused()
+        {
+            using var folder = new MemoriesTestFolder();
+            var path = folder.CreateMemories();
+
+            using (var connection = MemoriesDatabase.OpenConnection(path))
+            using (var command = connection.CreateCommand())
+            {
+                command.CommandText =
+                    "INSERT INTO Collection (Kind, Name, SourceDescription, ShownByDefault, PeriodGapMinutes) VALUES ('Imported', 'Shared gaming', 'invented other source', 0, 60);";
+                command.ExecuteNonQuery();
+            }
+
+            Assert.Throws<InvalidOperationException>(() => new PsnImporter().Import(path, Read(Standard())));
+            Assert.Equal(0, folder.Scalar("SELECT COUNT(*) FROM Entry;"));
+        }
+
+        [Fact]
         public void Import_FailureMidway_RollsBackEverything()
         {
             using var folder = new MemoriesTestFolder();

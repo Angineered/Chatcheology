@@ -85,6 +85,36 @@ namespace Chatcheology.Data.Tests.Memories
         }
 
         [Fact]
+        public void Fetch_MediaFileDeletedFromDisk_IsFetchedAgain()
+        {
+            using var folder = new MemoriesTestFolder();
+            var path = ImportWithIcons(folder, Quest.Icon, null);
+            MemoryImageFetcher.FetchMissing(path, new FakeSource(new() { [Quest.Icon!] = Png }));
+            var file = Path.Combine(folder.MediaFolder, Convert.ToHexStringLower(SHA256.HashData(Png)) + ".png");
+            File.Delete(file);
+
+            var result = MemoryImageFetcher.FetchMissing(path, new FakeSource(new() { [Quest.Icon!] = Png }));
+
+            Assert.Equal(new MemoryImageFetchResult(1, 0, 0), result);
+            Assert.Equal(Png, File.ReadAllBytes(file));
+        }
+
+        [Fact]
+        public void Fetch_ExistingFileWithWrongContent_IsReplaced()
+        {
+            using var folder = new MemoriesTestFolder();
+            var path = ImportWithIcons(folder, Quest.Icon, null);
+            var file = Path.Combine(folder.MediaFolder, Convert.ToHexStringLower(SHA256.HashData(Png)) + ".png");
+            Directory.CreateDirectory(folder.MediaFolder);
+            File.WriteAllBytes(file, [1, 2, 3]);
+
+            var result = MemoryImageFetcher.FetchMissing(path, new FakeSource(new() { [Quest.Icon!] = Png }));
+
+            Assert.Equal(1, result.Fetched);
+            Assert.Equal(Png, File.ReadAllBytes(file));
+        }
+
+        [Fact]
         public void Fetch_IdenticalBytesFromTwoUrls_AreStoredOnce()
         {
             using var folder = new MemoriesTestFolder();

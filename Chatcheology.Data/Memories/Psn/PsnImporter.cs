@@ -58,9 +58,9 @@ namespace Chatcheology.Data.Memories.Psn
             using var connection = MemoriesDatabase.OpenConnection(memoriesPath);
             using var transaction = connection.BeginTransaction();
 
-            var (collectionId, created, updated) = EnsureCollection(connection, transaction, collectionName, activity.PeriodGapMinutes);
-
-            var stored = ReadStoredKeys(connection, transaction, collectionId);
+            var inFile = activity.Records.Select(record => record.SourceKey).ToHashSet(StringComparer.Ordinal);
+            var (collectionId, created, updated, stored) =
+                EnsureCollection(connection, transaction, collectionName, activity.PeriodGapMinutes, inFile);
             var added = 0;
             var changed = 0;
             var unchanged = 0;
@@ -90,7 +90,6 @@ namespace Chatcheology.Data.Memories.Psn
                 AfterRecordWritten?.Invoke(index);
             }
 
-            var inFile = activity.Records.Select(record => record.SourceKey).ToHashSet(StringComparer.Ordinal);
             var missing = stored.Keys.Count(key => !inFile.Contains(key));
 
             transaction.Commit();
@@ -98,35 +97,67 @@ namespace Chatcheology.Data.Memories.Psn
             return new PsnImportResult(created, updated, added, changed, unchanged, missing);
         }
 
-        private static (long Id, bool Created, bool Updated) EnsureCollection(
-            SqliteConnection connection, SqliteTransaction transaction, string name, int gapMinutes)
+        /// <summary>
+        /// Finds or creates the collection, before anything is written. Refuses a collection of
+        /// that name holding another source, and refuses a gap change while any stored entry is
+        /// missing from the file (its periods would keep the old gap under a collection stating
+        /// the new one).
+        /// </summary>
+        private static (long Id, bool Created, bool Updated, Dictionary<string, long> Stored) EnsureCollection(
+            SqliteConnection connection, SqliteTransaction transaction, string name, int gapMinutes, HashSet<string> inFile)
         {
             using var command = connection.CreateCommand();
             command.Transaction = transaction;
-            command.CommandText = "SELECT CollectionID, PeriodGapMinutes FROM Collection WHERE Kind = $kind AND Name = $name;";
+            command.CommandText =
+                "SELECT CollectionID, PeriodGapMinutes, SourceDescription FROM Collection WHERE Kind = $kind AND Name = $name;";
             command.Parameters.AddWithValue("$kind", MemoriesDatabase.KindImported);
             command.Parameters.AddWithValue("$name", name);
+
+            long? existingId = null;
+            long storedGap = 0;
+            string? storedSource = null;
 
             using (var reader = command.ExecuteReader())
             {
                 if (reader.Read())
                 {
-                    var id = reader.GetInt64(0);
-                    var storedGap = reader.GetInt64(1);
-                    reader.Close();
-
-                    if (storedGap == gapMinutes)
-                    {
-                        return (id, false, false);
-                    }
-
-                    command.CommandText = "UPDATE Collection SET PeriodGapMinutes = $gap WHERE CollectionID = $id;";
-                    command.Parameters.Clear();
-                    command.Parameters.AddWithValue("$gap", gapMinutes);
-                    command.Parameters.AddWithValue("$id", id);
-                    command.ExecuteNonQuery();
-                    return (id, false, true);
+                    existingId = reader.GetInt64(0);
+                    storedGap = reader.GetInt64(1);
+                    storedSource = reader.IsDBNull(2) ? null : reader.GetString(2);
                 }
+            }
+
+            if (existingId is { } id)
+            {
+                if (!string.Equals(storedSource, CollectionSourceDescription, StringComparison.Ordinal))
+                {
+                    throw new InvalidOperationException(
+                        "An imported collection of that name already holds another source. Nothing has been written.");
+                }
+
+                var stored = ReadStoredKeys(connection, transaction, id);
+
+                if (storedGap == gapMinutes)
+                {
+                    return (id, false, false, stored);
+                }
+
+                var missing = stored.Keys.Count(key => !inFile.Contains(key));
+
+                if (missing > 0)
+                {
+                    throw new InvalidOperationException(
+                        $"The period gap differs from the collection's, and {missing} stored entries are missing from " +
+                        "this file, so their periods could not be recomputed. Re-import the full file to change the " +
+                        "gap. Nothing has been written.");
+                }
+
+                command.CommandText = "UPDATE Collection SET PeriodGapMinutes = $gap WHERE CollectionID = $id;";
+                command.Parameters.Clear();
+                command.Parameters.AddWithValue("$gap", gapMinutes);
+                command.Parameters.AddWithValue("$id", id);
+                command.ExecuteNonQuery();
+                return (id, false, true, stored);
             }
 
             command.CommandText =
@@ -138,7 +169,8 @@ namespace Chatcheology.Data.Memories.Psn
             command.Parameters.AddWithValue("$description", CollectionSourceDescription);
             command.Parameters.AddWithValue("$gap", gapMinutes);
 
-            return (Convert.ToInt64(command.ExecuteScalar(), CultureInfo.InvariantCulture), true, false);
+            var newId = Convert.ToInt64(command.ExecuteScalar(), CultureInfo.InvariantCulture);
+            return (newId, true, false, new Dictionary<string, long>(StringComparer.Ordinal));
         }
 
         private static Dictionary<string, long> ReadStoredKeys(SqliteConnection connection, SqliteTransaction transaction, long collectionId)

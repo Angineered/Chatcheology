@@ -56,7 +56,7 @@ namespace Chatcheology.Data.Memories
             using var connection = MemoriesDatabase.OpenConnection(memoriesPath);
             var mediaFolder = MemoriesDatabase.MediaFolderFor(memoriesPath);
 
-            var urls = ReadUrls(connection);
+            var urls = ReadUrls(connection, mediaFolder);
             int fetched = 0, present = 0, failed = 0;
 
             foreach (var (url, missing) in urls)
@@ -114,31 +114,41 @@ namespace Chatcheology.Data.Memories
             return new MemoryImageFetchResult(fetched, present, failed);
         }
 
-        /// <summary>Distinct URLs, and whether any entry using one still has no stored image.</summary>
-        private static List<(string Url, bool Missing)> ReadUrls(SqliteConnection connection)
+        /// <summary>
+        /// Distinct URLs, and whether any entry using one still needs its image: no hash recorded,
+        /// or a recorded hash whose file is not in the media folder.
+        /// </summary>
+        private static List<(string Url, bool Missing)> ReadUrls(SqliteConnection connection, string mediaFolder)
         {
             using var command = connection.CreateCommand();
             command.CommandText =
                 """
-                SELECT e.ImageSourceUrl, MAX(CASE WHEN e.ImageSha256 IS NULL THEN 1 ELSE 0 END)
-                FROM Entry e
+                SELECT e.ImageSourceUrl, e.ImageSha256, m.Extension
+                FROM Entry e LEFT JOIN MediaFile m ON m.Sha256 = e.ImageSha256
                 WHERE e.ImageSourceUrl IS NOT NULL
-                GROUP BY e.ImageSourceUrl
                 ORDER BY e.ImageSourceUrl;
                 """;
 
-            var urls = new List<(string, bool)>();
+            var missingByUrl = new SortedDictionary<string, bool>(StringComparer.Ordinal);
             using var reader = command.ExecuteReader();
 
             while (reader.Read())
             {
-                var anyNull = reader.GetInt64(1) == 1;
-                urls.Add((reader.GetString(0), anyNull));
+                var url = reader.GetString(0);
+                var missing = reader.IsDBNull(1)
+                    || reader.IsDBNull(2)
+                    || !File.Exists(Path.Combine(mediaFolder, $"{reader.GetString(1)}.{reader.GetString(2)}"));
+
+                missingByUrl[url] = missingByUrl.GetValueOrDefault(url) || missing;
             }
 
-            return urls;
+            return missingByUrl.Select(pair => (pair.Key, pair.Value)).ToList();
         }
 
+        /// <summary>
+        /// Writes the image as <c>&lt;sha&gt;.&lt;ext&gt;</c>. An existing file is kept only when its
+        /// own hash matches; otherwise it is replaced.
+        /// </summary>
         private static void Store(string mediaFolder, string sha, string extension, byte[] body)
         {
             Directory.CreateDirectory(mediaFolder);
@@ -146,12 +156,17 @@ namespace Chatcheology.Data.Memories
 
             if (File.Exists(target))
             {
-                return;
+                using var existing = File.OpenRead(target);
+
+                if (string.Equals(Convert.ToHexStringLower(SHA256.HashData(existing)), sha, StringComparison.Ordinal))
+                {
+                    return;
+                }
             }
 
             var temporary = target + ".partial";
             File.WriteAllBytes(temporary, body);
-            File.Move(temporary, target, overwrite: false);
+            File.Move(temporary, target, overwrite: true);
         }
 
         /// <summary>The image type from its first bytes, or null when it is not one this file stores.</summary>
@@ -187,9 +202,12 @@ namespace Chatcheology.Data.Memories
     /// </summary>
     public sealed class HttpsMemoryImageSource : IMemoryImageSource, IDisposable
     {
+        /// <summary>The deadline for one image: send, headers and the whole body.</summary>
+        internal static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(30);
+
         private readonly HttpClient _client = new(new HttpClientHandler { AllowAutoRedirect = false })
         {
-            Timeout = TimeSpan.FromSeconds(30),
+            Timeout = RequestTimeout,
         };
 
         /// <inheritdoc/>
@@ -202,8 +220,10 @@ namespace Chatcheology.Data.Memories
                 return null;
             }
 
+            // One deadline covers the send and every read of the body.
+            using var deadline = new CancellationTokenSource(RequestTimeout);
             using var request = new HttpRequestMessage(HttpMethod.Get, uri);
-            using var response = _client.Send(request, HttpCompletionOption.ResponseHeadersRead);
+            using var response = _client.Send(request, HttpCompletionOption.ResponseHeadersRead, deadline.Token);
 
             if (!response.IsSuccessStatusCode
                 || response.Content.Headers.ContentLength > maxBytes)
@@ -211,12 +231,12 @@ namespace Chatcheology.Data.Memories
                 return null;
             }
 
-            using var stream = response.Content.ReadAsStream();
+            using var stream = response.Content.ReadAsStream(deadline.Token);
             using var buffer = new MemoryStream();
             var chunk = new byte[81920];
             int read;
 
-            while ((read = stream.Read(chunk, 0, chunk.Length)) > 0)
+            while ((read = stream.ReadAsync(chunk, deadline.Token).AsTask().GetAwaiter().GetResult()) > 0)
             {
                 buffer.Write(chunk, 0, read);
 

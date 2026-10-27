@@ -246,6 +246,19 @@ namespace Chatcheology.Data.Tests.Memories
             Assert.Contains("Game at index 0", exception.Message, StringComparison.Ordinal);
         }
 
+        [Theory]
+        [InlineData("medium")]
+        [InlineData("Strong")]
+        [InlineData("same day")]
+        public void Quality_OtherThanTheThreeLevelsIsRefused(string quality)
+        {
+            var file = Standard();
+            file.Tamper = root => Event(root, 1)["quality"] = quality;
+
+            var exception = Assert.Throws<FormatException>(() => Read(file));
+            Assert.Contains("Event at index 1", exception.Message, StringComparison.Ordinal);
+        }
+
         [Fact]
         public void Event_DuplicateIdIsRefused()
         {

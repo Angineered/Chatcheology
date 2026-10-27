@@ -32,6 +32,16 @@ namespace Chatcheology.Data.Memories
         /// <summary>The memories table layout this build creates and accepts.</summary>
         internal const int MarkerFormatVersion = 1;
 
+        /// <summary>
+        /// The SQLite <c>user_version</c> of a memories file. Distinct from every workspace schema
+        /// version, so <see cref="WorkspaceDatabase.Initialise"/> refuses the file (unsupported
+        /// version) instead of treating it as empty and adding the workspace schema to it.
+        /// </summary>
+        internal const int UserVersion = 4201;
+
+        /// <summary>Day levels the PSN source uses; copied as-is, never computed.</summary>
+        public static IReadOnlyList<string> DayLevels { get; } = ["strong", "supporting", "same-day"];
+
         /// <summary>Collection kinds.</summary>
         public const string KindImported = "Imported";
 
@@ -148,7 +158,8 @@ namespace Chatcheology.Data.Memories
                 CHECK (StartLocal GLOB {LocalGlob}),
                 CHECK (EndLocal IS NULL OR (EndLocal GLOB {LocalGlob} AND EndLocal >= StartLocal)),
                 CHECK (StartUtc IS NULL OR StartUtc GLOB {UtcGlob}),
-                CHECK (EndUtc IS NULL OR (EndUtc GLOB {UtcGlob} AND StartUtc IS NOT NULL AND EndUtc >= StartUtc))
+                CHECK (EndUtc IS NULL OR (EndUtc GLOB {UtcGlob} AND StartUtc IS NOT NULL AND EndUtc >= StartUtc)),
+                CHECK (DayLevel IS NULL OR DayLevel IN ('strong', 'supporting', 'same-day'))
             );
             """,
 
@@ -304,6 +315,10 @@ namespace Chatcheology.Data.Memories
                 command.Parameters.AddWithValue("$created", FormatUtc(createdDateTimeUtc));
                 command.ExecuteNonQuery();
 
+                command.Parameters.Clear();
+                command.CommandText = $"PRAGMA user_version = {UserVersion.ToString(CultureInfo.InvariantCulture)};";
+                command.ExecuteNonQuery();
+
                 transaction.Commit();
             }
             catch
@@ -382,6 +397,15 @@ namespace Chatcheology.Data.Memories
             }
 
             using var command = connection.CreateCommand();
+            command.CommandText = "PRAGMA user_version;";
+
+            if (Convert.ToInt64(command.ExecuteScalar(), CultureInfo.InvariantCulture) != UserVersion)
+            {
+                throw new InvalidOperationException(
+                    "The database does not carry the memories file's user_version, so it is not treated as " +
+                    "a memories file. Nothing has been written.");
+            }
+
             command.CommandText =
                 """
                 SELECT

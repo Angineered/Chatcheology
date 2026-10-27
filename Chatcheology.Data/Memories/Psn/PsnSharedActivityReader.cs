@@ -256,6 +256,11 @@ namespace Chatcheology.Data.Memories.Psn
                 var dateText = RequireString(element, "date", $"{where} has no date.");
                 var level = RequireString(element, "quality", $"{where} has no quality.");
 
+                if (!MemoriesDatabase.DayLevels.Contains(level, StringComparer.Ordinal))
+                {
+                    throw new FormatException($"{where} has a quality other than strong, supporting or same-day.");
+                }
+
                 if (!keys.Add(id))
                 {
                     throw new FormatException($"{where} repeats an earlier event id.");

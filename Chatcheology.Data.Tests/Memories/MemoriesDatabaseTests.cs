@@ -83,6 +83,39 @@ namespace Chatcheology.Data.Tests.Memories
         }
 
         [Fact]
+        public void WorkspaceInitialise_OnAMemoriesFile_ThrowsAndLeavesItUnchanged()
+        {
+            using var folder = new MemoriesTestFolder();
+            folder.CreateMemories();
+            SqliteConnection.ClearAllPools();
+            var before = File.ReadAllBytes(folder.MemoriesPath);
+
+            Assert.Throws<InvalidOperationException>(() => WorkspaceDatabase.Initialise(folder.MemoriesPath));
+
+            SqliteConnection.ClearAllPools();
+            Assert.Equal(before, File.ReadAllBytes(folder.MemoriesPath));
+            using var connection = MemoriesDatabase.OpenConnection(folder.MemoriesPath);
+            Assert.DoesNotContain("Message", WorkspaceDatabase.ReadApplicationTableNames(connection));
+        }
+
+        [Fact]
+        public void Open_RefusesAMemoriesFileWithAnotherUserVersion()
+        {
+            using var folder = new MemoriesTestFolder();
+            folder.CreateMemories();
+
+            using (var connection = new SqliteConnection($"Data Source={folder.MemoriesPath}"))
+            {
+                connection.Open();
+                using var command = connection.CreateCommand();
+                command.CommandText = "PRAGMA user_version = 0;";
+                command.ExecuteNonQuery();
+            }
+
+            Assert.Throws<InvalidOperationException>(() => MemoriesDatabase.OpenConnection(folder.MemoriesPath));
+        }
+
+        [Fact]
         public void Open_RefusesAFileWithoutTheMarker()
         {
             using var folder = new MemoriesTestFolder();
@@ -123,6 +156,7 @@ namespace Chatcheology.Data.Tests.Memories
         [InlineData("INSERT INTO Entry (CollectionID, Title, StartLocal, DatePrecision) VALUES (1, 't', '2015-03-01T10:00:00', 'Week');")]
         [InlineData("INSERT INTO Entry (CollectionID, Title, StartLocal, DatePrecision) VALUES (1, 't', '2015-03-01 10:00:00', 'Day');")]
         [InlineData("INSERT INTO Entry (CollectionID, Title, StartLocal, StartUtc, DatePrecision) VALUES (1, 't', '2015-03-01T10:00:00', '2015-03-01T08:00:00', 'Day');")]
+        [InlineData("INSERT INTO Entry (CollectionID, Title, StartLocal, DatePrecision, DayLevel) VALUES (1, 't', '2015-03-01T10:00:00', 'Day', 'medium');")]
         [InlineData("INSERT INTO MediaFile (Sha256, Extension, SizeBytes) VALUES ('ABC', 'png', 1);")]
         [InlineData("INSERT INTO EntryLink (FromEntryID, ToEntryID, ToMessageSequenceNumber) VALUES (1, NULL, NULL);")]
         public void Constraints_RefuseValuesOutsideTheVocabulary(string sql)
