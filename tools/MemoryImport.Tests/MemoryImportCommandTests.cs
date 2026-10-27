@@ -28,7 +28,7 @@ namespace Chatcheology.Tools.MemoryImport.Tests
         private string[] Secrets =>
         [
             "Example", "Quest", "Sample", "Racer", "alpha", "beta", "NPWR", "playstation", "https", "examplequest",
-            "zzsecretfile", "Chatcheology.MemoryImport.Tests", _root,
+            "zzsecretfile", "zzsecretdefinitions", "Invented", "questtrophy", "racertrophy", "Chatcheology.MemoryImport.Tests", _root,
         ];
 
         public void Dispose()
@@ -286,15 +286,13 @@ namespace Chatcheology.Tools.MemoryImport.Tests
             var (code, output, _) = RunWith(source, "fetch-images", "--workspace-folder", _workspace);
 
             Assert.Equal(MemoryImportCommand.Failed, code);
-            Assert.Contains("  Fetched: 1", output, StringComparison.Ordinal);
-            Assert.Contains("  Already present: 0", output, StringComparison.Ordinal);
-            Assert.Contains("  Failed: 1", output, StringComparison.Ordinal);
+            Assert.Contains("Game images.\n  Fetched: 1\n  Already present: 0\n  Failed: 1\n", Lines(output), StringComparison.Ordinal);
+            Assert.Contains("Trophy icons.\n  Fetched: 0\n  Already present: 0\n  Failed: 0\n", Lines(output), StringComparison.Ordinal);
 
             (code, output, _) = RunWith(new FakeSource(new() { [Racer.Icon!] = Png }), "fetch-images", "--workspace-folder", _workspace);
 
             Assert.Equal(0, code);
-            Assert.Contains("  Fetched: 1", output, StringComparison.Ordinal);
-            Assert.Contains("  Already present: 1", output, StringComparison.Ordinal);
+            Assert.Contains("Game images.\n  Fetched: 1\n  Already present: 1\n  Failed: 0\n", Lines(output), StringComparison.Ordinal);
             Assert.Single(Directory.GetFiles(Path.Combine(_workspace, MemoriesDatabase.MediaFolderName)));
         }
 
@@ -314,6 +312,210 @@ namespace Chatcheology.Tools.MemoryImport.Tests
             var (code, _, _) = Run("fetch-images", "--workspace-folder", _workspace, "--local", "alpha");
 
             Assert.Equal(MemoryImportCommand.UsageError, code);
+        }
+
+        private static string Lines(string text) => text.ReplaceLineEndings("\n");
+
+        private void ImportStandard() =>
+            Assert.Equal(0, Run("psn-import", _psnFile, "--workspace-folder", _workspace, "--local", "alpha", "--other", "beta", "--pair-a", "alpha", "--create").Code);
+
+        private string DefinitionsFile(SyntheticTrophyDefinitions? file = null) =>
+            (file ?? SyntheticTrophyDefinitions.Standard()).WriteTo(_root, "zzsecretdefinitions.json");
+
+        private long Scalar(string sql)
+        {
+            using var connection = new SqliteConnection($"Data Source={MemoriesPath};Mode=ReadOnly");
+            connection.Open();
+            using var command = connection.CreateCommand();
+            command.CommandText = sql;
+            var value = Convert.ToInt64(command.ExecuteScalar(), System.Globalization.CultureInfo.InvariantCulture);
+            SqliteConnection.ClearAllPools();
+            return value;
+        }
+
+        [Fact]
+        public void EnrichDryRun_PrintsCountsOnly_AndWritesNothing()
+        {
+            ImportStandard();
+            SqliteConnection.ClearAllPools();
+            var before = File.ReadAllBytes(MemoriesPath);
+
+            var (code, output, error) = Run("psn-enrich-dry-run", "--workspace-folder", _workspace, DefinitionsFile());
+
+            Assert.Equal(0, code);
+            Assert.Equal(string.Empty, error);
+            Assert.Equal(
+                "Dry run: nothing is written.\n" +
+                "Memories file format: 2\n" +
+                "Sets: 2\n" +
+                "Definitions: 4\n" +
+                "  hidden: 1\n" +
+                "Items with a definition: 5\n" +
+                "Items without a definition: 1\n" +
+                "Items whose definition has another type: 0\n" +
+                "Definitions not stored (type mismatch): 0\n" +
+                "Definitions added: 4\n" +
+                "Definitions updated: 0\n" +
+                "Definitions unchanged: 0\n" +
+                "Stored definitions removed (type mismatch): 0\n" +
+                "Changes: 4\n",
+                Lines(output));
+            SqliteConnection.ClearAllPools();
+            Assert.Equal(before, File.ReadAllBytes(MemoriesPath));
+        }
+
+        [Fact]
+        public void Enrich_ThenReRun_ReportsZeroChanges()
+        {
+            ImportStandard();
+
+            var (code, output, _) = Run("psn-enrich", "--workspace-folder", _workspace, DefinitionsFile());
+
+            Assert.Equal(0, code);
+            Assert.StartsWith("Enriched.\n", Lines(output), StringComparison.Ordinal);
+            Assert.Contains("Definitions added: 4\n", Lines(output), StringComparison.Ordinal);
+            Assert.Contains("Changes: 4\n", Lines(output), StringComparison.Ordinal);
+            Assert.Equal(4, Scalar("SELECT COUNT(*) FROM ItemDefinition;"));
+
+            (code, output, _) = Run("psn-enrich", "--workspace-folder", _workspace, DefinitionsFile());
+
+            Assert.Equal(0, code);
+            Assert.Contains("Definitions unchanged: 4\n", Lines(output), StringComparison.Ordinal);
+            Assert.Contains("Changes: 0\n", Lines(output), StringComparison.Ordinal);
+        }
+
+        [Fact]
+        public void Enrich_TypeMismatch_IsCountedAndNotStored()
+        {
+            ImportStandard();
+            var file = SyntheticTrophyDefinitions.Standard();
+            file.Sets[1].Trophies[0] = file.Sets[1].Trophies[0] with { Type = "gold" };
+
+            var (code, output, _) = Run("psn-enrich", "--workspace-folder", _workspace, DefinitionsFile(file));
+
+            Assert.Equal(0, code);
+            Assert.Contains("Items whose definition has another type: 1\n", Lines(output), StringComparison.Ordinal);
+            Assert.Contains("Definitions not stored (type mismatch): 1\n", Lines(output), StringComparison.Ordinal);
+            Assert.Contains("Items without a definition: 1\n", Lines(output), StringComparison.Ordinal);
+            Assert.Equal(3, Scalar("SELECT COUNT(*) FROM ItemDefinition;"));
+        }
+
+        [Fact]
+        public void Enrich_FormatOneFile_ReportsTheUpgrade()
+        {
+            ImportStandard();
+
+            // Turn the new file back into the format 1 layout (marker check and no definition table).
+            using (var connection = new SqliteConnection($"Data Source={MemoriesPath}"))
+            {
+                connection.Open();
+                using var command = connection.CreateCommand();
+                command.CommandText =
+                    """
+                    CREATE TABLE MemoriesInfoOld (
+                        MemoriesInfoID INTEGER PRIMARY KEY, Purpose TEXT NOT NULL, FormatVersion INTEGER NOT NULL,
+                        CreatedDateTimeUtc TEXT NOT NULL, CHECK (FormatVersion = 1));
+                    INSERT INTO MemoriesInfoOld SELECT MemoriesInfoID, Purpose, 1, CreatedDateTimeUtc FROM MemoriesInfo;
+                    DROP TABLE MemoriesInfo;
+                    ALTER TABLE MemoriesInfoOld RENAME TO MemoriesInfo;
+                    DROP TABLE ItemDefinition;
+                    """;
+                command.ExecuteNonQuery();
+            }
+
+            SqliteConnection.ClearAllPools();
+
+            var (_, dry, _) = Run("psn-enrich-dry-run", "--workspace-folder", _workspace, DefinitionsFile());
+            Assert.Contains("The memories file is format 1; psn-enrich upgrades it to 2.\n", Lines(dry), StringComparison.Ordinal);
+            Assert.Contains("Changes: 5\n", Lines(dry), StringComparison.Ordinal);
+
+            var (code, output, _) = Run("psn-enrich", "--workspace-folder", _workspace, DefinitionsFile());
+
+            Assert.Equal(0, code);
+            Assert.Contains("Upgraded the memories file from format 1 to 2.\n", Lines(output), StringComparison.Ordinal);
+            Assert.Contains("Changes: 5\n", Lines(output), StringComparison.Ordinal);
+            Assert.Equal(2, Scalar("SELECT FormatVersion FROM MemoriesInfo;"));
+        }
+
+        [Fact]
+        public void Enrich_BadFile_StopsWithIndexesOnly_AndWritesNothing()
+        {
+            ImportStandard();
+            var file = SyntheticTrophyDefinitions.Standard();
+            file.Tamper = root => root["sets"]![1]!["trophies"]![0]!.AsObject().Remove("trophyHidden");
+
+            var (code, _, error) = Run("psn-enrich", "--workspace-folder", _workspace, DefinitionsFile(file));
+
+            Assert.Equal(MemoryImportCommand.Failed, code);
+            Assert.Contains("Set at index 1, trophy at index 0", error, StringComparison.Ordinal);
+            Assert.Equal(0, Scalar("SELECT COUNT(*) FROM ItemDefinition;"));
+        }
+
+        [Fact]
+        public void Enrich_OtherFormat_IsRefused()
+        {
+            ImportStandard();
+            var file = SyntheticTrophyDefinitions.Standard();
+            file.Format = "something-else";
+
+            var (code, _, error) = Run("psn-enrich-dry-run", "--workspace-folder", _workspace, DefinitionsFile(file));
+
+            Assert.Equal(MemoryImportCommand.Failed, code);
+            Assert.Contains("format", error, StringComparison.Ordinal);
+        }
+
+        [Fact]
+        public void Enrich_WithoutAMemoriesFile_StopsAndCreatesNothing()
+        {
+            var (code, _, error) = Run("psn-enrich", "--workspace-folder", _workspace, DefinitionsFile());
+
+            Assert.Equal(MemoryImportCommand.Failed, code);
+            Assert.Contains("psn-import", error, StringComparison.Ordinal);
+            Assert.False(File.Exists(MemoriesPath));
+        }
+
+        [Theory]
+        [InlineData("psn-enrich", "--local", "alpha")]
+        [InlineData("psn-enrich", "--create")]
+        [InlineData("psn-enrich-dry-run", "--max-bytes", "5")]
+        [InlineData("psn-enrich-dry-run", "--gap", "30")]
+        public void Enrich_RefusesOtherArguments(string verb, params string[] extra)
+        {
+            var (code, _, error) = Run([verb, "--workspace-folder", _workspace, DefinitionsFile(), .. extra]);
+
+            Assert.Equal(MemoryImportCommand.UsageError, code);
+            Assert.StartsWith("Usage error:", error, StringComparison.Ordinal);
+        }
+
+        [Fact]
+        public void Enrich_NeedsTheWorkspaceFolderAndAFile()
+        {
+            Assert.Equal(MemoryImportCommand.UsageError, Run("psn-enrich", DefinitionsFile()).Code);
+            Assert.Equal(MemoryImportCommand.UsageError, Run("psn-enrich-dry-run", "--workspace-folder", _workspace).Code);
+        }
+
+        [Fact]
+        public void FetchImages_SplitsGameImagesAndTrophyIcons_AndFetchesOnlyUsedIcons()
+        {
+            ImportStandard();
+            Run("psn-enrich", "--workspace-folder", _workspace, DefinitionsFile());
+            var source = new FakeSource(new()
+            {
+                [Quest.Icon!] = Png,
+                [Racer.Icon!] = Png,
+                [SyntheticTrophyDefinitions.QuestIconOne] = Png,
+                [SyntheticTrophyDefinitions.QuestIconTwo] = Png,
+                [SyntheticTrophyDefinitions.QuestIconThree] = Png,
+            });
+
+            var (code, output, _) = RunWith(source, "fetch-images", "--workspace-folder", _workspace);
+
+            Assert.Equal(MemoryImportCommand.Failed, code);
+            Assert.Equal(
+                "Game images.\n  Fetched: 2\n  Already present: 0\n  Failed: 0\n" +
+                "Trophy icons.\n  Fetched: 2\n  Already present: 0\n  Failed: 1\n",
+                Lines(output));
+            Assert.Equal(0, Scalar("SELECT COUNT(*) FROM ItemDefinition WHERE ItemId = '3' AND IconSha256 IS NOT NULL;"));
         }
 
         [Fact]

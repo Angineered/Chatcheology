@@ -6,8 +6,9 @@ using Microsoft.Data.Sqlite;
 namespace Chatcheology.Tools.MemoryImport
 {
     /// <summary>
-    /// The memories import tool: <c>psn-dry-run</c> (the default), <c>psn-import</c> and
-    /// <c>fetch-images</c>. See the README beside this file for usage.
+    /// The memories import tool: <c>psn-dry-run</c> (the default), <c>psn-import</c>,
+    /// <c>psn-enrich-dry-run</c>, <c>psn-enrich</c> and <c>fetch-images</c>. See the README beside
+    /// this file for usage.
     /// </summary>
     /// <remarks>
     /// Privacy rule for output: counts and dates only. Never a game title, account prefix, URL,
@@ -70,6 +71,8 @@ namespace Chatcheology.Tools.MemoryImport
                 return parsed.Command switch
                 {
                     "psn-import" => RunImport(parsed, output, utcNow),
+                    "psn-enrich-dry-run" => RunEnrich(parsed, output, apply: false),
+                    "psn-enrich" => RunEnrich(parsed, output, apply: true),
                     "fetch-images" => RunFetchImages(parsed, output, imageSource),
                     _ => RunDryRun(parsed, output),
                 };
@@ -203,6 +206,60 @@ namespace Chatcheology.Tools.MemoryImport
             return Success;
         }
 
+        private static int RunEnrich(ParsedArguments parsed, TextWriter output, bool apply)
+        {
+            if (parsed.WorkspaceFolder is null)
+            {
+                throw new UsageException($"{parsed.Command} needs --workspace-folder.");
+            }
+
+            if (parsed.PsnFile is null)
+            {
+                throw new UsageException("a definitions file is needed.");
+            }
+
+            // Read and check the whole file before the memories file is opened.
+            var definitions = PsnTrophyDefinitionsReader.Read(parsed.PsnFile);
+            var databasePath = Path.Combine(parsed.WorkspaceFolder, MemoriesDatabase.FileName);
+
+            if (!File.Exists(databasePath))
+            {
+                throw new InvalidOperationException(
+                    "There is no memories file in the workspace folder. Run psn-import first. Nothing has been written.");
+            }
+
+            var result = apply
+                ? PsnTrophyEnricher.Enrich(databasePath, definitions)
+                : PsnTrophyEnricher.DryRun(databasePath, definitions);
+
+            output.WriteLine(apply ? "Enriched." : "Dry run: nothing is written.");
+
+            if (result.Upgraded)
+            {
+                output.WriteLine(apply
+                    ? $"Upgraded the memories file from format {result.FormatVersionBefore} to {MemoriesDatabase.CurrentFormatVersion}."
+                    : $"The memories file is format {result.FormatVersionBefore}; psn-enrich upgrades it to {MemoriesDatabase.CurrentFormatVersion}.");
+            }
+            else
+            {
+                output.WriteLine($"Memories file format: {result.FormatVersionBefore}");
+            }
+
+            output.WriteLine($"Sets: {result.Sets}");
+            output.WriteLine($"Definitions: {result.Definitions}");
+            output.WriteLine($"  hidden: {result.Hidden}");
+            output.WriteLine($"Items with a definition: {result.ItemsWithDefinition}");
+            output.WriteLine($"Items without a definition: {result.ItemsWithoutDefinition}");
+            output.WriteLine($"Items whose definition has another type: {result.ItemsTypeMismatch}");
+            output.WriteLine($"Definitions not stored (type mismatch): {result.TypeMismatches}");
+            output.WriteLine($"Definitions added: {result.Added}");
+            output.WriteLine($"Definitions updated: {result.Updated}");
+            output.WriteLine($"Definitions unchanged: {result.Unchanged}");
+            output.WriteLine($"Stored definitions removed (type mismatch): {result.RemovedForMismatch}");
+            output.WriteLine($"Changes: {result.Changes}");
+            return Success;
+        }
+
         private static int RunFetchImages(ParsedArguments parsed, TextWriter output, Func<IMemoryImageSource> imageSource)
         {
             if (parsed.WorkspaceFolder is null)
@@ -216,10 +273,8 @@ namespace Chatcheology.Tools.MemoryImport
             try
             {
                 var result = MemoryImageFetcher.FetchMissing(databasePath, source, parsed.MaxBytes);
-                output.WriteLine("Images.");
-                output.WriteLine($"  Fetched: {result.Fetched}");
-                output.WriteLine($"  Already present: {result.AlreadyPresent}");
-                output.WriteLine($"  Failed: {result.Failed}");
+                WriteCounts(output, "Game images.", result.GameImages);
+                WriteCounts(output, "Trophy icons.", result.TrophyIcons);
                 return result.Failed == 0 ? Success : Failed;
             }
             finally
@@ -228,16 +283,26 @@ namespace Chatcheology.Tools.MemoryImport
             }
         }
 
+        private static void WriteCounts(TextWriter output, string heading, MemoryImageCounts counts)
+        {
+            output.WriteLine(heading);
+            output.WriteLine($"  Fetched: {counts.Fetched}");
+            output.WriteLine($"  Already present: {counts.AlreadyPresent}");
+            output.WriteLine($"  Failed: {counts.Failed}");
+        }
+
         private static string FormatDate(DateOnly? value) =>
             value?.ToString(DateFormat, CultureInfo.InvariantCulture) ?? "none";
 
         private static void WriteHelp(TextWriter output)
         {
-            output.WriteLine("MemoryImport: PSN shared-activity import into the memories file, and image fetch.");
+            output.WriteLine("MemoryImport: PSN shared-activity import into the memories file, trophy definitions, and image fetch.");
             output.WriteLine();
             output.WriteLine("  [psn-dry-run] <psn-file> --local <prefix> --other <prefix> --pair-a <prefix> [--gap <minutes>]");
             output.WriteLine("  psn-import <psn-file> --workspace-folder <folder> --local <prefix> --other <prefix> --pair-a <prefix>");
             output.WriteLine("             [--collection <name>] [--gap <minutes>] [--create]");
+            output.WriteLine("  psn-enrich-dry-run --workspace-folder <folder> <definitions-file>");
+            output.WriteLine("  psn-enrich --workspace-folder <folder> <definitions-file>");
             output.WriteLine("  fetch-images --workspace-folder <folder> [--max-bytes <n>]");
             output.WriteLine();
             output.WriteLine("Prefixes are the account field prefixes in the PSN file (case-insensitive).");
@@ -281,7 +346,7 @@ namespace Chatcheology.Tools.MemoryImport
                 var gapGiven = false;
                 var maxBytesGiven = false;
 
-                if (args.Length > 0 && args[0] is "psn-dry-run" or "psn-import" or "fetch-images")
+                if (args.Length > 0 && args[0] is "psn-dry-run" or "psn-import" or "psn-enrich-dry-run" or "psn-enrich" or "fetch-images")
                 {
                     parsed.Command = args[0];
                     index = 1;
@@ -368,7 +433,7 @@ namespace Chatcheology.Tools.MemoryImport
 
                             if (parsed.PsnFile is not null)
                             {
-                                throw new UsageException($"only one PSN file is accepted (argument {index + 1}).");
+                                throw new UsageException($"only one input file is accepted (argument {index + 1}).");
                             }
 
                             parsed.PsnFile = argument;
@@ -381,7 +446,15 @@ namespace Chatcheology.Tools.MemoryImport
                     return parsed;
                 }
 
-                if (parsed.Command == "fetch-images")
+                if (parsed.Command is "psn-enrich-dry-run" or "psn-enrich")
+                {
+                    if (parsed.Local is not null || parsed.Other is not null || parsed.PairA is not null
+                        || collectionGiven || gapGiven || parsed.Create || maxBytesGiven)
+                    {
+                        throw new UsageException($"{parsed.Command} takes --workspace-folder and a definitions file only.");
+                    }
+                }
+                else if (parsed.Command == "fetch-images")
                 {
                     if (parsed.PsnFile is not null || parsed.Local is not null || parsed.Other is not null || parsed.PairA is not null
                         || collectionGiven || gapGiven || parsed.Create)

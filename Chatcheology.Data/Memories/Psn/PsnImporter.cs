@@ -29,8 +29,9 @@ namespace Chatcheology.Data.Memories.Psn
     /// <remarks>
     /// An entry is matched by <c>SourceKey</c> within the collection and updated in place (its
     /// <c>EntryID</c> never changes, so links to it stay valid). Its periods and items are replaced
-    /// only when anything differs; trophy names and icons filled later by enrichment are carried
-    /// over by (role, set, item id). The image hash is kept while the image source URL is
+    /// only when anything differs; the unused <c>EntryItem.Name</c> / <c>IconSha256</c> columns are
+    /// carried over by (role, set, item id). Trophy names and icons live in <c>ItemDefinition</c>
+    /// (CH-43), which this import never touches. The image hash is kept while the image source URL is
     /// unchanged. Entries missing from the file are counted, never deleted.
     /// </remarks>
     public sealed class PsnImporter

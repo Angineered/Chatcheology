@@ -20,6 +20,7 @@
 
   <ItemGroup>
     <Compile Include="..\..\Chatcheology.Data.Tests\Memories\SyntheticPsnFile.cs" Link="SyntheticPsnFile.cs" />
+    <Compile Include="..\..\Chatcheology.Data.Tests\Memories\SyntheticTrophyDefinitions.cs" Link="SyntheticTrophyDefinitions.cs" />
   </ItemGroup>
 
   <ItemGroup>

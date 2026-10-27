@@ -17,7 +17,77 @@ namespace Chatcheology.Data.Tests.Memories
             var tables = WorkspaceDatabase.ReadApplicationTableNames(connection);
 
             Assert.Equal(MemoriesDatabase.TableNames.OrderBy(n => n, StringComparer.Ordinal), tables);
-            Assert.Equal(1, folder.Scalar("SELECT COUNT(*) FROM MemoriesInfo WHERE FormatVersion = 1 AND Purpose = 'Memories';"));
+            Assert.Equal(1, folder.Scalar("SELECT COUNT(*) FROM MemoriesInfo WHERE FormatVersion = 2 AND Purpose = 'Memories';"));
+            Assert.Equal(2, MemoriesDatabase.ReadFormatVersion(connection));
+        }
+
+        [Fact]
+        public void Open_AcceptsAFormatOneFile_WithoutUpgradingIt()
+        {
+            using var folder = new MemoriesTestFolder();
+            MemoriesDatabase.CreateFormatVersionOne(folder.MemoriesPath, MemoriesTestFolder.Now);
+
+            using (var connection = MemoriesDatabase.OpenConnection(folder.MemoriesPath))
+            {
+                Assert.Equal(1, MemoriesDatabase.ReadFormatVersion(connection));
+                Assert.Equal(
+                    MemoriesDatabase.VersionOneTableNames.OrderBy(n => n, StringComparer.Ordinal),
+                    WorkspaceDatabase.ReadApplicationTableNames(connection));
+            }
+
+            using (var readOnly = MemoriesDatabase.OpenReadOnlyConnection(folder.MemoriesPath))
+            {
+                Assert.Equal(1, MemoriesDatabase.ReadFormatVersion(readOnly));
+            }
+
+            Assert.Equal(1, folder.Scalar("SELECT FormatVersion FROM MemoriesInfo;"));
+        }
+
+        [Fact]
+        public void Open_RefusesAFormatTwoMarkerWithoutTheDefinitionTable()
+        {
+            using var folder = new MemoriesTestFolder();
+            folder.CreateMemories();
+
+            using (var connection = new SqliteConnection($"Data Source={folder.MemoriesPath}"))
+            {
+                connection.Open();
+                using var command = connection.CreateCommand();
+                command.CommandText = "DROP TABLE ItemDefinition;";
+                command.ExecuteNonQuery();
+            }
+
+            Assert.Throws<InvalidOperationException>(() => MemoriesDatabase.OpenConnection(folder.MemoriesPath));
+        }
+
+        [Fact]
+        public void Open_RefusesAFormatOneMarkerWithTheDefinitionTable()
+        {
+            using var folder = new MemoriesTestFolder();
+            MemoriesDatabase.CreateFormatVersionOne(folder.MemoriesPath, MemoriesTestFolder.Now);
+
+            using (var connection = new SqliteConnection($"Data Source={folder.MemoriesPath}"))
+            {
+                connection.Open();
+                using var command = connection.CreateCommand();
+                command.CommandText = "CREATE TABLE ItemDefinition (X INTEGER);";
+                command.ExecuteNonQuery();
+            }
+
+            Assert.Throws<InvalidOperationException>(() => MemoriesDatabase.OpenConnection(folder.MemoriesPath));
+        }
+
+        [Fact]
+        public void ReadOnlyOpen_RefusesWrites()
+        {
+            using var folder = new MemoriesTestFolder();
+            folder.CreateMemories();
+
+            using var connection = MemoriesDatabase.OpenReadOnlyConnection(folder.MemoriesPath);
+            using var command = connection.CreateCommand();
+            command.CommandText = "INSERT INTO MediaFile (Sha256, Extension, SizeBytes) VALUES ('x', 'png', 1);";
+
+            Assert.Throws<SqliteException>(() => command.ExecuteNonQuery());
         }
 
         [Fact]
@@ -159,6 +229,10 @@ namespace Chatcheology.Data.Tests.Memories
         [InlineData("INSERT INTO Entry (CollectionID, Title, StartLocal, DatePrecision, DayLevel) VALUES (1, 't', '2015-03-01T10:00:00', 'Day', 'medium');")]
         [InlineData("INSERT INTO MediaFile (Sha256, Extension, SizeBytes) VALUES ('ABC', 'png', 1);")]
         [InlineData("INSERT INTO EntryLink (FromEntryID, ToEntryID, ToMessageSequenceNumber) VALUES (1, NULL, NULL);")]
+        [InlineData("INSERT INTO ItemDefinition (SetId, ItemId, ItemType, Hidden) VALUES ('s', '1', 'bronze', 2);")]
+        [InlineData("INSERT INTO ItemDefinition (SetId, ItemId, ItemType) VALUES ('s', '1', '');")]
+        [InlineData("INSERT INTO ItemDefinition (SetId, ItemId, ItemType, IconSha256) VALUES ('s', '1', 'bronze', 'abc');")]
+        [InlineData("UPDATE MemoriesInfo SET FormatVersion = 1;")]
         public void Constraints_RefuseValuesOutsideTheVocabulary(string sql)
         {
             using var folder = new MemoriesTestFolder();

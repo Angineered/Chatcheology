@@ -62,7 +62,7 @@ namespace Chatcheology.Data.Tests.Memories
 
             var result = MemoryImageFetcher.FetchMissing(path, source);
 
-            Assert.Equal(new MemoryImageFetchResult(2, 0, 0), result);
+            Assert.Equal(new MemoryImageCounts(2, 0, 0), result.GameImages);
             var pngSha = Convert.ToHexStringLower(SHA256.HashData(Png));
             Assert.True(File.Exists(Path.Combine(folder.MediaFolder, pngSha + ".png")));
             Assert.Equal(Png, File.ReadAllBytes(Path.Combine(folder.MediaFolder, pngSha + ".png")));
@@ -80,7 +80,7 @@ namespace Chatcheology.Data.Tests.Memories
 
             var result = MemoryImageFetcher.FetchMissing(path, again);
 
-            Assert.Equal(new MemoryImageFetchResult(0, 2, 0), result);
+            Assert.Equal(new MemoryImageCounts(0, 2, 0), result.GameImages);
             Assert.Empty(again.Requested);
         }
 
@@ -95,7 +95,7 @@ namespace Chatcheology.Data.Tests.Memories
 
             var result = MemoryImageFetcher.FetchMissing(path, new FakeSource(new() { [Quest.Icon!] = Png }));
 
-            Assert.Equal(new MemoryImageFetchResult(1, 0, 0), result);
+            Assert.Equal(new MemoryImageCounts(1, 0, 0), result.GameImages);
             Assert.Equal(Png, File.ReadAllBytes(file));
         }
 
@@ -110,7 +110,7 @@ namespace Chatcheology.Data.Tests.Memories
 
             var result = MemoryImageFetcher.FetchMissing(path, new FakeSource(new() { [Quest.Icon!] = Png }));
 
-            Assert.Equal(1, result.Fetched);
+            Assert.Equal(1, result.GameImages.Fetched);
             Assert.Equal(Png, File.ReadAllBytes(file));
         }
 
@@ -122,7 +122,7 @@ namespace Chatcheology.Data.Tests.Memories
 
             var result = MemoryImageFetcher.FetchMissing(path, new FakeSource(new() { [Quest.Icon!] = Png, [Racer.Icon!] = Png }));
 
-            Assert.Equal(2, result.Fetched);
+            Assert.Equal(2, result.GameImages.Fetched);
             Assert.Equal(1, folder.Scalar("SELECT COUNT(*) FROM MediaFile;"));
             Assert.Single(Directory.GetFiles(folder.MediaFolder));
             Assert.Equal(1, folder.Scalar("SELECT COUNT(DISTINCT ImageSha256) FROM Entry;"));
@@ -137,7 +137,7 @@ namespace Chatcheology.Data.Tests.Memories
 
             var result = MemoryImageFetcher.FetchMissing(path, source);
 
-            Assert.Equal(new MemoryImageFetchResult(0, 0, 2), result);
+            Assert.Equal(new MemoryImageCounts(0, 0, 2), result.GameImages);
             Assert.Empty(source.Requested);
             Assert.False(Directory.Exists(folder.MediaFolder));
         }
@@ -150,7 +150,7 @@ namespace Chatcheology.Data.Tests.Memories
 
             var result = MemoryImageFetcher.FetchMissing(path, new FakeSource(new() { [Quest.Icon!] = Png }), maxBytes: Png.Length - 1);
 
-            Assert.Equal(new MemoryImageFetchResult(0, 0, 1), result);
+            Assert.Equal(new MemoryImageCounts(0, 0, 1), result.GameImages);
             Assert.Equal(0, folder.Scalar("SELECT COUNT(*) FROM MediaFile;"));
         }
 
@@ -162,7 +162,7 @@ namespace Chatcheology.Data.Tests.Memories
 
             var result = MemoryImageFetcher.FetchMissing(path, new FakeSource(new() { [Quest.Icon!] = Png }), maxBytes: Png.Length);
 
-            Assert.Equal(1, result.Fetched);
+            Assert.Equal(1, result.GameImages.Fetched);
         }
 
         [Fact]
@@ -173,7 +173,7 @@ namespace Chatcheology.Data.Tests.Memories
 
             var result = MemoryImageFetcher.FetchMissing(path, new FakeSource(new() { [Quest.Icon!] = "<html>"u8.ToArray() }));
 
-            Assert.Equal(new MemoryImageFetchResult(0, 0, 2), result);
+            Assert.Equal(new MemoryImageCounts(0, 0, 2), result.GameImages);
             Assert.Equal(0, folder.Scalar("SELECT COUNT(*) FROM MediaFile;"));
         }
 
@@ -185,7 +185,7 @@ namespace Chatcheology.Data.Tests.Memories
 
             var result = MemoryImageFetcher.FetchMissing(path, new ThrowingSource());
 
-            Assert.Equal(new MemoryImageFetchResult(0, 0, 1), result);
+            Assert.Equal(new MemoryImageCounts(0, 0, 1), result.GameImages);
         }
 
         [Fact]
@@ -195,6 +195,64 @@ namespace Chatcheology.Data.Tests.Memories
 
             Assert.Null(source.Fetch(new Uri("http://image.api.playstation.com/a.png"), 10));
             Assert.Null(source.Fetch(new Uri("https://example.invalid/a.png"), 10));
+        }
+
+        [Fact]
+        public void TrophyIcons_OnlyForDefinitionsUsedByAnItem()
+        {
+            using var folder = new MemoriesTestFolder();
+            var path = PsnTrophyEnricherTests.ImportStandard(folder);
+            PsnTrophyEnricher.Enrich(path, PsnTrophyDefinitionsReader.Parse(SyntheticTrophyDefinitions.Standard().ToBytes()));
+            var source = new FakeSource(new()
+            {
+                [SyntheticTrophyDefinitions.QuestIconOne] = Png,
+                [SyntheticTrophyDefinitions.QuestIconTwo] = Jpeg,
+                [SyntheticTrophyDefinitions.QuestIconThree] = Png,
+                [SyntheticTrophyDefinitions.RacerIconFive] = Png,
+            });
+
+            var result = MemoryImageFetcher.FetchMissing(path, source);
+
+            Assert.Equal(new MemoryImageCounts(3, 0, 0), result.TrophyIcons);
+            Assert.Equal(new MemoryImageCounts(0, 0, 2), result.GameImages);
+            Assert.DoesNotContain(SyntheticTrophyDefinitions.QuestIconThree, source.Requested);
+            Assert.Equal(["<null>"], folder.Strings("SELECT ifnull(IconSha256, '<null>') FROM ItemDefinition WHERE ItemId = '3';"));
+            Assert.Equal(3, folder.Scalar("SELECT COUNT(*) FROM ItemDefinition WHERE IconSha256 IS NOT NULL;"));
+
+            var again = MemoryImageFetcher.FetchMissing(path, new FakeSource([]));
+
+            Assert.Equal(new MemoryImageCounts(0, 3, 0), again.TrophyIcons);
+        }
+
+        [Fact]
+        public void TrophyIcons_SameAllowlistAndChecks()
+        {
+            using var folder = new MemoriesTestFolder();
+            var path = PsnTrophyEnricherTests.ImportStandard(folder);
+            var file = SyntheticTrophyDefinitions.Standard();
+            file.Sets[0].Trophies[0] = file.Sets[0].Trophies[0] with { Icon = "http://image.api.playstation.com/zz/questtrophy1.png" };
+            file.Sets[0].Trophies[1] = file.Sets[0].Trophies[1] with { Icon = "https://example.invalid/zz/questtrophy2.png" };
+            PsnTrophyEnricher.Enrich(path, PsnTrophyDefinitionsReader.Parse(file.ToBytes()));
+            var source = new FakeSource(new() { [SyntheticTrophyDefinitions.RacerIconFive] = "<html>"u8.ToArray() });
+
+            var result = MemoryImageFetcher.FetchMissing(path, source);
+
+            Assert.Equal(new MemoryImageCounts(0, 0, 3), result.TrophyIcons);
+            Assert.Equal([SyntheticTrophyDefinitions.RacerIconFive], source.Requested.Where(url => url.Contains("trophy", StringComparison.Ordinal)));
+            Assert.Equal(0, folder.Scalar("SELECT COUNT(*) FROM MediaFile;"));
+        }
+
+        [Fact]
+        public void TrophyIcons_OnAFormatOneFile_AreZero_AndTheFileIsNotUpgraded()
+        {
+            using var folder = new MemoriesTestFolder();
+            var path = PsnTrophyEnricherTests.ImportStandard(folder, formatOne: true);
+
+            var result = MemoryImageFetcher.FetchMissing(path, new FakeSource(new() { [Quest.Icon!] = Png }));
+
+            Assert.Equal(new MemoryImageCounts(0, 0, 0), result.TrophyIcons);
+            Assert.Equal(1, result.GameImages.Fetched);
+            Assert.Equal(1, folder.Scalar("SELECT FormatVersion FROM MemoriesInfo;"));
         }
 
         private sealed class ThrowingSource : IMemoryImageSource

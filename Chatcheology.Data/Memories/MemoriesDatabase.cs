@@ -29,8 +29,19 @@ namespace Chatcheology.Data.Memories
         /// <summary>The value of <c>MemoriesInfo.Purpose</c> in every memories file.</summary>
         internal const string MarkerPurpose = "Memories";
 
-        /// <summary>The memories table layout this build creates and accepts.</summary>
-        internal const int MarkerFormatVersion = 1;
+        /// <summary>The memories table layout this build creates. Format 1 files are still accepted.</summary>
+        /// <remarks>
+        /// Format 2 (CH-43) is additive: it adds <c>ItemDefinition</c> and nothing else changes. A
+        /// format 1 file is upgraded in one transaction by <see cref="UpgradeToCurrent"/> (the
+        /// enrichment import does this); every other path reads and writes both formats.
+        /// </remarks>
+        internal const int MarkerFormatVersion = 2;
+
+        /// <summary>The format this build creates and upgrades to.</summary>
+        public const int CurrentFormatVersion = MarkerFormatVersion;
+
+        /// <summary>The step 1 (CH-42) layout, without <c>ItemDefinition</c>.</summary>
+        internal const int FormatVersionOne = 1;
 
         /// <summary>
         /// The SQLite <c>user_version</c> of a memories file. Distinct from every workspace schema
@@ -57,8 +68,8 @@ namespace Chatcheology.Data.Memories
         /// <summary>Entry date precisions.</summary>
         public const string PrecisionMonth = "Month";
 
-        /// <summary>The tables of this file, in creation order.</summary>
-        internal static readonly string[] TableNames =
+        /// <summary>The tables of a format 1 file, in creation order.</summary>
+        internal static readonly string[] VersionOneTableNames =
         [
             "MemoriesInfo",
             "MediaFile",
@@ -68,6 +79,12 @@ namespace Chatcheology.Data.Memories
             "EntryItem",
             "EntryLink",
         ];
+
+        /// <summary>The table format 2 adds.</summary>
+        internal const string ItemDefinitionTableName = "ItemDefinition";
+
+        /// <summary>The tables of a current (format 2) file.</summary>
+        internal static readonly string[] TableNames = [.. VersionOneTableNames, ItemDefinitionTableName];
 
         // GLOB patterns that pin the stored spellings: local wall clock without zone, UTC with Z.
         private const string LocalGlob =
@@ -86,7 +103,16 @@ namespace Chatcheology.Data.Memories
             "[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]" +
             "[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]'";
 
-        private static readonly string[] TableStatements =
+        /// <summary>
+        /// The format 1 layout, exactly as step 1 created it. A new file is created with these and
+        /// then upgraded by <see cref="UpgradeStatements"/>, the same path a real format 1 file takes,
+        /// so a new file and an upgraded one carry the same layout.
+        /// </summary>
+        /// <remarks>
+        /// <c>EntryItem.Name</c> and <c>EntryItem.IconSha256</c> stay in the layout but are unused:
+        /// trophy names and icons live in <c>ItemDefinition</c>, joined on (SetId, ItemId).
+        /// </remarks>
+        private static readonly string[] VersionOneStatements =
         [
             $"""
             CREATE TABLE MemoriesInfo (
@@ -97,7 +123,7 @@ namespace Chatcheology.Data.Memories
 
                 CHECK (MemoriesInfoID = 1),
                 CHECK (Purpose = '{MarkerPurpose}'),
-                CHECK (FormatVersion = {MarkerFormatVersion}),
+                CHECK (FormatVersion = {FormatVersionOne}),
                 CHECK (CreatedDateTimeUtc GLOB {UtcGlob})
             );
             """,
@@ -248,6 +274,60 @@ namespace Chatcheology.Data.Memories
             "CREATE INDEX IX_EntryItem_Entry ON EntryItem (EntryID, PeriodIndex);",
         ];
 
+        /// <summary>
+        /// Format 1 to 2: the marker table is rebuilt so its check names the new version (the row's
+        /// purpose and creation time are copied unchanged), and <c>ItemDefinition</c> is added. No
+        /// other table is touched.
+        /// </summary>
+        private static readonly string[] UpgradeStatements =
+        [
+            $"""
+            CREATE TABLE MemoriesInfoNext (
+                MemoriesInfoID     INTEGER PRIMARY KEY,
+                Purpose            TEXT NOT NULL,
+                FormatVersion      INTEGER NOT NULL,
+                CreatedDateTimeUtc TEXT NOT NULL,
+
+                CHECK (MemoriesInfoID = 1),
+                CHECK (Purpose = '{MarkerPurpose}'),
+                CHECK (FormatVersion = {MarkerFormatVersion}),
+                CHECK (CreatedDateTimeUtc GLOB {UtcGlob})
+            );
+            """,
+
+            $"""
+            INSERT INTO MemoriesInfoNext (MemoriesInfoID, Purpose, FormatVersion, CreatedDateTimeUtc)
+            SELECT MemoriesInfoID, Purpose, {MarkerFormatVersion}, CreatedDateTimeUtc FROM MemoriesInfo;
+            """,
+
+            "DROP TABLE MemoriesInfo;",
+
+            "ALTER TABLE MemoriesInfoNext RENAME TO MemoriesInfo;",
+
+            // One definition per (set, item), values as the source returned them. Viewers and the
+            // archive join EntryItem to it on (SetId, ItemId).
+            """
+            CREATE TABLE ItemDefinition (
+                SetId         TEXT NOT NULL,
+                ItemId        TEXT NOT NULL,
+                ItemType      TEXT NOT NULL,
+                Name          TEXT NULL,
+                Detail        TEXT NULL,
+                Hidden        INTEGER NULL,
+                GroupId       TEXT NULL,
+                IconSourceUrl TEXT NULL,
+                IconSha256    TEXT NULL REFERENCES MediaFile (Sha256),
+
+                PRIMARY KEY (SetId, ItemId),
+
+                CHECK (length(SetId) > 0 AND length(ItemId) > 0 AND length(ItemType) > 0),
+                CHECK (Hidden IS NULL OR Hidden IN (0, 1))
+            );
+            """,
+
+            "CREATE INDEX IX_ItemDefinition_IconSourceUrl ON ItemDefinition (IconSourceUrl);",
+        ];
+
         /// <summary>The memories file path beside a main workspace.</summary>
         public static string PathBeside(string mainWorkspacePath)
         {
@@ -276,7 +356,14 @@ namespace Chatcheology.Data.Memories
         /// </summary>
         /// <exception cref="ArgumentException">Wrong file name, or a timestamp that is not UTC.</exception>
         /// <exception cref="InvalidOperationException">A file already exists there. Nothing is written.</exception>
-        public static void Create(string databasePath, DateTime createdDateTimeUtc)
+        public static void Create(string databasePath, DateTime createdDateTimeUtc) =>
+            Create(databasePath, createdDateTimeUtc, upgrade: true);
+
+        /// <summary>Creates a format 1 file exactly as step 1 did. For upgrade tests only.</summary>
+        internal static void CreateFormatVersionOne(string databasePath, DateTime createdDateTimeUtc) =>
+            Create(databasePath, createdDateTimeUtc, upgrade: false);
+
+        private static void Create(string databasePath, DateTime createdDateTimeUtc, bool upgrade)
         {
             RequireFixedFileName(databasePath);
 
@@ -299,7 +386,7 @@ namespace Chatcheology.Data.Memories
                 using var command = connection.CreateCommand();
                 command.Transaction = transaction;
 
-                foreach (var statement in TableStatements)
+                foreach (var statement in VersionOneStatements)
                 {
                     command.CommandText = statement;
                     command.ExecuteNonQuery();
@@ -311,11 +398,17 @@ namespace Chatcheology.Data.Memories
                     VALUES (1, $purpose, $formatVersion, $created);
                     """;
                 command.Parameters.AddWithValue("$purpose", MarkerPurpose);
-                command.Parameters.AddWithValue("$formatVersion", MarkerFormatVersion);
+                command.Parameters.AddWithValue("$formatVersion", FormatVersionOne);
                 command.Parameters.AddWithValue("$created", FormatUtc(createdDateTimeUtc));
                 command.ExecuteNonQuery();
 
                 command.Parameters.Clear();
+
+                if (upgrade)
+                {
+                    RunUpgradeStatements(command);
+                }
+
                 command.CommandText = $"PRAGMA user_version = {UserVersion.ToString(CultureInfo.InvariantCulture)};";
                 command.ExecuteNonQuery();
 
@@ -366,11 +459,87 @@ namespace Chatcheology.Data.Memories
             return connection;
         }
 
+        /// <summary>Opens an existing memories file read-only (SQLite refuses any write), after proving it is one.</summary>
+        /// <exception cref="ArgumentException">The file name is not <see cref="FileName"/>.</exception>
+        /// <exception cref="FileNotFoundException">There is no file. Nothing is created.</exception>
+        /// <exception cref="InvalidOperationException">It is not a memories file.</exception>
+        public static SqliteConnection OpenReadOnlyConnection(string databasePath)
+        {
+            RequireFixedFileName(databasePath);
+
+            if (!File.Exists(databasePath))
+            {
+                throw new FileNotFoundException(
+                    "There is no memories file at the supplied path. Opening never creates one. No file has been created.");
+            }
+
+            var connection = WorkspaceDatabase.OpenReadOnlyConnection(databasePath);
+
+            try
+            {
+                RequireMemoriesFile(connection);
+            }
+            catch
+            {
+                connection.Dispose();
+                throw;
+            }
+
+            return connection;
+        }
+
         /// <summary>
-        /// Throws unless the connection is open on a memories file: every table and exactly one
-        /// valid marker row. A main workspace or an older-exports file is refused by name.
+        /// The format version of an open memories file (1 or 2), after proving it is one. Call it
+        /// outside a transaction.
         /// </summary>
-        internal static void RequireMemoriesFile(SqliteConnection connection)
+        public static int ReadFormatVersion(SqliteConnection connection) => RequireMemoriesFile(connection);
+
+        /// <summary>
+        /// Upgrades a format 1 file to the current format inside <paramref name="transaction"/>:
+        /// additive only, every existing row unchanged. A current file is left as it is. The
+        /// connection must come from <see cref="OpenConnection"/>, which proved the file.
+        /// </summary>
+        /// <returns>True when the file was format 1 and has been upgraded (on commit).</returns>
+        public static bool UpgradeToCurrent(SqliteConnection connection, SqliteTransaction transaction)
+        {
+            ArgumentNullException.ThrowIfNull(connection);
+            ArgumentNullException.ThrowIfNull(transaction);
+
+            using var command = connection.CreateCommand();
+            command.Transaction = transaction;
+            command.CommandText = "SELECT FormatVersion FROM MemoriesInfo WHERE MemoriesInfoID = 1;";
+            var version = Convert.ToInt32(command.ExecuteScalar(), CultureInfo.InvariantCulture);
+
+            if (version == MarkerFormatVersion)
+            {
+                return false;
+            }
+
+            if (version != FormatVersionOne)
+            {
+                throw new InvalidOperationException("The memories file's format version is not one this build upgrades. Nothing has been written.");
+            }
+
+            RunUpgradeStatements(command);
+            return true;
+        }
+
+        private static void RunUpgradeStatements(SqliteCommand command)
+        {
+            foreach (var statement in UpgradeStatements)
+            {
+                command.CommandText = statement;
+                command.ExecuteNonQuery();
+            }
+        }
+
+        /// <summary>
+        /// Throws unless the connection is open on a memories file: every table of its format and
+        /// exactly one valid marker row (format 1 or 2). A main workspace or an older-exports file
+        /// is refused by name.
+        /// </summary>
+        /// <returns>The file's format version.</returns>
+        internal static int RequireMemoriesFile(SqliteConnection connection)
         {
             ArgumentNullException.ThrowIfNull(connection);
 
@@ -389,7 +558,7 @@ namespace Chatcheology.Data.Memories
                     "or written as the memories file. Nothing has been written.");
             }
 
-            if (!TableNames.All(tables.Contains))
+            if (!VersionOneTableNames.All(tables.Contains))
             {
                 throw new InvalidOperationException(
                     "The database does not carry the memories tables, so it is not treated as a " +
@@ -411,23 +580,42 @@ namespace Chatcheology.Data.Memories
                 SELECT
                     (SELECT COUNT(*) FROM MemoriesInfo),
                     (SELECT COUNT(*) FROM MemoriesInfo
-                     WHERE MemoriesInfoID = 1 AND Purpose = $purpose AND FormatVersion = $formatVersion);
+                     WHERE MemoriesInfoID = 1 AND Purpose = $purpose AND FormatVersion IN ($one, $current)),
+                    (SELECT MAX(FormatVersion) FROM MemoriesInfo);
                 """;
             command.Parameters.AddWithValue("$purpose", MarkerPurpose);
-            command.Parameters.AddWithValue("$formatVersion", MarkerFormatVersion);
+            command.Parameters.AddWithValue("$one", FormatVersionOne);
+            command.Parameters.AddWithValue("$current", MarkerFormatVersion);
 
-            using var reader = command.ExecuteReader();
-            reader.Read();
-            var allRows = reader.GetInt64(0);
-            var validRows = reader.GetInt64(1);
+            long allRows, validRows;
+            int version;
+
+            using (var reader = command.ExecuteReader())
+            {
+                reader.Read();
+                allRows = reader.GetInt64(0);
+                validRows = reader.GetInt64(1);
+                version = reader.IsDBNull(2) ? 0 : reader.GetInt32(2);
+            }
 
             if (allRows != 1 || validRows != 1)
             {
                 throw new InvalidOperationException(
                     "The database does not carry exactly one valid memories marker row (format version " +
+                    $"{FormatVersionOne.ToString(CultureInfo.InvariantCulture)} or " +
                     $"{MarkerFormatVersion.ToString(CultureInfo.InvariantCulture)}), so it is not " +
                     "treated as a memories file. Nothing has been written.");
             }
+
+            // The marker and the tables must agree: format 2 has ItemDefinition, format 1 does not.
+            if (tables.Contains(ItemDefinitionTableName) != (version == MarkerFormatVersion))
+            {
+                throw new InvalidOperationException(
+                    "The memories file's format version and its tables do not agree, so it is not treated as a " +
+                    "memories file. Nothing has been written.");
+            }
+
+            return version;
         }
 
         /// <summary>A UTC moment in the stored spelling (whole seconds, trailing Z).</summary>
