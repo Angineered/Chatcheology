@@ -21,6 +21,9 @@ namespace Chatcheology.Android.Pages
     /// <para>The top bar (CH-37 to CH-39) has icons for Photos, Starred, the date picker and search,
     /// with Settings in the overflow menu; on a day with earlier years to remember, a discreet On this day
     /// icon reopens that card. Stars live in the app's settings; a toggle updates the loaded bubbles.</para>
+    /// <para>Memory rows (CH-42) come with the timeline; a tap opens their details. A layer or filter
+    /// switched in Settings rebuilds the timeline at the same place, like a change of "me", and the date
+    /// picker's days are read again.</para>
     /// </remarks>
     public partial class ConversationPage : ContentPage
     {
@@ -42,6 +45,7 @@ namespace Chatcheology.Android.Pages
         private IReadOnlyList<DateOnly>? _days;
         private OnThisDay? _onThisDay;
         private ToolbarItem? _onThisDayIcon;
+        private int _layersVersion;
 
         /// <summary>Whether the page has begun closing its archive: nothing more is read.</summary>
         private bool _closed => _gate.IsClosed;
@@ -107,6 +111,7 @@ namespace Chatcheology.Android.Pages
 #endif
 
             AttachmentCardView.Tapped += OnAttachmentTapped;
+            MemoryCard.Tapped += OnMemoryTapped;
             MessageText.LinkTapped += OnLinkTapped;
             MessageLongPress.Pressed += OnMessageLongPressed;
             AttachmentCardView.PlayFailed += OnPlayFailed;
@@ -141,7 +146,7 @@ namespace Chatcheology.Android.Pages
                 return;
             }
 
-            await BindAsync(_timeline, _openedAt, highlightSequenceNumber: null);
+            await BindAsync(_timeline, _openedAt, highlightSequenceNumber: null, highlightMemory: null);
 
             if (_openWatch is { } watch)
             {
@@ -176,6 +181,7 @@ namespace Chatcheology.Android.Pages
             }
 
             AttachmentCardView.Tapped -= OnAttachmentTapped;
+            MemoryCard.Tapped -= OnMemoryTapped;
             MessageText.LinkTapped -= OnLinkTapped;
             MessageLongPress.Pressed -= OnMessageLongPressed;
             AttachmentCardView.PlayFailed -= OnPlayFailed;
@@ -198,7 +204,7 @@ namespace Chatcheology.Android.Pages
         // -----------------------------------------------------------------------------------------
 
         /// <summary>Binds a loaded timeline and places it: at the bottom for the newest, otherwise the row at the top.</summary>
-        private async Task BindAsync(ConversationTimeline timeline, OpenedAt at, int? highlightSequenceNumber)
+        private async Task BindAsync(ConversationTimeline timeline, OpenedAt at, int? highlightSequenceNumber, MemoryKey? highlightMemory)
         {
             _timeline = timeline;
             _pager = new ConversationPager(timeline) { List = _recycler };
@@ -224,6 +230,12 @@ namespace Chatcheology.Android.Pages
                 && timeline.Rows[row] is MessageRow message)
             {
                 Highlight(message);
+            }
+
+            if (highlightMemory is { } key && timeline.IndexOfMemory(key) is var memoryRow and >= 0
+                && timeline.Rows[memoryRow] is MemoryRow memory)
+            {
+                Highlight(memory);
             }
         }
 
@@ -308,6 +320,14 @@ namespace Chatcheology.Android.Pages
             message.IsHighlighted = false;
         }
 
+        /// <summary>Briefly highlights a memory row opened from search or a link, as a message is.</summary>
+        private static async void Highlight(MemoryRow memory)
+        {
+            memory.IsHighlighted = true;
+            await Task.Delay(HighlightMilliseconds);
+            memory.IsHighlighted = false;
+        }
+
         /// <summary>Stores the first message at or below the top row as the reader's position.</summary>
         private void SavePosition(int firstVisible)
         {
@@ -359,7 +379,7 @@ namespace Chatcheology.Android.Pages
         /// Never throws: its callers are tap handlers. True when the new timeline was put on screen; false
         /// when the read was refused (another read under way, the page closing) or found nothing there.
         /// </summary>
-        private async Task<bool> ReopenAsync(Func<ConversationTimeline, int> open, int? highlightSequenceNumber)
+        private async Task<bool> ReopenAsync(Func<ConversationTimeline, int> open, int? highlightSequenceNumber, MemoryKey? highlightMemory = null)
         {
             if (!_turn.TryBegin())
             {
@@ -400,7 +420,7 @@ namespace Chatcheology.Android.Pages
                     return false;
                 }
 
-                await BindAsync(read.Value.Timeline, new OpenedAt(read.Value.Row, AtLatest: false), highlightSequenceNumber);
+                await BindAsync(read.Value.Timeline, new OpenedAt(read.Value.Row, AtLatest: false), highlightSequenceNumber, highlightMemory);
                 return true;
             }
             catch (Exception)
@@ -423,6 +443,23 @@ namespace Chatcheology.Android.Pages
         /// <summary>Opens the conversation at <paramref name="sequenceNumber"/> and highlights it (a search hit).</summary>
         internal Task OpenAtMessageAsync(int sequenceNumber) =>
             ReopenAsync(timeline => timeline.OpenAt(sequenceNumber), sequenceNumber);
+
+        /// <summary>Opens the conversation at a memory row and highlights it (a search hit or a link).</summary>
+        internal async Task OpenAtMemoryAsync(MemoryKey key)
+        {
+            if (_closed)
+            {
+                return;
+            }
+
+            if (_session.Memories.Layout(_session.MemoryView).Find(key) is null)
+            {
+                await DisplayAlertAsync("Memories", "That memory is not shown now: its layer or filter is off in Settings.", "OK");
+                return;
+            }
+
+            await ReopenAsync(timeline => timeline.OpenAtMemory(key), null, key);
+        }
 
         private async Task PickDateAsync()
         {
@@ -476,16 +513,24 @@ namespace Chatcheology.Android.Pages
 
             try
             {
-                var read = await _gate.RunAsync(() => _pager.StopAsync(), () => _session.ReadDays());
+                // The messages' days for On this day (message-only), and the picker's days with any
+                // visible memory rows. A layer switched while this ran makes the picker's days stale.
+                var version = _layersVersion;
+                var read = await _gate.RunAsync(() => _pager.StopAsync(), () => (Messages: _session.ReadDays(), Calendar: _session.ReadCalendarDays()));
 
-                if (!read.Ran || _closed || read.Value is not { } days)
+                if (!read.Ran || _closed || read.Value.Messages is not { } days || read.Value.Calendar is not { } calendarDays)
                 {
                     return false;
                 }
 
                 _days = days;
-                _calendar = new DayCalendar(days);
-                return true;
+
+                if (version == _layersVersion)
+                {
+                    _calendar = new DayCalendar(calendarDays);
+                }
+
+                return _calendar is not null;
             }
             catch (Exception) when (!_closed && reportFailure)
             {
@@ -691,7 +736,20 @@ namespace Chatcheology.Android.Pages
                 return;
             }
 
-            await Navigation.PushAsync(new SettingsPage(_session, OnMeChangedAsync, RemoveArchiveAsync, OnThisDayChanged));
+            await Navigation.PushAsync(new SettingsPage(_session, OnMeChangedAsync, RemoveArchiveAsync, OnThisDayChanged, OnLayersChangedAsync));
+        }
+
+        /// <summary>
+        /// A memory layer or filter was switched in Settings (CH-42): the rows are rebuilt at the same place
+        /// (the same path as a change of "me", so a switch made during a read is not dropped), and the date
+        /// picker reads its days again.
+        /// </summary>
+        private Task OnLayersChangedAsync()
+        {
+            _layersVersion++;
+            _calendar = null;
+
+            return OnMeChangedAsync();
         }
 
         /// <summary>
@@ -772,6 +830,46 @@ namespace Chatcheology.Android.Pages
             {
                 // A tap handler: nothing here may end the app.
             }
+        }
+
+        /// <summary>A memory row was tapped: its details, read from what the archive gave at open.</summary>
+        private async void OnMemoryTapped(object? sender, MemoryRow row)
+        {
+            if (_closed || Navigation.NavigationStack.LastOrDefault() != this || _session.MemoryDetails(row.Key) is not { } details)
+            {
+                return;
+            }
+
+            try
+            {
+                await Navigation.PushAsync(new MemoryDetailsPage(details, ShowMessageAsync, ShowEntryAsync));
+            }
+            catch (Exception)
+            {
+                // A tap handler: nothing here may end the app.
+            }
+        }
+
+        /// <summary>A link to another entry: back to this page, at that entry's first visible row.</summary>
+        private async Task ShowEntryAsync(long entryID)
+        {
+            if (_closed)
+            {
+                return;
+            }
+
+            if (_session.Memories.FirstRowOf(entryID, _session.MemoryView) is not { } key)
+            {
+                await DisplayAlertAsync("Memories", "That memory is not shown now: its layer or filter is off in Settings.", "OK");
+                return;
+            }
+
+            while (Navigation.NavigationStack.Count > 1 && Navigation.NavigationStack[^1] != this)
+            {
+                await Navigation.PopAsync(animated: false);
+            }
+
+            await OpenAtMemoryAsync(key);
         }
 
         private async void OnLinkTapped(object? sender, string target)
@@ -862,7 +960,7 @@ namespace Chatcheology.Android.Pages
 #endif
     }
 
-    /// <summary>Picks a row's template: separator, my message, theirs, or a system line.</summary>
+    /// <summary>Picks a row's template: separator, my message, theirs, a system line, or a memory row.</summary>
     public sealed class RowTemplateSelector : DataTemplateSelector
     {
         /// <summary>A date separator.</summary>
@@ -877,10 +975,22 @@ namespace Chatcheology.Android.Pages
         /// <summary>A system line, centred.</summary>
         public DataTemplate System { get; set; } = new();
 
+        /// <summary>A PSN period card (CH-42).</summary>
+        public DataTemplate PeriodCard { get; set; } = new();
+
+        /// <summary>A "different times" line (CH-42).</summary>
+        public DataTemplate DifferentTimes { get; set; } = new();
+
+        /// <summary>A personal memory card (CH-42).</summary>
+        public DataTemplate EntryCard { get; set; } = new();
+
         /// <inheritdoc />
         protected override DataTemplate OnSelectTemplate(object item, BindableObject container) => item switch
         {
             DateSeparatorRow => Separator,
+            PeriodCardRow => PeriodCard,
+            DifferentTimesRow => DifferentTimes,
+            EntryCardRow => EntryCard,
             MessageRow { IsSystem: true } => System,
             MessageRow { IsMine: true } => Mine,
             _ => Theirs,

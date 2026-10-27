@@ -31,6 +31,10 @@ namespace Chatcheology.Mobile.Synthetic
     /// A synthetic video (a generated test pattern, never a real recording) used for every video, each
     /// made distinct by trailing bytes. The generator cannot write a video by hand, so the caller brings it.
     /// </param>
+    /// <param name="Memories">
+    /// Whether to add the invented memory layers (<see cref="SyntheticMemories"/>, CH-42); needs at least
+    /// 200 messages.
+    /// </param>
     internal sealed record SyntheticArchiveOptions(
         int Messages = 3000,
         int Days = 120,
@@ -46,10 +50,11 @@ namespace Chatcheology.Mobile.Synthetic
         int Links = 0,
         DateOnly? Start = null,
         int Videos = 0,
-        byte[]? VideoBytes = null);
+        byte[]? VideoBytes = null,
+        bool Memories = false);
 
     /// <summary>
-    /// Writes a whole portable archive (format v1) of invented conversation through
+    /// Writes a whole portable archive (the current format) of invented conversation through
     /// <see cref="ArchiveWriter"/>: database, media, manifest and contents list.
     /// </summary>
     /// <remarks>
@@ -227,6 +232,7 @@ namespace Chatcheology.Mobile.Synthetic
                 .GroupBy(index => DayOf(options, index))
                 .ToDictionary(group => group.Key, group => group.Count());
 
+            var messageTimes = new List<DateTime>(options.Messages);
             var positionInDay = 0;
             DateOnly? currentDay = null;
             var slot = 0;
@@ -245,6 +251,7 @@ namespace Chatcheology.Mobile.Synthetic
                 positionInDay++;
 
                 var time = day.ToDateTime(TimeOnly.MinValue).AddSeconds(seconds);
+                messageTimes.Add(time);
                 var messageID = 1000L + index;
 
                 var attachments = new List<ArchiveAttachment>();
@@ -313,6 +320,11 @@ namespace Chatcheology.Mobile.Synthetic
                     ForwardScore = forwardScore,
                     Attachments = attachments,
                 });
+            }
+
+            if (options.Memories)
+            {
+                SyntheticMemories.Write(writer, mediaFolder, messageTimes);
             }
 
             var counts = writer.Complete();

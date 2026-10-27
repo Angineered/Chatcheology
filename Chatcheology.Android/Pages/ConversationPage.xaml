@@ -6,7 +6,9 @@
      search is highlighted through its own IsHighlighted flag, so the highlight follows the message, not
      a recycled view. A long press on a bubble offers Share for text and Star / Unstar (MessageBubble,
      MessageText, AttachmentCardView); a starred message, or one with a starred photo, shows a small
-     star beside its time (CH-38). Colours come in light and dark pairs (CH-41). -->
+     star beside its time (CH-38). Colours come in light and dark pairs (CH-41). Memory rows (CH-42)
+     are centred lavender cards (a PSN period, a personal memory) or a muted italic line ("different
+     times"), never bubbles; a tap opens their details, and they have no long press. -->
 <ContentPage xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
              xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
              xmlns:conv="clr-namespace:Chatcheology.Mobile.Conversation;assembly=Chatcheology.Mobile"
@@ -104,11 +106,91 @@
             </Grid>
         </DataTemplate>
 
+        <DataTemplate x:Key="PeriodCard" x:DataType="conv:PeriodCardRow">
+            <Grid Padding="28,6">
+                <Grid.Triggers>
+                    <DataTrigger TargetType="Grid" Binding="{Binding IsHighlighted}" Value="True">
+                        <Setter Property="BackgroundColor" Value="{AppThemeBinding Light={StaticResource HighlightLight}, Dark={StaticResource HighlightDark}}" />
+                    </DataTrigger>
+                </Grid.Triggers>
+                <controls:MemoryCard HorizontalOptions="Center" MaximumWidthRequest="380" Padding="10,8" StrokeThickness="1"
+                                     StrokeShape="RoundRectangle 12"
+                                     Stroke="{AppThemeBinding Light={StaticResource MemoryAccentLight}, Dark={StaticResource MemoryAccentDark}}"
+                                     BackgroundColor="{AppThemeBinding Light={StaticResource MemoryCardBackgroundLight}, Dark={StaticResource MemoryCardBackgroundDark}}">
+                    <Grid ColumnDefinitions="Auto,*" ColumnSpacing="10">
+                        <controls:DecodedImage WidthRequest="56" HeightRequest="56" VerticalOptions="Start" FailedText=""
+                                               IsVisible="{Binding HasImage}" Path="{Binding ImagePath}" />
+                        <VerticalStackLayout Grid.Column="1" Spacing="2">
+                            <Label Text="{Binding Title}" FontSize="14" FontAttributes="Bold" />
+                            <Label Text="{Binding DateText}" FontSize="12"
+                                   TextColor="{AppThemeBinding Light={StaticResource MutedTextLight}, Dark={StaticResource MutedTextDark}}" />
+                            <VerticalStackLayout Spacing="0" BindableLayout.ItemsSource="{Binding ParticipantLines}">
+                                <BindableLayout.ItemTemplate>
+                                    <DataTemplate x:DataType="x:String">
+                                        <Label Text="{Binding .}" FontSize="13" />
+                                    </DataTemplate>
+                                </BindableLayout.ItemTemplate>
+                            </VerticalStackLayout>
+                            <Label Text="{Binding LabelText}" FontSize="12"
+                                   TextColor="{AppThemeBinding Light={StaticResource MemoryAccentLight}, Dark={StaticResource MemoryAccentDark}}" />
+                            <Label Text="{Binding SourceText}" IsVisible="{Binding HasSource}" FontSize="11"
+                                   TextColor="{AppThemeBinding Light={StaticResource MutedTextLight}, Dark={StaticResource MutedTextDark}}" />
+                        </VerticalStackLayout>
+                    </Grid>
+                </controls:MemoryCard>
+            </Grid>
+        </DataTemplate>
+
+        <DataTemplate x:Key="DifferentTimes" x:DataType="conv:DifferentTimesRow">
+            <Grid Padding="40,4">
+                <Grid.Triggers>
+                    <DataTrigger TargetType="Grid" Binding="{Binding IsHighlighted}" Value="True">
+                        <Setter Property="BackgroundColor" Value="{AppThemeBinding Light={StaticResource HighlightLight}, Dark={StaticResource HighlightDark}}" />
+                    </DataTrigger>
+                </Grid.Triggers>
+                <controls:MemoryCard HorizontalOptions="Center" StrokeThickness="0" Padding="8,2" BackgroundColor="Transparent">
+                    <Label Text="{Binding Text}" FontSize="12" FontAttributes="Italic" HorizontalTextAlignment="Center"
+                           TextColor="{AppThemeBinding Light={StaticResource MutedTextLight}, Dark={StaticResource MutedTextDark}}" />
+                </controls:MemoryCard>
+            </Grid>
+        </DataTemplate>
+
+        <DataTemplate x:Key="EntryCard" x:DataType="conv:EntryCardRow">
+            <Grid Padding="28,6">
+                <Grid.Triggers>
+                    <DataTrigger TargetType="Grid" Binding="{Binding IsHighlighted}" Value="True">
+                        <Setter Property="BackgroundColor" Value="{AppThemeBinding Light={StaticResource HighlightLight}, Dark={StaticResource HighlightDark}}" />
+                    </DataTrigger>
+                </Grid.Triggers>
+                <controls:MemoryCard HorizontalOptions="Center" WidthRequest="280" Padding="0,0,0,8" StrokeThickness="1"
+                                     StrokeShape="RoundRectangle 12"
+                                     Stroke="{AppThemeBinding Light={StaticResource MemoryAccentLight}, Dark={StaticResource MemoryAccentDark}}"
+                                     BackgroundColor="{AppThemeBinding Light={StaticResource MemoryCardBackgroundLight}, Dark={StaticResource MemoryCardBackgroundDark}}">
+                    <VerticalStackLayout Spacing="2">
+                        <controls:DecodedImage WidthRequest="280" HeightRequest="158" FailedText=""
+                                               IsVisible="{Binding HasImage}" Path="{Binding ImagePath}" />
+                        <Label Text="{Binding CollectionName}" FontSize="11" Margin="10,6,10,0"
+                               TextColor="{AppThemeBinding Light={StaticResource MemoryAccentLight}, Dark={StaticResource MemoryAccentDark}}" />
+                        <Label Text="{Binding Title}" FontSize="15" FontAttributes="Bold" Margin="10,0" />
+                        <Label Text="{Binding DateText}" FontSize="12" Margin="10,0"
+                               TextColor="{AppThemeBinding Light={StaticResource MutedTextLight}, Dark={StaticResource MutedTextDark}}" />
+                        <Label Text="{Binding Summary}" IsVisible="{Binding HasSummary}" FontSize="13" Margin="10,2,10,0" MaxLines="4"
+                               LineBreakMode="TailTruncation" />
+                        <Label Text="{Binding SourceText}" IsVisible="{Binding HasSource}" FontSize="11" Margin="10,0"
+                               TextColor="{AppThemeBinding Light={StaticResource MutedTextLight}, Dark={StaticResource MutedTextDark}}" />
+                    </VerticalStackLayout>
+                </controls:MemoryCard>
+            </Grid>
+        </DataTemplate>
+
         <pages:RowTemplateSelector x:Key="RowTemplates"
                                    Separator="{StaticResource Separator}"
                                    Theirs="{StaticResource Theirs}"
                                    Mine="{StaticResource Mine}"
-                                   System="{StaticResource System}" />
+                                   System="{StaticResource System}"
+                                   PeriodCard="{StaticResource PeriodCard}"
+                                   DifferentTimes="{StaticResource DifferentTimes}"
+                                   EntryCard="{StaticResource EntryCard}" />
     </ContentPage.Resources>
 
     <Grid>

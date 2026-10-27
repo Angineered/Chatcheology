@@ -40,6 +40,52 @@ namespace Chatcheology.Mobile.Tests
         }
 
         [Fact]
+        public void With_memories_it_holds_every_kind_of_memory_row_and_validates()
+        {
+            using var folder = new TemporaryFolder();
+            var counts = SyntheticArchive.Write(folder.Path, Options with { Memories = true });
+
+            var validation = ArchiveValidator.Validate(folder.Path);
+            Assert.True(validation.Passed, string.Join(", ", validation.FirstProblems));
+            Assert.Equal(5, counts.ItemDefinitions);
+            Assert.Equal(2, counts.EntryLinks);
+
+            using var reader = ArchiveReader.Open(folder.Path);
+            var memories = Memories.MemoryIndex.Build(reader);
+            Assert.Equal(["Shared gaming", "Holidays"], memories.Collections.Select(c => c.Name));
+            Assert.Equal([false, true], memories.Collections.Select(c => c.ShownByDefault));
+
+            var timeline = new ConversationTimeline(reader, SyntheticArchive.Local, memories: memories.Layout(new Memories.MemoryView([1, 2])));
+            timeline.OpenAt(1);
+
+            while (timeline.PrepareLater() is { } later)
+            {
+                timeline.Append(later);
+            }
+
+            var rows = timeline.Rows;
+            var cards = rows.OfType<PeriodCardRow>().ToList();
+
+            Assert.Equal(
+                ["This period: same period", "This period: same period", "This period: strong", "This period: strong", "This period: supporting"],
+                cards.Select(c => c.LabelText).Order());
+            Assert.Single(rows.OfType<DifferentTimesRow>());
+            Assert.Single(rows.OfType<EntryCardRow>(), card => card.HasImage);
+
+            // Rows before the first message and after the last.
+            Assert.IsType<PeriodCardRow>(rows.First(r => r is not DateSeparatorRow));
+            Assert.IsType<PeriodCardRow>(rows[^1]);
+            Assert.Equal(Enumerable.Range(1, 3000), rows.OfType<MessageRow>().Select(m => m.SequenceNumber));
+
+            var details = memories.Details(new MemoryKey(1, 0))!;
+            Assert.Equal(["First Invented Lap", "First Invented Lap", "Invented Drift"], details.Items.Select(i => i.Name));
+            Assert.All(details.Items, i => Assert.True(i.HasIcon));
+            Assert.True(memories.Details(new MemoryKey(1, 2))!.Items[0].IsHidden);
+            Assert.Equal("Bronze trophy #5", memories.Details(new MemoryKey(1, 2))!.Items[1].Name);
+            Assert.Equal(2, memories.Details(new MemoryKey(10, null))!.Links.Count);
+        }
+
+        [Fact]
         public void An_earlier_start_spreads_the_chat_over_years_with_the_same_day_in_several()
         {
             using var folder = new TemporaryFolder();

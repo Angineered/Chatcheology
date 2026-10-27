@@ -260,6 +260,12 @@ namespace Chatcheology.Android.Pages
             midDay.Clicked += async (_, _) => await InstallSyntheticAsync(new SyntheticArchiveOptions(Days: 130));
             DevelopmentTools.Children.Add(midDay);
 
+            // CH-42: Shared gaming (off until switched on in Settings) and Holidays memory layers.
+            var memories = new Button { Text = "Install synthetic archive with memories" };
+            memories.Clicked += async (_, _) => await InstallSyntheticAsync(new SyntheticArchiveOptions(
+                Audio: 1, Documents: 1, LowQualityCopies: 2, Forwarded: 10, Links: 10, Memories: true));
+            DevelopmentTools.Children.Add(memories);
+
             var validate = new Button { Text = "Validate installed archives" };
             validate.Clicked += async (_, _) => await ValidateInstalledAsync();
             DevelopmentTools.Children.Add(validate);

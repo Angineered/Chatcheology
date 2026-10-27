@@ -40,6 +40,11 @@
             <Color x:Key="ButtonBackgroundDark">#2F3E47</Color>
             <Color x:Key="StarLight">#C98A00</Color>
             <Color x:Key="StarDark">#F2C14E</Color>
+            <!-- Memory rows (CH-42): a lavender card with an accent line, unlike any bubble or system line. -->
+            <Color x:Key="MemoryCardBackgroundLight">#F1ECFA</Color>
+            <Color x:Key="MemoryCardBackgroundDark">#28233A</Color>
+            <Color x:Key="MemoryAccentLight">#6A4C9C</Color>
+            <Color x:Key="MemoryAccentDark">#C2B0EC</Color>
 
             <!-- Pages and the controls that do not set a colour of their own. -->
             <Style TargetType="ContentPage" ApplyToDerivedTypes="True">

@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using Chatcheology.Archive;
 using Chatcheology.Mobile.Conversation;
+using Chatcheology.Mobile.Memories;
 using Chatcheology.Mobile.Search;
 using Microsoft.Data.Sqlite;
 
@@ -9,7 +10,8 @@ namespace Chatcheology.Android.Pages
     /// <summary>
     /// Search in message text: ignoring case and accents, newest first, each hit with its date, time,
     /// sender and the text around the match highlighted; the total when the list is capped. Tapping a hit
-    /// opens the conversation at that message, briefly highlighted.
+    /// opens the conversation at that message, briefly highlighted. With a memory layer on, the titles of
+    /// its memories are searched too and listed first; tapping one opens its row (CH-42).
     /// </summary>
     /// <remarks>The index is built in memory the first time, in the background; nothing is written.</remarks>
     internal sealed class SearchPage : ContentPage
@@ -112,13 +114,22 @@ namespace Chatcheology.Android.Pages
 
             try
             {
-                var results = await Task.Run(() => index.Find(query, ConversationSearch.DefaultMaximumHits, cancel.Token), cancel.Token);
+                var (results, memories) = await Task.Run(
+                    () => (index.Find(query, ConversationSearch.DefaultMaximumHits, cancel.Token), _session.FindMemories(query)),
+                    cancel.Token);
 
-                AppState.LogTiming(_firstSearch ? "search-first" : "search", watch.Elapsed, $"matches={results.TotalMatches}");
+                AppState.LogTiming(_firstSearch ? "search-first" : "search", watch.Elapsed, $"matches={results.TotalMatches} memories={memories.Count}");
                 _firstSearch = false;
 
-                _results.ItemsSource = results.Hits;
-                _summary.Text = query.Trim().Length == 0 ? string.Empty : results.Summary;
+                _results.ItemsSource = memories.Cast<object>().Concat(results.Hits).ToList();
+                _summary.Text = query.Trim().Length == 0
+                    ? string.Empty
+                    : memories.Count switch
+                    {
+                        0 => results.Summary,
+                        1 => "1 memory matches. " + results.Summary,
+                        _ => $"{memories.Count.ToString(System.Globalization.CultureInfo.CurrentCulture)} memories match. " + results.Summary,
+                    };
             }
             catch (OperationCanceledException)
             {
@@ -135,7 +146,7 @@ namespace Chatcheology.Android.Pages
 
         private async void OnSelected(object? sender, SelectionChangedEventArgs e)
         {
-            if (_opening || e.CurrentSelection.FirstOrDefault() is not SearchHit hit)
+            if (_opening || e.CurrentSelection.FirstOrDefault() is not { } selected || selected is not (SearchHit or MemorySearchHit))
             {
                 return;
             }
@@ -145,7 +156,15 @@ namespace Chatcheology.Android.Pages
             try
             {
                 await Navigation.PopAsync();
-                await _conversation.OpenAtMessageAsync(hit.SequenceNumber);
+
+                if (selected is MemorySearchHit memory)
+                {
+                    await _conversation.OpenAtMemoryAsync(memory.Key);
+                }
+                else if (selected is SearchHit hit)
+                {
+                    await _conversation.OpenAtMessageAsync(hit.SequenceNumber);
+                }
             }
             catch (Exception)
             {
@@ -175,43 +194,52 @@ namespace Chatcheology.Android.Pages
             {
                 base.OnBindingContextChanged();
 
-                if (BindingContext is not SearchHit hit)
+                switch (BindingContext)
                 {
-                    return;
+                    case SearchHit hit:
+                        _header.Text = $"{hit.DateText} · {hit.TimeText} · {hit.SenderText}";
+                        _snippet.FormattedText = Highlighted(hit.Snippet, hit.Highlights);
+                        break;
+
+                    case MemorySearchHit memory:
+                        _header.Text = $"{memory.DateText} · {memory.CollectionName} (memory)";
+                        _snippet.FormattedText = Highlighted(memory.Title, memory.Highlights);
+                        break;
                 }
+            }
 
-                _header.Text = $"{hit.DateText} · {hit.TimeText} · {hit.SenderText}";
-
+            private static FormattedString Highlighted(string text, IReadOnlyList<MatchRange> highlights)
+            {
                 var formatted = new FormattedString();
                 var at = 0;
 
-                foreach (var range in hit.Highlights.OrderBy(range => range.Start))
+                foreach (var range in highlights.OrderBy(range => range.Start))
                 {
-                    if (range.Start < at || range.Start + range.Length > hit.Snippet.Length)
+                    if (range.Start < at || range.Start + range.Length > text.Length)
                     {
                         continue;
                     }
 
                     if (range.Start > at)
                     {
-                        formatted.Spans.Add(new Span { Text = hit.Snippet[at..range.Start] });
+                        formatted.Spans.Add(new Span { Text = text[at..range.Start] });
                     }
 
                     formatted.Spans.Add(new Span
                     {
-                        Text = hit.Snippet.Substring(range.Start, range.Length),
+                        Text = text.Substring(range.Start, range.Length),
                         FontAttributes = FontAttributes.Bold,
                     }.Themed(Span.BackgroundColorProperty, "Highlight"));
 
                     at = range.Start + range.Length;
                 }
 
-                if (at < hit.Snippet.Length)
+                if (at < text.Length)
                 {
-                    formatted.Spans.Add(new Span { Text = hit.Snippet[at..] });
+                    formatted.Spans.Add(new Span { Text = text[at..] });
                 }
 
-                _snippet.FormattedText = formatted;
+                return formatted;
             }
         }
     }
