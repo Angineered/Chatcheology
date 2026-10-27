@@ -8,14 +8,22 @@ namespace Chatcheology.Data.Memories.Psn
     /// the Local and Other roles, converts and checks times, and splits each event into periods.
     /// </summary>
     /// <remarks>
-    /// Only <c>schema</c>, <c>timezone</c>, <c>games</c> and <c>events</c> are used.
-    /// Account-specific fields are named after the accounts (<c>&lt;prefix&gt;Trophies</c> on an
-    /// event, <c>&lt;prefix&gt;TrophySet</c> on a game); the caller supplies both prefixes, matched
-    /// case-insensitively, and both must be present in every game and every event.
-    /// <para>
-    /// Privacy: no message from here quotes a value from the file or a prefix. Stops name the
-    /// 0-based index of the game or event and the kind of problem only.
-    /// </para>
+    /// Strict: only the one known shape is accepted, and anything else stops the read with the
+    /// index of the game or event. Only <c>schema</c>, <c>timezone</c>, <c>games</c> and
+    /// <c>events</c> are used; other root fields are ignored.
+    /// <list type="bullet">
+    /// <item>Game: <c>key</c> (<c>&lt;setA&gt;|&lt;setB&gt;</c>), <c>game</c> (the title), <c>icon</c>
+    /// (URL or null), <c>&lt;prefix&gt;TrophySet</c> for both accounts.</item>
+    /// <item>Event: <c>id</c> (<c>&lt;gameKey&gt;|yyyy-MM-dd</c>), <c>gameKey</c>, <c>date</c>
+    /// (local date), <c>quality</c>, <c>&lt;prefix&gt;Trophies</c> for both accounts,
+    /// <c>matchingTrophies</c>.</item>
+    /// <item>Trophy: <c>id</c> (integer), <c>type</c>, <c>time</c> (<c>HH:mm:ss</c> local, on the
+    /// event's date), <c>utc</c> (<c>yyyy-MM-ddTHH:mm:ssZ</c>).</item>
+    /// <item>Pair: <c>id</c> (integer), <c>aTime</c>, <c>bTime</c> (<c>HH:mm:ss</c>). Side a is the
+    /// account whose set is first in the game key; the caller names its prefix.</item>
+    /// </list>
+    /// Field names match case-insensitively. Privacy: no message from here quotes a value from the
+    /// file or a prefix.
     /// </remarks>
     public static class PsnSharedActivityReader
     {
@@ -28,20 +36,13 @@ namespace Chatcheology.Data.Memories.Psn
         /// <summary>A matching pair at most this many seconds apart makes a period strong.</summary>
         public const int StrongPairSeconds = 60;
 
-        private static readonly string[] LocalTimeFormats =
-        [
-            "yyyy'-'MM'-'dd' 'HH':'mm':'ss",
-            "yyyy'-'MM'-'dd'T'HH':'mm':'ss",
-        ];
-
-        private static readonly string[] LocalTimeWithOffsetFormats =
-        [
-            "yyyy'-'MM'-'dd' 'HH':'mm':'sszzz",
-            "yyyy'-'MM'-'dd'T'HH':'mm':'sszzz",
-        ];
+        private const string DateFormat = "yyyy'-'MM'-'dd";
+        private const string TimeFormat = "HH':'mm':'ss";
+        private const string UtcFormat = "yyyy'-'MM'-'dd'T'HH':'mm':'ss'Z'";
 
         /// <summary>Reads the file at <paramref name="path"/>.</summary>
-        public static PsnActivity Read(string path, string localPrefix, string otherPrefix, int periodGapMinutes = DefaultPeriodGapMinutes)
+        public static PsnActivity Read(
+            string path, string localPrefix, string otherPrefix, string pairAPrefix, int periodGapMinutes = DefaultPeriodGapMinutes)
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(path);
 
@@ -54,17 +55,26 @@ namespace Chatcheology.Data.Memories.Psn
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
             {
                 // The framework message may quote the path.
-                throw new InvalidOperationException(
-                    $"The PSN file could not be read ({exception.GetType().Name}).");
+                throw new InvalidOperationException($"The PSN file could not be read ({exception.GetType().Name}).");
             }
 
-            return Parse(bytes, localPrefix, otherPrefix, periodGapMinutes);
+            return Parse(bytes, localPrefix, otherPrefix, pairAPrefix, periodGapMinutes);
         }
 
         /// <summary>Reads a file already in memory.</summary>
-        /// <exception cref="ArgumentException">A prefix is empty, not plain letters/digits, or both are the same.</exception>
-        /// <exception cref="FormatException">The file is not what this reader accepts. Nothing is guessed.</exception>
-        public static PsnActivity Parse(ReadOnlyMemory<byte> json, string localPrefix, string otherPrefix, int periodGapMinutes = DefaultPeriodGapMinutes)
+        /// <param name="json">The file.</param>
+        /// <param name="localPrefix">The account prefix mapped to the Local role.</param>
+        /// <param name="otherPrefix">The account prefix mapped to the Other role.</param>
+        /// <param name="pairAPrefix">Which of the two prefixes is side a of the matching pairs.</param>
+        /// <param name="periodGapMinutes">The period gap.</param>
+        /// <exception cref="ArgumentException">A prefix is empty or not plain, the two are the same, or side a names neither.</exception>
+        /// <exception cref="FormatException">The file is not the accepted shape. Nothing is guessed.</exception>
+        public static PsnActivity Parse(
+            ReadOnlyMemory<byte> json,
+            string localPrefix,
+            string otherPrefix,
+            string pairAPrefix,
+            int periodGapMinutes = DefaultPeriodGapMinutes)
         {
             CheckPrefix(localPrefix, "local");
             CheckPrefix(otherPrefix, "other");
@@ -72,6 +82,21 @@ namespace Chatcheology.Data.Memories.Psn
             if (string.Equals(localPrefix, otherPrefix, StringComparison.OrdinalIgnoreCase))
             {
                 throw new ArgumentException("The local and other prefixes are the same; they must name two different accounts.");
+            }
+
+            string pairARole;
+
+            if (string.Equals(pairAPrefix, localPrefix, StringComparison.OrdinalIgnoreCase))
+            {
+                pairARole = MemoryRoles.Local;
+            }
+            else if (string.Equals(pairAPrefix, otherPrefix, StringComparison.OrdinalIgnoreCase))
+            {
+                pairARole = MemoryRoles.Other;
+            }
+            else
+            {
+                throw new ArgumentException("The pair side a prefix must be either the local or the other prefix.");
             }
 
             if (periodGapMinutes < 1)
@@ -103,12 +128,17 @@ namespace Chatcheology.Data.Memories.Psn
                 }
 
                 var zone = ReadZone(root);
-                var games = ReadGames(root, localPrefix, otherPrefix);
-                var records = ReadEvents(root, games, zone, localPrefix, otherPrefix, periodGapMinutes);
+                var accounts = new Accounts(localPrefix, otherPrefix, pairARole);
+                var games = ReadGames(root, accounts);
+                var records = ReadEvents(root, games, zone, accounts, periodGapMinutes);
 
                 return new PsnActivity(games.Count, periodGapMinutes, records);
             }
         }
+
+        private sealed record Accounts(string LocalPrefix, string OtherPrefix, string PairARole);
+
+        private sealed record Game(string Title, string LocalSet, string OtherSet, string? Icon);
 
         private static void CheckPrefix(string prefix, string which)
         {
@@ -127,7 +157,7 @@ namespace Chatcheology.Data.Memories.Psn
 
             var id = zoneElement.GetString()!;
 
-            if (!TimeZoneInfo.TryConvertIanaIdToWindowsId(id, out _) && !IsIanaOnSystem(id))
+            if (!TimeZoneInfo.TryConvertIanaIdToWindowsId(id, out _))
             {
                 throw new FormatException("The file's timezone is not a known IANA time zone.");
             }
@@ -142,43 +172,52 @@ namespace Chatcheology.Data.Memories.Psn
             }
         }
 
-        private static bool IsIanaOnSystem(string id) =>
-            !OperatingSystem.IsWindows() && TimeZoneInfo.TryFindSystemTimeZoneById(id, out var zone) && zone.HasIanaId;
-
-        private sealed record Game(string Title, string LocalSet, string OtherSet, string? Icon);
-
-        private static Dictionary<(string, string), Game> ReadGames(JsonElement root, string localPrefix, string otherPrefix)
+        private static Dictionary<string, Game> ReadGames(JsonElement root, Accounts accounts)
         {
             if (!TryGet(root, "games", out var gamesElement) || gamesElement.ValueKind != JsonValueKind.Array)
             {
                 throw new FormatException("The file has no games array.");
             }
 
-            var games = new Dictionary<(string, string), Game>();
+            var games = new Dictionary<string, Game>(StringComparer.Ordinal);
             var index = 0;
 
             foreach (var game in gamesElement.EnumerateArray())
             {
+                var where = $"Game at index {index}";
+
                 if (game.ValueKind != JsonValueKind.Object)
                 {
-                    throw new FormatException($"Game at index {index} is not an object.");
+                    throw new FormatException($"{where} is not an object.");
                 }
 
-                var localSet = RequireString(game, localPrefix + "TrophySet",
-                    $"Game at index {index} has no trophy set field for the local prefix.");
-                var otherSet = RequireString(game, otherPrefix + "TrophySet",
-                    $"Game at index {index} has no trophy set field for the other prefix.");
-                var title = RequireString(game, "title", $"Game at index {index} has no title.");
-                string? icon = null;
+                var key = RequireString(game, "key", $"{where} has no key.");
+                var title = RequireString(game, "game", $"{where} has no game title.");
+                var localSet = RequireString(game, accounts.LocalPrefix + "TrophySet", $"{where} has no trophy set field for the local prefix.");
+                var otherSet = RequireString(game, accounts.OtherPrefix + "TrophySet", $"{where} has no trophy set field for the other prefix.");
+                var icon = OptionalString(game, "icon", $"{where} has an icon that is not text.");
 
-                if (TryGet(game, "icon", out var iconElement) && iconElement.ValueKind == JsonValueKind.String)
+                var parts = key.Split('|');
+
+                if (parts.Length != 2)
                 {
-                    icon = string.IsNullOrWhiteSpace(iconElement.GetString()) ? null : iconElement.GetString();
+                    throw new FormatException($"{where} has a key that is not <set>|<set>.");
                 }
 
-                if (!games.TryAdd((localSet, otherSet), new Game(title, localSet, otherSet, icon)))
+                var (setA, setB) = accounts.PairARole == MemoryRoles.Local ? (localSet, otherSet) : (otherSet, localSet);
+
+                // Where the sets differ, this proves which account is side a; where they are the
+                // same set, the key cannot tell the accounts apart and only the sets are checked.
+                if (!string.Equals(parts[0], setA, StringComparison.Ordinal) || !string.Equals(parts[1], setB, StringComparison.Ordinal))
                 {
-                    throw new FormatException($"Game at index {index} repeats an earlier game's trophy set pair.");
+                    throw new FormatException(
+                        $"{where}: the side a prefix's trophy set is not first in the key, or the key does not name " +
+                        "the two trophy sets. Check --pair-a.");
+                }
+
+                if (!games.TryAdd(key, new Game(title, localSet, otherSet, icon)))
+                {
+                    throw new FormatException($"{where} repeats an earlier game's key.");
                 }
 
                 index++;
@@ -189,10 +228,9 @@ namespace Chatcheology.Data.Memories.Psn
 
         private static List<PsnRecord> ReadEvents(
             JsonElement root,
-            Dictionary<(string, string), Game> games,
+            Dictionary<string, Game> games,
             TimeZoneInfo zone,
-            string localPrefix,
-            string otherPrefix,
+            Accounts accounts,
             int periodGapMinutes)
         {
             if (!TryGet(root, "events", out var eventsElement) || eventsElement.ValueKind != JsonValueKind.Array)
@@ -206,43 +244,48 @@ namespace Chatcheology.Data.Memories.Psn
 
             foreach (var element in eventsElement.EnumerateArray())
             {
+                var where = $"Event at index {index}";
+
                 if (element.ValueKind != JsonValueKind.Object)
                 {
-                    throw new FormatException($"Event at index {index} is not an object.");
+                    throw new FormatException($"{where} is not an object.");
                 }
 
-                var id = RequireString(element, "id", $"Event at index {index} has no id.");
+                var id = RequireString(element, "id", $"{where} has no id.");
+                var gameKey = RequireString(element, "gameKey", $"{where} has no gameKey.");
+                var dateText = RequireString(element, "date", $"{where} has no date.");
+                var level = RequireString(element, "quality", $"{where} has no quality.");
 
                 if (!keys.Add(id))
                 {
-                    throw new FormatException($"Event at index {index} repeats an earlier event id.");
+                    throw new FormatException($"{where} repeats an earlier event id.");
                 }
 
-                var parts = id.Split('|');
-
-                if (parts.Length != 3)
+                if (!DateOnly.TryParseExact(dateText, DateFormat, CultureInfo.InvariantCulture, DateTimeStyles.None, out var date))
                 {
-                    throw new FormatException($"Event at index {index} has an id that is not <set>|<set>|<date>.");
+                    throw new FormatException($"{where} has a date that is not yyyy-MM-dd.");
                 }
 
-                if (!games.TryGetValue((parts[0], parts[1]), out var game)
-                    && !games.TryGetValue((parts[1], parts[0]), out game))
+                if (!string.Equals(id, $"{gameKey}|{dateText}", StringComparison.Ordinal))
                 {
-                    throw new FormatException($"Event at index {index} names a trophy set pair with no game.");
+                    throw new FormatException($"{where}: its id is not its gameKey and date joined by '|'.");
                 }
 
-                var level = RequireString(element, "quality", $"Event at index {index} has no quality.");
+                if (!games.TryGetValue(gameKey, out var game))
+                {
+                    throw new FormatException($"{where} names a gameKey with no game.");
+                }
 
                 var items = new List<(string Role, string ItemId, string Type, DateTime Utc, DateTime Local)>();
-                ReadTrophies(element, localPrefix, MemoryRoles.Local, zone, index, items);
-                ReadTrophies(element, otherPrefix, MemoryRoles.Other, zone, index, items);
+                ReadTrophies(element, accounts.LocalPrefix, MemoryRoles.Local, date, zone, where, items);
+                ReadTrophies(element, accounts.OtherPrefix, MemoryRoles.Other, date, zone, where, items);
 
                 if (items.Count == 0)
                 {
-                    throw new FormatException($"Event at index {index} has no trophies.");
+                    throw new FormatException($"{where} has no trophies.");
                 }
 
-                var pairs = ReadPairs(element, localPrefix, otherPrefix, index);
+                var pairs = ReadPairs(element, accounts.PairARole, date, where);
 
                 records.Add(PsnPeriodBuilder.Build(
                     id, game.Title, level, game.Icon, game.LocalSet, game.OtherSet, items, pairs, periodGapMinutes));
@@ -257,194 +300,131 @@ namespace Chatcheology.Data.Memories.Psn
             JsonElement element,
             string prefix,
             string role,
+            DateOnly date,
             TimeZoneInfo zone,
-            int eventIndex,
+            string where,
             List<(string Role, string ItemId, string Type, DateTime Utc, DateTime Local)> items)
         {
             var which = role == MemoryRoles.Local ? "local" : "other";
 
             if (!TryGet(element, prefix + "Trophies", out var trophies) || trophies.ValueKind != JsonValueKind.Array)
             {
-                throw new FormatException($"Event at index {eventIndex} has no trophy list for the {which} prefix.");
+                throw new FormatException($"{where} has no trophy list for the {which} prefix.");
             }
 
             foreach (var trophy in trophies.EnumerateArray())
             {
                 if (trophy.ValueKind != JsonValueKind.Object)
                 {
-                    throw new FormatException($"Event at index {eventIndex}: a {which} trophy is not an object.");
+                    throw new FormatException($"{where}: a {which} trophy is not an object.");
                 }
 
-                var itemId = ReadId(trophy)
-                    ?? throw new FormatException($"Event at index {eventIndex}: a {which} trophy has no id.");
-                var type = ReadFirstString(trophy, "type", "trophyType")
-                    ?? throw new FormatException($"Event at index {eventIndex}: a {which} trophy has no type.");
-                var utcText = ReadFirstString(trophy, "utc")
-                    ?? throw new FormatException($"Event at index {eventIndex}: a {which} trophy has no utc time.");
-                var timeText = ReadFirstString(trophy, "time")
-                    ?? throw new FormatException($"Event at index {eventIndex}: a {which} trophy has no time.");
+                var itemId = RequireInteger(trophy, "id", $"{where}: a {which} trophy has no integer id.");
+                var type = RequireString(trophy, "type", $"{where}: a {which} trophy has no type.");
+                var utcText = RequireString(trophy, "utc", $"{where}: a {which} trophy has no utc time.");
+                var timeText = RequireString(trophy, "time", $"{where}: a {which} trophy has no time.");
 
-                var utc = ParseUtc(utcText)
-                    ?? throw new FormatException(
-                        $"Event at index {eventIndex}: a {which} trophy's utc time is not a whole-second UTC time.");
-                var local = TimeZoneInfo.ConvertTimeFromUtc(utc, zone);
-                local = DateTime.SpecifyKind(local, DateTimeKind.Unspecified);
+                if (!DateTime.TryParseExact(utcText, UtcFormat, CultureInfo.InvariantCulture,
+                        DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal, out var utc))
+                {
+                    throw new FormatException($"{where}: a {which} trophy's utc time is not yyyy-MM-ddTHH:mm:ssZ.");
+                }
 
-                if (!SourceLocalTimeMatches(timeText, local, utc, zone))
+                utc = DateTime.SpecifyKind(utc, DateTimeKind.Utc);
+
+                if (!TimeOnly.TryParseExact(timeText, TimeFormat, CultureInfo.InvariantCulture, DateTimeStyles.None, out var time))
+                {
+                    throw new FormatException($"{where}: a {which} trophy's time is not HH:mm:ss.");
+                }
+
+                var local = DateTime.SpecifyKind(TimeZoneInfo.ConvertTimeFromUtc(utc, zone), DateTimeKind.Unspecified);
+
+                if (local != date.ToDateTime(time))
                 {
                     throw new FormatException(
-                        $"Event at index {eventIndex}: a {which} trophy's utc time converted to the file's " +
-                        "timezone does not equal its time field. Stopped.");
+                        $"{where}: a {which} trophy's utc time converted to the file's timezone does not equal " +
+                        "the event date and the trophy's time. Stopped.");
                 }
 
                 items.Add((role, itemId, type, utc, local));
             }
         }
 
-        private static List<PsnPeriodBuilder.Pair> ReadPairs(JsonElement element, string localPrefix, string otherPrefix, int eventIndex)
+        private static List<PsnPeriodBuilder.Pair> ReadPairs(JsonElement element, string pairARole, DateOnly date, string where)
         {
-            if (!TryGet(element, "matchingTrophies", out var pairsElement))
+            if (!TryGet(element, "matchingTrophies", out var pairsElement) || pairsElement.ValueKind != JsonValueKind.Array)
             {
-                throw new FormatException($"Event at index {eventIndex} has no matchingTrophies field.");
+                throw new FormatException($"{where} has no matchingTrophies list.");
             }
 
             var pairs = new List<PsnPeriodBuilder.Pair>();
 
-            if (pairsElement.ValueKind == JsonValueKind.Null)
-            {
-                return pairs;
-            }
-
-            if (pairsElement.ValueKind != JsonValueKind.Array)
-            {
-                throw new FormatException($"Event at index {eventIndex} has a matchingTrophies field that is not a list.");
-            }
-
             foreach (var pair in pairsElement.EnumerateArray())
             {
-                pairs.Add(new PsnPeriodBuilder.Pair(ReadPairSide(pair, localPrefix), ReadPairSide(pair, otherPrefix)));
+                if (pair.ValueKind != JsonValueKind.Object)
+                {
+                    throw new FormatException($"{where}: a matching pair is not an object.");
+                }
+
+                var id = RequireInteger(pair, "id", $"{where}: a matching pair has no integer id.");
+                var aTime = RequireTime(pair, "aTime", $"{where}: a matching pair's aTime is not HH:mm:ss.");
+                var bTime = RequireTime(pair, "bTime", $"{where}: a matching pair's bTime is not HH:mm:ss.");
+
+                var a = (id, date.ToDateTime(aTime));
+                var b = (id, date.ToDateTime(bTime));
+
+                pairs.Add(pairARole == MemoryRoles.Local ? new PsnPeriodBuilder.Pair(a, b) : new PsnPeriodBuilder.Pair(b, a));
             }
 
             return pairs;
         }
 
-        /// <summary>
-        /// One side of a pair: either a nested object named after the prefix holding <c>id</c> (or
-        /// <c>trophyId</c>) and <c>time</c>, or flat <c>&lt;prefix&gt;Id</c> / <c>&lt;prefix&gt;TrophyId</c> and
-        /// <c>&lt;prefix&gt;Time</c>. Anything missing or unreadable gives null: the pair is then
-        /// counted as not located, never guessed.
-        /// </summary>
-        private static (string ItemId, DateTime Local)? ReadPairSide(JsonElement pair, string prefix)
+        private static TimeOnly RequireTime(JsonElement element, string name, string message)
         {
-            if (pair.ValueKind != JsonValueKind.Object)
+            var text = RequireString(element, name, message);
+
+            return TimeOnly.TryParseExact(text, TimeFormat, CultureInfo.InvariantCulture, DateTimeStyles.None, out var time)
+                ? time
+                : throw new FormatException(message);
+        }
+
+        private static string RequireInteger(JsonElement element, string name, string message)
+        {
+            if (TryGet(element, name, out var value)
+                && value.ValueKind == JsonValueKind.Number
+                && value.TryGetInt64(out var number))
+            {
+                return number.ToString(CultureInfo.InvariantCulture);
+            }
+
+            throw new FormatException(message);
+        }
+
+        private static string RequireString(JsonElement element, string name, string message)
+        {
+            if (TryGet(element, name, out var value)
+                && value.ValueKind == JsonValueKind.String
+                && !string.IsNullOrWhiteSpace(value.GetString()))
+            {
+                return value.GetString()!;
+            }
+
+            throw new FormatException(message);
+        }
+
+        private static string? OptionalString(JsonElement element, string name, string message)
+        {
+            if (!TryGet(element, name, out var value) || value.ValueKind == JsonValueKind.Null)
             {
                 return null;
             }
 
-            string? id;
-            string? time;
-
-            if (TryGet(pair, prefix, out var nested) && nested.ValueKind == JsonValueKind.Object)
+            if (value.ValueKind != JsonValueKind.String)
             {
-                id = ReadId(nested);
-                time = ReadFirstString(nested, "time");
-            }
-            else
-            {
-                id = ReadIdField(pair, prefix + "Id") ?? ReadIdField(pair, prefix + "TrophyId");
-                time = ReadFirstString(pair, prefix + "Time");
+                throw new FormatException(message);
             }
 
-            if (id is null || time is null || ParseLocal(time) is not { } local)
-            {
-                return null;
-            }
-
-            return (id, local);
-        }
-
-        private static string? ReadId(JsonElement element) => ReadIdField(element, "id") ?? ReadIdField(element, "trophyId");
-
-        private static string? ReadIdField(JsonElement element, string name)
-        {
-            if (!TryGet(element, name, out var value))
-            {
-                return null;
-            }
-
-            return value.ValueKind switch
-            {
-                JsonValueKind.Number => value.GetRawText(),
-                JsonValueKind.String when !string.IsNullOrWhiteSpace(value.GetString()) => value.GetString(),
-                _ => null,
-            };
-        }
-
-        private static string? ReadFirstString(JsonElement element, params string[] names)
-        {
-            foreach (var name in names)
-            {
-                if (TryGet(element, name, out var value)
-                    && value.ValueKind == JsonValueKind.String
-                    && !string.IsNullOrWhiteSpace(value.GetString()))
-                {
-                    return value.GetString();
-                }
-            }
-
-            return null;
-        }
-
-        private static string RequireString(JsonElement element, string name, string message) =>
-            ReadFirstString(element, name) ?? throw new FormatException(message);
-
-        /// <summary>A UTC time with an explicit Z or zero offset, whole seconds (a zero fraction is allowed).</summary>
-        internal static DateTime? ParseUtc(string text)
-        {
-            if (!DateTimeOffset.TryParse(
-                    text,
-                    CultureInfo.InvariantCulture,
-                    DateTimeStyles.None,
-                    out var value)
-                || value.Offset != TimeSpan.Zero
-                || !(text.EndsWith('Z') || text.EndsWith("+00:00", StringComparison.Ordinal))
-                || value.Ticks % TimeSpan.TicksPerSecond != 0)
-            {
-                return null;
-            }
-
-            return DateTime.SpecifyKind(value.UtcDateTime, DateTimeKind.Utc);
-        }
-
-        /// <summary>A local wall-clock reading without zone, whole seconds.</summary>
-        internal static DateTime? ParseLocal(string text)
-        {
-            if (DateTime.TryParseExact(text, LocalTimeFormats, CultureInfo.InvariantCulture, DateTimeStyles.None, out var value))
-            {
-                return value;
-            }
-
-            if (DateTimeOffset.TryParseExact(text, LocalTimeWithOffsetFormats, CultureInfo.InvariantCulture, DateTimeStyles.None, out var withOffset))
-            {
-                return withOffset.DateTime;
-            }
-
-            return null;
-        }
-
-        private static bool SourceLocalTimeMatches(string text, DateTime local, DateTime utc, TimeZoneInfo zone)
-        {
-            if (DateTime.TryParseExact(text, LocalTimeFormats, CultureInfo.InvariantCulture, DateTimeStyles.None, out var plain))
-            {
-                return plain == local;
-            }
-
-            if (DateTimeOffset.TryParseExact(text, LocalTimeWithOffsetFormats, CultureInfo.InvariantCulture, DateTimeStyles.None, out var withOffset))
-            {
-                return withOffset.DateTime == local && withOffset.Offset == zone.GetUtcOffset(utc);
-            }
-
-            return false;
+            return string.IsNullOrWhiteSpace(value.GetString()) ? null : value.GetString();
         }
 
         /// <summary>Case-insensitive property lookup; two properties differing only by case are refused.</summary>

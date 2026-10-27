@@ -34,7 +34,7 @@ namespace Chatcheology.Data.Tests.Memories
             var standard = Standard();
             file.Events.Add(new SyntheticEvent { Game = file.Games[0], Date = "2015-03-01", Local = standard.Events[0].Local, Other = standard.Events[0].Other });
             file.Events.Add(new SyntheticEvent { Game = file.Games[1], Date = "2016-07-04", Local = standard.Events[1].Local, Other = standard.Events[1].Other });
-            new PsnImporter().Import(path, PsnSharedActivityReader.Parse(file.ToBytes(), LocalPrefix, OtherPrefix));
+            new PsnImporter().Import(path, PsnSharedActivityReader.Parse(file.ToBytes(), LocalPrefix, OtherPrefix, file.PairAPrefix));
             SqliteConnection.ClearAllPools();
             return path;
         }

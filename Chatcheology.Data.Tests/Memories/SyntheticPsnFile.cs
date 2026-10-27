@@ -4,16 +4,18 @@ using System.Text.Json.Nodes;
 
 namespace Chatcheology.Tests.Memories
 {
-    /// <summary>One synthetic trophy. Utc is the earned time; Time overrides the local text.</summary>
+    /// <summary>One synthetic trophy. Utc is the earned time; Time overrides the local HH:mm:ss text.</summary>
     internal sealed record SyntheticTrophy(string Id, string Type, DateTime Utc, string? Time = null)
     {
-        /// <summary>Synthetic files use a +02:00 zone without daylight saving.</summary>
+        /// <summary>Synthetic files use Africa/Johannesburg: +02:00, no daylight saving.</summary>
         internal static readonly TimeSpan Offset = TimeSpan.FromHours(2);
 
-        internal string LocalText => Time ?? (Utc + Offset).ToString("yyyy'-'MM'-'dd' 'HH':'mm':'ss", CultureInfo.InvariantCulture);
+        internal string LocalText => Time ?? (Utc + Offset).ToString("HH':'mm':'ss", CultureInfo.InvariantCulture);
+
+        internal int IdNumber => int.Parse(Id, NumberStyles.None, CultureInfo.InvariantCulture);
     }
 
-    /// <summary>A synthetic matching pair (local trophy, other trophy).</summary>
+    /// <summary>A synthetic matching pair (local trophy, other trophy). The pair id is the local trophy's.</summary>
     internal sealed record SyntheticPair(SyntheticTrophy Local, SyntheticTrophy Other);
 
     /// <summary>A synthetic game: invented title and set IDs.</summary>
@@ -33,11 +35,12 @@ namespace Chatcheology.Tests.Memories
         internal List<SyntheticTrophy> Other { get; init; } = [];
 
         internal List<SyntheticPair> Pairs { get; init; } = [];
-
-        internal string Id => $"{Game.LocalSet}|{Game.OtherSet}|{Date}";
     }
 
-    /// <summary>Builds a synthetic PSN shared-activity file. Every value is invented.</summary>
+    /// <summary>
+    /// Builds a synthetic PSN shared-activity file in the exact source shape. Every value is invented.
+    /// By default the local account (<see cref="LocalPrefix"/>) is side a: its set is first in the key.
+    /// </summary>
     internal sealed class SyntheticPsnFile
     {
         internal const string LocalPrefix = "alpha";
@@ -57,8 +60,11 @@ namespace Chatcheology.Tests.Memories
 
         internal List<SyntheticEvent> Events { get; } = [];
 
-        /// <summary>Pairs written as nested objects named after the prefix instead of flat fields.</summary>
-        internal bool NestedPairs { get; set; }
+        /// <summary>False makes the other account (beta) side a: first in keys, aTime from its trophy.</summary>
+        internal bool LocalIsSideA { get; set; } = true;
+
+        /// <summary>The prefix to pass as --pair-a for this file.</summary>
+        internal string PairAPrefix => LocalIsSideA ? LocalPrefix : OtherPrefix;
 
         /// <summary>Called on the root just before serialising, to break the file on purpose.</summary>
         internal Action<JsonObject>? Tamper { get; set; }
@@ -68,6 +74,13 @@ namespace Chatcheology.Tests.Memories
 
         internal static SyntheticTrophy Trophy(string id, DateTime utc, string type = "bronze") => new(id, type, utc);
 
+        internal string KeyOf(SyntheticGame game) =>
+            LocalIsSideA ? $"{game.LocalSet}|{game.OtherSet}" : $"{game.OtherSet}|{game.LocalSet}";
+
+        internal string IdOf(SyntheticEvent e) => $"{KeyOf(e.Game)}|{e.Date}";
+
+        private static string Capitalised(string prefix) => char.ToUpperInvariant(prefix[0]) + prefix[1..];
+
         internal string ToJson()
         {
             var games = new JsonArray();
@@ -76,14 +89,27 @@ namespace Chatcheology.Tests.Memories
             {
                 games.Add(new JsonObject
                 {
-                    ["key"] = $"{game.LocalSet}|{game.OtherSet}",
-                    ["title"] = game.Title,
+                    ["key"] = KeyOf(game),
+                    ["game"] = game.Title,
+                    ["icon"] = game.Icon,
+                    ["sameTrophySet"] = game.LocalSet == game.OtherSet,
+                    ["platform" + Capitalised(LocalPrefix)] = "PS4",
+                    ["platform" + Capitalised(OtherPrefix)] = "PS4",
                     [LocalPrefix + "TrophySet"] = game.LocalSet,
                     [OtherPrefix + "TrophySet"] = game.OtherSet,
-                    ["platformAlpha"] = "PS4",
-                    ["platformBeta"] = "PS4",
+                    [LocalPrefix + "Earned"] = 10,
+                    [OtherPrefix + "Earned"] = 10,
+                    ["sharedDates"] = 1,
+                    ["strongDates"] = 1,
+                    ["supportingDates"] = 0,
+                    ["matchedTrophyIds"] = 1,
+                    ["matchedWithin60s"] = 1,
+                    ["matchedWithin10s"] = 0,
+                    ["matchingExactSeconds"] = 0,
+                    ["firstSharedDate"] = "2015-03-01",
+                    ["lastSharedDate"] = "2015-03-01",
+                    ["note"] = "invented",
                     ["reviewStatus"] = "together",
-                    ["icon"] = game.Icon,
                 });
             }
 
@@ -95,54 +121,64 @@ namespace Chatcheology.Tests.Memories
 
                 foreach (var pair in e.Pairs)
                 {
-                    var seconds = Math.Abs((pair.Local.Utc - pair.Other.Utc).TotalSeconds);
+                    var (a, b) = LocalIsSideA ? (pair.Local, pair.Other) : (pair.Other, pair.Local);
 
-                    if (NestedPairs)
+                    pairs.Add(new JsonObject
                     {
-                        pairs.Add(new JsonObject
-                        {
-                            [LocalPrefix] = new JsonObject { ["id"] = pair.Local.Id, ["time"] = pair.Local.LocalText },
-                            [OtherPrefix] = new JsonObject { ["id"] = pair.Other.Id, ["time"] = pair.Other.LocalText },
-                            ["secondsApart"] = seconds,
-                        });
-                    }
-                    else
-                    {
-                        pairs.Add(new JsonObject
-                        {
-                            [LocalPrefix + "TrophyId"] = pair.Local.Id,
-                            [LocalPrefix + "Time"] = pair.Local.LocalText,
-                            [OtherPrefix + "TrophyId"] = pair.Other.Id,
-                            [OtherPrefix + "Time"] = pair.Other.LocalText,
-                            ["secondsApart"] = seconds,
-                        });
-                    }
+                        ["id"] = pair.Local.IdNumber,
+                        ["type"] = pair.Local.Type,
+                        ["aTime"] = a.LocalText,
+                        ["bTime"] = b.LocalText,
+                        ["seconds"] = (int)(a.Utc - b.Utc).TotalSeconds,
+                    });
                 }
 
-                events.Add(new JsonObject
+                var date = DateOnly.ParseExact(e.Date, "yyyy'-'MM'-'dd", CultureInfo.InvariantCulture);
+                var ev = new JsonObject
                 {
-                    ["id"] = e.Id,
-                    ["date"] = e.Date,
+                    ["id"] = IdOf(e),
+                    ["gameKey"] = KeyOf(e.Game),
                     ["title"] = e.Game.Title,
+                    ["date"] = e.Date,
+                    ["year"] = date.Year,
                     ["quality"] = e.Quality,
-                    ["firstAlpha"] = e.Local.Count == 0 ? null : e.Local.Min(t => t.LocalText),
-                    ["firstBeta"] = e.Other.Count == 0 ? null : e.Other.Min(t => t.LocalText),
-                    [LocalPrefix + "Trophies"] = TrophyArray(e.Local),
-                    [OtherPrefix + "Trophies"] = TrophyArray(e.Other),
-                    ["matchingTrophies"] = pairs,
-                });
+                    [LocalPrefix + "Count"] = e.Local.Count,
+                    [OtherPrefix + "Count"] = e.Other.Count,
+                    ["sameTrophyCount"] = e.Pairs.Count,
+                    ["close60Count"] = 0,
+                    ["close10Count"] = 0,
+                    ["exactCount"] = 0,
+                    ["closestSeconds"] = 0,
+                };
+
+                AddFirstLast(ev, LocalPrefix, e.Local);
+                AddFirstLast(ev, OtherPrefix, e.Other);
+                ev[LocalPrefix + "Trophies"] = TrophyArray(e.Local);
+                ev[OtherPrefix + "Trophies"] = TrophyArray(e.Other);
+                ev["matchingTrophies"] = pairs;
+                events.Add(ev);
             }
 
             var root = new JsonObject
             {
                 ["schema"] = Schema,
                 ["timezone"] = TimeZone,
+                ["sources"] = new JsonObject { ["note"] = "invented" },
+                ["rules"] = new JsonObject { ["note"] = "invented" },
+                ["summary"] = new JsonObject { ["games"] = Games.Count },
+                ["yearlyGameDateCounts"] = new JsonObject(),
                 ["games"] = games,
                 ["events"] = events,
             };
 
             Tamper?.Invoke(root);
             return root.ToJsonString();
+        }
+
+        private static void AddFirstLast(JsonObject ev, string prefix, List<SyntheticTrophy> trophies)
+        {
+            ev["first" + Capitalised(prefix)] = trophies.Count == 0 ? null : trophies.Min(t => t.LocalText);
+            ev["last" + Capitalised(prefix)] = trophies.Count == 0 ? null : trophies.Max(t => t.LocalText);
         }
 
         internal byte[] ToBytes() => Encoding.UTF8.GetBytes(ToJson());
@@ -162,12 +198,10 @@ namespace Chatcheology.Tests.Memories
             {
                 array.Add(new JsonObject
                 {
-                    ["id"] = int.TryParse(trophy.Id, NumberStyles.None, CultureInfo.InvariantCulture, out var number)
-                        ? JsonValue.Create(number)
-                        : JsonValue.Create(trophy.Id),
+                    ["id"] = trophy.IdNumber,
                     ["type"] = trophy.Type,
-                    ["utc"] = trophy.Utc.ToString("yyyy'-'MM'-'dd'T'HH':'mm':'ss'Z'", CultureInfo.InvariantCulture),
                     ["time"] = trophy.LocalText,
+                    ["utc"] = trophy.Utc.ToString("yyyy'-'MM'-'dd'T'HH':'mm':'ss'Z'", CultureInfo.InvariantCulture),
                 });
             }
 
@@ -187,7 +221,7 @@ namespace Chatcheology.Tests.Memories
             var a1 = Trophy("1", Utc(2015, 3, 1, 18, 0, 0));
             var b1 = Trophy("1", Utc(2015, 3, 1, 18, 0, 30));
             var a2 = Trophy("2", Utc(2015, 3, 1, 21, 0, 0), "silver");
-            var b2 = Trophy("3", Utc(2015, 3, 1, 21, 10, 0));
+            var b2 = Trophy("2", Utc(2015, 3, 1, 21, 10, 0), "silver");
 
             file.Events.Add(new SyntheticEvent
             {

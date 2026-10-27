@@ -8,16 +8,21 @@ namespace Chatcheology.Data.Tests.Memories
 {
     public class PsnSharedActivityReaderTests
     {
-        private static PsnActivity Read(SyntheticPsnFile file, string local = LocalPrefix, string other = OtherPrefix, int gap = 60) =>
-            PsnSharedActivityReader.Parse(file.ToBytes(), local, other, gap);
+        private static PsnActivity Read(SyntheticPsnFile file, string local = LocalPrefix, string other = OtherPrefix, string? pairA = null, int gap = 60) =>
+            PsnSharedActivityReader.Parse(file.ToBytes(), local, other, pairA ?? file.PairAPrefix, gap);
 
-        private static SyntheticPsnFile OneEvent(List<SyntheticTrophy> local, List<SyntheticTrophy> other, List<SyntheticPair>? pairs = null, SyntheticGame? game = null)
+        private static SyntheticPsnFile OneEvent(
+            List<SyntheticTrophy> local, List<SyntheticTrophy> other, List<SyntheticPair>? pairs = null, SyntheticGame? game = null, string date = "2015-03-01")
         {
             var file = new SyntheticPsnFile();
             file.Games.Add(game ?? Quest);
-            file.Events.Add(new SyntheticEvent { Game = game ?? Quest, Local = local, Other = other, Pairs = pairs ?? [] });
+            file.Events.Add(new SyntheticEvent { Game = game ?? Quest, Date = date, Local = local, Other = other, Pairs = pairs ?? [] });
             return file;
         }
+
+        private static JsonObject Event(JsonObject root, int index) => root["events"]![index]!.AsObject();
+
+        private static JsonObject Game(JsonObject root, int index) => root["games"]![index]!.AsObject();
 
         [Fact]
         public void Standard_ReadsRecordsItemsAndRoles()
@@ -35,10 +40,21 @@ namespace Chatcheology.Data.Tests.Memories
             Assert.Equal(4, quest.Items.Count);
             Assert.Equal(2, quest.Items.Count(i => i.Role == MemoryRoles.Local));
             Assert.All(quest.Items, i => Assert.Equal(DateTimeKind.Utc, i.TimeUtc.Kind));
+            Assert.Equal(0, quest.PairsNotLocated);
 
             var racer = activity.Records[1];
+            Assert.Equal("NPWR88888_00|NPWR77777_00|2016-07-04", racer.SourceKey);
             Assert.Equal("NPWR88888_00", racer.Items.Single(i => i.Role == MemoryRoles.Local).SetId);
             Assert.Equal("NPWR77777_00", racer.Items.Single(i => i.Role == MemoryRoles.Other).SetId);
+        }
+
+        [Fact]
+        public void TitleComesFromTheGame_NotTheEvent()
+        {
+            var file = Standard();
+            file.Tamper = root => Event(root, 0)["title"] = "Invented Other Title";
+
+            Assert.Equal("Example Quest", Read(file).Records[0].Title);
         }
 
         [Fact]
@@ -62,12 +78,14 @@ namespace Chatcheology.Data.Tests.Memories
 
         [Fact]
         public void NotJson_IsRefused() =>
-            Assert.Throws<FormatException>(() => PsnSharedActivityReader.Parse("{ nope"u8.ToArray(), LocalPrefix, OtherPrefix));
+            Assert.Throws<FormatException>(() => PsnSharedActivityReader.Parse("{ nope"u8.ToArray(), LocalPrefix, OtherPrefix, LocalPrefix));
+
+        // Prefixes and side a
 
         [Fact]
         public void Prefixes_AreCaseInsensitive()
         {
-            var activity = Read(Standard(), "ALPHA", "Beta");
+            var activity = Read(Standard(), "ALPHA", "Beta", "Alpha");
 
             Assert.Equal(2, activity.Records.Count);
         }
@@ -75,15 +93,16 @@ namespace Chatcheology.Data.Tests.Memories
         [Fact]
         public void Prefixes_SwappedSwapTheRoles()
         {
-            var activity = Read(Standard(), OtherPrefix, LocalPrefix);
+            var activity = Read(Standard(), OtherPrefix, LocalPrefix, LocalPrefix);
 
             Assert.Equal("NPWR77777_00", activity.Records[1].Items.Single(i => i.Role == MemoryRoles.Local).SetId);
+            Assert.Equal(0, activity.Records[0].PairsNotLocated);
         }
 
         [Fact]
         public void Prefix_Unknown_StopsAtTheFirstGame_WithoutNamingIt()
         {
-            var exception = Assert.Throws<FormatException>(() => Read(Standard(), "gamma", OtherPrefix));
+            var exception = Assert.Throws<FormatException>(() => Read(Standard(), "gamma", OtherPrefix, OtherPrefix));
 
             Assert.Contains("Game at index 0", exception.Message, StringComparison.Ordinal);
             Assert.DoesNotContain("gamma", exception.Message, StringComparison.OrdinalIgnoreCase);
@@ -93,7 +112,7 @@ namespace Chatcheology.Data.Tests.Memories
         public void Prefix_MissingFromOneEvent_StopsWithItsIndex()
         {
             var file = Standard();
-            file.Tamper = root => root["events"]![1]!.AsObject().Remove("betaTrophies");
+            file.Tamper = root => Event(root, 1).Remove("betaTrophies");
 
             var exception = Assert.Throws<FormatException>(() => Read(file));
             Assert.Contains("Event at index 1", exception.Message, StringComparison.Ordinal);
@@ -104,87 +123,127 @@ namespace Chatcheology.Data.Tests.Memories
         public void Prefix_MissingFromOneGame_StopsWithItsIndex()
         {
             var file = Standard();
-            file.Tamper = root => root["games"]![1]!.AsObject().Remove("alphaTrophySet");
+            file.Tamper = root => Game(root, 1).Remove("alphaTrophySet");
 
             var exception = Assert.Throws<FormatException>(() => Read(file));
             Assert.Contains("Game at index 1", exception.Message, StringComparison.Ordinal);
         }
 
         [Theory]
-        [InlineData("alpha", "alpha")]
-        [InlineData("alpha", "ALPHA")]
-        [InlineData("", "beta")]
-        [InlineData("al pha", "beta")]
-        public void Prefix_SameTwiceOrNotPlain_IsRefused(string local, string other) =>
-            Assert.Throws<ArgumentException>(() => Read(Standard(), local, other));
-
-        [Fact]
-        public void Time_UtcIsConvertedToTheFileZone()
-        {
-            var activity = Read(OneEvent([Trophy("1", Utc(2015, 3, 1, 22, 30, 15))], [Trophy("2", Utc(2015, 3, 1, 22, 31, 0))]));
-            var item = activity.Records[0].Items[0];
-
-            Assert.Equal(new DateTime(2015, 3, 1, 22, 30, 15, DateTimeKind.Utc), item.TimeUtc);
-            Assert.Equal(new DateTime(2015, 3, 2, 0, 30, 15), item.TimeLocal);
-            Assert.Equal(DateTimeKind.Unspecified, item.TimeLocal.Kind);
-        }
-
-        [Fact]
-        public void Time_SourceTimeWithOffsetIsAccepted()
-        {
-            var trophy = new SyntheticTrophy("1", "bronze", Utc(2015, 3, 1, 10, 0, 0), "2015-03-01T12:00:00+02:00");
-
-            var activity = Read(OneEvent([trophy], []));
-
-            Assert.Equal(new DateTime(2015, 3, 1, 12, 0, 0), activity.Records[0].Items[0].TimeLocal);
-        }
+        [InlineData("alpha", "alpha", "alpha")]
+        [InlineData("alpha", "ALPHA", "alpha")]
+        [InlineData("", "beta", "beta")]
+        [InlineData("al pha", "beta", "beta")]
+        public void Prefix_SameTwiceOrNotPlain_IsRefused(string local, string other, string pairA) =>
+            Assert.Throws<ArgumentException>(() => Read(Standard(), local, other, pairA));
 
         [Theory]
-        [InlineData("2015-03-01 12:00:01")]
-        [InlineData("2015-03-01 10:00:00")]
-        [InlineData("2015-03-01T12:00:00+01:00")]
-        [InlineData("1 March 2015")]
-        public void Time_MismatchStopsWithTheEventIndex(string sourceTime)
+        [InlineData("gamma")]
+        [InlineData("")]
+        public void PairA_NamingNeitherPrefix_IsRefusedWithoutNamingIt(string pairA)
+        {
+            var exception = Assert.Throws<ArgumentException>(() => Read(Standard(), pairA: pairA));
+
+            Assert.DoesNotContain("gamma", exception.Message, StringComparison.OrdinalIgnoreCase);
+        }
+
+        [Fact]
+        public void PairA_Wrong_StopsOnTheFirstDifferentSetGame()
+        {
+            // The file has alpha as side a; claiming beta is caught where the two sets differ.
+            var exception = Assert.Throws<FormatException>(() => Read(Standard(), pairA: OtherPrefix));
+
+            Assert.Contains("Game at index 1", exception.Message, StringComparison.Ordinal);
+            Assert.Contains("--pair-a", exception.Message, StringComparison.Ordinal);
+        }
+
+        [Fact]
+        public void PairA_OtherAccountAsSideA_LocatesPairsAndLabelsTheSame()
         {
             var file = Standard();
-            file.Events.Add(new SyntheticEvent
+            file.LocalIsSideA = false;
+
+            var activity = Read(file);
+
+            Assert.Equal("NPWR77777_00|NPWR88888_00|2016-07-04", activity.Records[1].SourceKey);
+            Assert.Equal(0, activity.Records[0].PairsNotLocated);
+            Assert.Equal([PeriodLabels.Strong, PeriodLabels.Supporting], activity.Records[0].Periods.Select(p => p.Label));
+            Assert.Equal("NPWR88888_00", activity.Records[1].Items.Single(i => i.Role == MemoryRoles.Local).SetId);
+        }
+
+        [Fact]
+        public void PairA_SidesReadFromATimeAndBTime_ByRole()
+        {
+            // a at 10:00:00, b at 10:00:50; swapping aTime/bTime in the file must stop them locating.
+            var a = Trophy("1", Utc(2015, 3, 1, 8, 0, 0));
+            var b = Trophy("1", Utc(2015, 3, 1, 8, 0, 50));
+            var file = OneEvent([a], [b], [new SyntheticPair(a, b)]);
+
+            Assert.Equal(0, Read(file).Records[0].PairsNotLocated);
+
+            file.Tamper = root =>
             {
-                Game = Quest,
-                Date = "2015-03-02",
-                Local = [new SyntheticTrophy("9", "gold", Utc(2015, 3, 1, 10, 0, 0), sourceTime)],
-            });
+                var pair = Event(root, 0)["matchingTrophies"]![0]!.AsObject();
+                (pair["aTime"], pair["bTime"]) = (pair["bTime"]!.DeepClone(), pair["aTime"]!.DeepClone());
+            };
+
+            Assert.Equal(1, Read(file).Records[0].PairsNotLocated);
+        }
+
+        // Game link
+
+        [Fact]
+        public void GameKey_NotMatchingTheIdIsRefused()
+        {
+            var file = Standard();
+            file.Tamper = root => Event(root, 1)["gameKey"] = "NPWR99999_00|NPWR99999_00";
 
             var exception = Assert.Throws<FormatException>(() => Read(file));
-            Assert.Contains("Event at index 2", exception.Message, StringComparison.Ordinal);
-            Assert.Contains("does not equal", exception.Message, StringComparison.Ordinal);
+            Assert.Contains("Event at index 1", exception.Message, StringComparison.Ordinal);
         }
 
         [Fact]
-        public void Time_UtcWithoutZoneIsRefused()
+        public void Date_NotMatchingTheIdIsRefused()
         {
             var file = Standard();
-            file.Tamper = root => root["events"]![0]!["alphaTrophies"]![0]!["utc"] = "2015-03-01T18:00:00";
+            file.Tamper = root => Event(root, 0)["date"] = "2015-03-02";
 
-            Assert.Throws<FormatException>(() => Read(file));
+            var exception = Assert.Throws<FormatException>(() => Read(file));
+            Assert.Contains("Event at index 0", exception.Message, StringComparison.Ordinal);
         }
 
         [Fact]
-        public void Timezone_UnknownIsRefused()
-        {
-            var file = Standard();
-            file.TimeZone = "Nowhere/Invented";
-
-            Assert.Throws<FormatException>(() => Read(file));
-        }
-
-        [Fact]
-        public void Event_WithNoGameIsRefused()
+        public void GameKey_WithNoGameIsRefused()
         {
             var file = Standard();
             file.Games.RemoveAt(1);
 
             var exception = Assert.Throws<FormatException>(() => Read(file));
             Assert.Contains("Event at index 1", exception.Message, StringComparison.Ordinal);
+        }
+
+        [Fact]
+        public void Game_KeyNotNamingItsSetsIsRefused()
+        {
+            var file = Standard();
+            file.Tamper = root => Game(root, 0)["key"] = "NPWR99999_00|NPWR11111_00";
+
+            var exception = Assert.Throws<FormatException>(() => Read(file));
+            Assert.Contains("Game at index 0", exception.Message, StringComparison.Ordinal);
+        }
+
+        [Fact]
+        public void Game_WithoutGameTitleIsRefused_EvenWithATitleField()
+        {
+            var file = Standard();
+            file.Tamper = root =>
+            {
+                Game(root, 0).Remove("game");
+                Game(root, 0)["title"] = "Example Quest";
+            };
+
+            var exception = Assert.Throws<FormatException>(() => Read(file));
+            Assert.Contains("Game at index 0", exception.Message, StringComparison.Ordinal);
         }
 
         [Fact]
@@ -197,10 +256,157 @@ namespace Chatcheology.Data.Tests.Memories
         }
 
         [Fact]
-        public void Event_WithoutMatchingTrophiesFieldIsRefused()
+        public void Event_WithoutMatchingTrophiesIsRefused()
         {
             var file = Standard();
-            file.Tamper = root => root["events"]![0]!.AsObject().Remove("matchingTrophies");
+            file.Tamper = root => Event(root, 0).Remove("matchingTrophies");
+
+            Assert.Throws<FormatException>(() => Read(file));
+        }
+
+        // Strict shape: alternate names and types are refused
+
+        [Theory]
+        [InlineData("trophyId")]
+        [InlineData("stringId")]
+        [InlineData("trophyType")]
+        public void Trophy_AlternateFieldsAreRefused(string variant)
+        {
+            var file = Standard();
+            file.Tamper = root =>
+            {
+                var trophy = Event(root, 0)["alphaTrophies"]![0]!.AsObject();
+
+                switch (variant)
+                {
+                    case "trophyId":
+                        trophy["trophyId"] = trophy["id"]!.DeepClone();
+                        trophy.Remove("id");
+                        break;
+                    case "stringId":
+                        trophy["id"] = "1";
+                        break;
+                    default:
+                        trophy["trophyType"] = trophy["type"]!.DeepClone();
+                        trophy.Remove("type");
+                        break;
+                }
+            };
+
+            var exception = Assert.Throws<FormatException>(() => Read(file));
+            Assert.Contains("Event at index 0", exception.Message, StringComparison.Ordinal);
+        }
+
+        [Theory]
+        [InlineData("alphaTime")]
+        [InlineData("nested")]
+        [InlineData("stringId")]
+        public void Pair_AlternateShapesAreRefused(string variant)
+        {
+            var file = Standard();
+            file.Tamper = root =>
+            {
+                var pair = Event(root, 0)["matchingTrophies"]![0]!.AsObject();
+
+                switch (variant)
+                {
+                    case "alphaTime":
+                        pair["alphaTime"] = pair["aTime"]!.DeepClone();
+                        pair.Remove("aTime");
+                        break;
+                    case "nested":
+                        pair["alpha"] = new JsonObject { ["id"] = 1, ["time"] = pair["aTime"]!.DeepClone() };
+                        pair.Remove("aTime");
+                        break;
+                    default:
+                        pair["id"] = "1";
+                        break;
+                }
+            };
+
+            var exception = Assert.Throws<FormatException>(() => Read(file));
+            Assert.Contains("Event at index 0", exception.Message, StringComparison.Ordinal);
+        }
+
+        // Time-only local check
+
+        [Fact]
+        public void Time_IsEventDatePlusTimeOfDay()
+        {
+            var activity = Read(OneEvent([Trophy("1", Utc(2015, 3, 1, 22, 30, 15))], [Trophy("2", Utc(2015, 3, 1, 22, 31, 0))], date: "2015-03-02"));
+            var item = activity.Records[0].Items[0];
+
+            Assert.Equal(new DateTime(2015, 3, 1, 22, 30, 15, DateTimeKind.Utc), item.TimeUtc);
+            Assert.Equal(new DateTime(2015, 3, 2, 0, 30, 15), item.TimeLocal);
+            Assert.Equal(DateTimeKind.Unspecified, item.TimeLocal.Kind);
+        }
+
+        [Fact]
+        public void Time_RightClockOnTheWrongDateStops()
+        {
+            // 22:30 UTC is 00:30 local on the next day; an event dated the UTC day must stop.
+            var file = OneEvent([Trophy("1", Utc(2015, 3, 1, 22, 30, 15))], [], date: "2015-03-01");
+
+            var exception = Assert.Throws<FormatException>(() => Read(file));
+            Assert.Contains("Event at index 0", exception.Message, StringComparison.Ordinal);
+            Assert.Contains("does not equal", exception.Message, StringComparison.Ordinal);
+        }
+
+        [Theory]
+        [InlineData("12:00:01")]
+        [InlineData("10:00:00")]
+        public void Time_MismatchStopsWithTheEventIndex(string sourceTime)
+        {
+            var file = Standard();
+            file.Events.Add(new SyntheticEvent
+            {
+                Game = Quest,
+                Date = "2015-03-02",
+                Local = [new SyntheticTrophy("9", "gold", Utc(2015, 3, 2, 10, 0, 0), sourceTime)],
+            });
+
+            var exception = Assert.Throws<FormatException>(() => Read(file));
+            Assert.Contains("Event at index 2", exception.Message, StringComparison.Ordinal);
+            Assert.Contains("does not equal", exception.Message, StringComparison.Ordinal);
+        }
+
+        [Theory]
+        [InlineData("2015-03-02 12:00:00")]
+        [InlineData("2015-03-02T12:00:00")]
+        [InlineData("12:00")]
+        [InlineData("12:00:00+02:00")]
+        public void Time_NotTimeOnlyIsRefused(string sourceTime)
+        {
+            var file = Standard();
+            file.Events.Add(new SyntheticEvent
+            {
+                Game = Quest,
+                Date = "2015-03-02",
+                Local = [new SyntheticTrophy("9", "gold", Utc(2015, 3, 2, 10, 0, 0), sourceTime)],
+            });
+
+            var exception = Assert.Throws<FormatException>(() => Read(file));
+            Assert.Contains("Event at index 2", exception.Message, StringComparison.Ordinal);
+            Assert.Contains("HH:mm:ss", exception.Message, StringComparison.Ordinal);
+        }
+
+        [Theory]
+        [InlineData("2015-03-01T18:00:00")]
+        [InlineData("2015-03-01T18:00:00+00:00")]
+        [InlineData("2015-03-01T18:00:00.000Z")]
+        public void Time_UtcNotInTheExactFormIsRefused(string utc)
+        {
+            var file = Standard();
+            file.Tamper = root => Event(root, 0)["alphaTrophies"]![0]!["utc"] = utc;
+
+            Assert.Throws<FormatException>(() => Read(file));
+        }
+
+        [Fact]
+        public void Timezone_UnknownIsRefused()
+        {
+            var file = Standard();
+            file.TimeZone = "Nowhere/Invented";
 
             Assert.Throws<FormatException>(() => Read(file));
         }
@@ -340,7 +546,7 @@ namespace Chatcheology.Data.Tests.Memories
         {
             var a = Trophy("1", Utc(2015, 3, 1, 10, 0, 0));
             var b = Trophy("1", Utc(2015, 3, 1, 10, 0, 5));
-            var wrongTime = a with { Time = "2015-03-01 12:00:01" };
+            var wrongTime = a with { Time = "12:00:01" };
 
             var record = Read(OneEvent([a], [b], [new SyntheticPair(wrongTime, b)])).Records[0];
 
@@ -378,18 +584,6 @@ namespace Chatcheology.Data.Tests.Memories
         }
 
         [Fact]
-        public void Pairs_NestedShapeIsReadToo()
-        {
-            var file = Standard();
-            file.NestedPairs = true;
-
-            var record = Read(file).Records[0];
-
-            Assert.Equal(0, record.PairsNotLocated);
-            Assert.Equal([PeriodLabels.Strong, PeriodLabels.Supporting], record.Periods.Select(p => p.Label));
-        }
-
-        [Fact]
         public void Summary_CountsCardsLabelsYearsAndDates()
         {
             var summary = PsnActivitySummary.From(Read(Standard()));
@@ -411,10 +605,10 @@ namespace Chatcheology.Data.Tests.Memories
         }
 
         [Fact]
-        public void UnusedFieldsAreIgnored()
+        public void UnusedRootFieldsAreIgnored()
         {
             var file = Standard();
-            file.Tamper = root => root["reviewExport"] = new JsonArray("anything");
+            file.Tamper = root => root["summary"] = new JsonArray("anything");
 
             Assert.Equal(2, Read(file).Records.Count);
         }

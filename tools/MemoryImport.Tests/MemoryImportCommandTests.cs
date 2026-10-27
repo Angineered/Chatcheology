@@ -73,7 +73,7 @@ namespace Chatcheology.Tools.MemoryImport.Tests
         [Fact]
         public void DryRun_IsTheDefault_AndPrintsAggregatesOnly()
         {
-            var (code, output, error) = Run(_psnFile, "--local", "alpha", "--other", "beta");
+            var (code, output, error) = Run(_psnFile, "--local", "alpha", "--other", "beta", "--pair-a", "alpha");
 
             Assert.Equal(0, code);
             Assert.Equal(string.Empty, error);
@@ -99,7 +99,7 @@ namespace Chatcheology.Tools.MemoryImport.Tests
         [Fact]
         public void DryRun_UnknownPrefix_StopsWithoutNamingIt()
         {
-            var (code, _, error) = Run("psn-dry-run", _psnFile, "--local", "gamma", "--other", "beta");
+            var (code, _, error) = Run("psn-dry-run", _psnFile, "--local", "gamma", "--other", "beta", "--pair-a", "beta");
 
             Assert.Equal(MemoryImportCommand.Failed, code);
             Assert.Contains("Game at index 0", error, StringComparison.Ordinal);
@@ -109,7 +109,7 @@ namespace Chatcheology.Tools.MemoryImport.Tests
         [Fact]
         public void DryRun_SamePrefixTwice_IsRefused()
         {
-            var (code, _, error) = Run(_psnFile, "--local", "alpha", "--other", "ALPHA");
+            var (code, _, error) = Run(_psnFile, "--local", "alpha", "--other", "ALPHA", "--pair-a", "alpha");
 
             Assert.Equal(MemoryImportCommand.Failed, code);
             Assert.Contains("same", error, StringComparison.Ordinal);
@@ -122,7 +122,7 @@ namespace Chatcheology.Tools.MemoryImport.Tests
             file.Schema = "something-else";
             var path = file.WriteTo(_root, "zzsecretfile2.json");
 
-            var (code, _, error) = Run(path, "--local", "alpha", "--other", "beta");
+            var (code, _, error) = Run(path, "--local", "alpha", "--other", "beta", "--pair-a", "alpha");
 
             Assert.Equal(MemoryImportCommand.Failed, code);
             Assert.Contains("schema", error, StringComparison.Ordinal);
@@ -132,10 +132,10 @@ namespace Chatcheology.Tools.MemoryImport.Tests
         public void DryRun_TimeMismatch_StopsWithTheEventIndexOnly()
         {
             var file = Standard();
-            file.Events[1].Local[0] = file.Events[1].Local[0] with { Time = "2016-07-04 11:00:00" };
+            file.Events[1].Local[0] = file.Events[1].Local[0] with { Time = "13:00:00" };
             var path = file.WriteTo(_root, "zzsecretfile3.json");
 
-            var (code, _, error) = Run(path, "--local", "alpha", "--other", "beta");
+            var (code, _, error) = Run(path, "--local", "alpha", "--other", "beta", "--pair-a", "alpha");
 
             Assert.Equal(MemoryImportCommand.Failed, code);
             Assert.Contains("Event at index 1", error, StringComparison.Ordinal);
@@ -144,7 +144,7 @@ namespace Chatcheology.Tools.MemoryImport.Tests
         [Fact]
         public void DryRun_MissingFile_PrintsTypeOnly()
         {
-            var (code, _, error) = Run(Path.Combine(_root, "zzsecretfile-absent.json"), "--local", "alpha", "--other", "beta");
+            var (code, _, error) = Run(Path.Combine(_root, "zzsecretfile-absent.json"), "--local", "alpha", "--other", "beta", "--pair-a", "alpha");
 
             Assert.Equal(MemoryImportCommand.Failed, code);
             Assert.Contains("FileNotFoundException", error, StringComparison.Ordinal);
@@ -152,10 +152,11 @@ namespace Chatcheology.Tools.MemoryImport.Tests
 
         [Theory]
         [InlineData("--local", "alpha")]
-        [InlineData("--other", "beta", "--gap", "0")]
-        [InlineData("--local", "alpha", "--other", "beta", "--zzsecretfile")]
-        [InlineData("--local", "alpha", "--other", "beta", "--max-bytes", "5")]
-        [InlineData("--local", "alpha", "--other", "beta", "--create")]
+        [InlineData("--local", "alpha", "--other", "beta", "--pair-a", "alpha", "--gap", "0")]
+        [InlineData("--local", "alpha", "--other", "beta")]
+        [InlineData("--local", "alpha", "--other", "beta", "--pair-a", "alpha", "--zzsecretfile")]
+        [InlineData("--local", "alpha", "--other", "beta", "--pair-a", "alpha", "--max-bytes", "5")]
+        [InlineData("--local", "alpha", "--other", "beta", "--pair-a", "alpha", "--create")]
         public void UsageErrors_NeverEchoValues(params string[] args)
         {
             var (code, _, error) = Run([_psnFile, .. args]);
@@ -165,9 +166,43 @@ namespace Chatcheology.Tools.MemoryImport.Tests
         }
 
         [Fact]
+        public void DryRun_PairANamingNeitherPrefix_IsRefusedWithoutNamingIt()
+        {
+            var (code, _, error) = Run(_psnFile, "--local", "alpha", "--other", "beta", "--pair-a", "gamma");
+
+            Assert.Equal(MemoryImportCommand.Failed, code);
+            Assert.Contains("side a", error, StringComparison.Ordinal);
+            Assert.DoesNotContain("gamma", error, StringComparison.OrdinalIgnoreCase);
+        }
+
+        [Fact]
+        public void DryRun_PairAWrongAccount_StopsAtTheDifferentSetGame()
+        {
+            var (code, _, error) = Run(_psnFile, "--local", "alpha", "--other", "beta", "--pair-a", "beta");
+
+            Assert.Equal(MemoryImportCommand.Failed, code);
+            Assert.Contains("Game at index 1", error, StringComparison.Ordinal);
+        }
+
+        [Fact]
+        public void DryRun_OtherAccountAsSideA_GivesTheSameCounts()
+        {
+            var file = Standard();
+            file.LocalIsSideA = false;
+            var path = file.WriteTo(_root, "zzsecretfile5.json");
+
+            var (code, output, _) = Run(path, "--local", "alpha", "--other", "beta", "--pair-a", "beta");
+
+            Assert.Equal(0, code);
+            Assert.Contains("  strong: 1", output, StringComparison.Ordinal);
+            Assert.Contains("  supporting: 1", output, StringComparison.Ordinal);
+            Assert.Contains("  not located: 0", output, StringComparison.Ordinal);
+        }
+
+        [Fact]
         public void Import_WithoutCreate_RefusesAndWritesNothing()
         {
-            var (code, _, error) = Run("psn-import", _psnFile, "--workspace-folder", _workspace, "--local", "alpha", "--other", "beta");
+            var (code, _, error) = Run("psn-import", _psnFile, "--workspace-folder", _workspace, "--local", "alpha", "--other", "beta", "--pair-a", "alpha");
 
             Assert.Equal(MemoryImportCommand.Failed, code);
             Assert.Contains("--create", error, StringComparison.Ordinal);
@@ -177,7 +212,7 @@ namespace Chatcheology.Tools.MemoryImport.Tests
         [Fact]
         public void Import_ThenIdenticalReImport_ReportsZeroChanges()
         {
-            var (code, output, error) = Run("psn-import", _psnFile, "--workspace-folder", _workspace, "--local", "alpha", "--other", "beta", "--create");
+            var (code, output, error) = Run("psn-import", _psnFile, "--workspace-folder", _workspace, "--local", "alpha", "--other", "beta", "--pair-a", "alpha", "--create");
 
             Assert.Equal(0, code);
             Assert.Equal(string.Empty, error);
@@ -186,7 +221,7 @@ namespace Chatcheology.Tools.MemoryImport.Tests
             Assert.Contains("  Changes: 3", output, StringComparison.Ordinal);
             Assert.Contains("Timeline cards (periods with both accounts): 2", output, StringComparison.Ordinal);
 
-            (code, output, _) = Run("psn-import", _psnFile, "--workspace-folder", _workspace, "--local", "alpha", "--other", "beta", "--create");
+            (code, output, _) = Run("psn-import", _psnFile, "--workspace-folder", _workspace, "--local", "alpha", "--other", "beta", "--pair-a", "alpha", "--create");
 
             Assert.Equal(0, code);
             Assert.DoesNotContain("Created", output, StringComparison.Ordinal);
@@ -197,12 +232,12 @@ namespace Chatcheology.Tools.MemoryImport.Tests
         [Fact]
         public void Import_RemovedRecord_IsReportedAsMissingAndKept()
         {
-            Run("psn-import", _psnFile, "--workspace-folder", _workspace, "--local", "alpha", "--other", "beta", "--create");
+            Run("psn-import", _psnFile, "--workspace-folder", _workspace, "--local", "alpha", "--other", "beta", "--pair-a", "alpha", "--create");
             var smaller = Standard();
             smaller.Events.RemoveAt(0);
             var path = smaller.WriteTo(_root, "zzsecretfile4.json");
 
-            var (code, output, _) = Run("psn-import", path, "--workspace-folder", _workspace, "--local", "alpha", "--other", "beta");
+            var (code, output, _) = Run("psn-import", path, "--workspace-folder", _workspace, "--local", "alpha", "--other", "beta", "--pair-a", "alpha");
 
             Assert.Equal(0, code);
             Assert.Contains("  Entries missing from this file (kept): 1", output, StringComparison.Ordinal);
@@ -211,7 +246,7 @@ namespace Chatcheology.Tools.MemoryImport.Tests
         [Fact]
         public void Import_CollectionNameAndGap_AreUsed()
         {
-            var (code, _, _) = Run("psn-import", _psnFile, "--workspace-folder", _workspace, "--local", "alpha", "--other", "beta",
+            var (code, _, _) = Run("psn-import", _psnFile, "--workspace-folder", _workspace, "--local", "alpha", "--other", "beta", "--pair-a", "alpha",
                 "--create", "--collection", "Invented layer", "--gap", "240");
 
             Assert.Equal(0, code);
@@ -225,7 +260,7 @@ namespace Chatcheology.Tools.MemoryImport.Tests
         [Fact]
         public void Import_BadFile_StopsBeforeCreatingAnything()
         {
-            var (code, _, _) = Run("psn-import", _psnFile, "--workspace-folder", _workspace, "--local", "gamma", "--other", "beta", "--create");
+            var (code, _, _) = Run("psn-import", _psnFile, "--workspace-folder", _workspace, "--local", "gamma", "--other", "beta", "--pair-a", "beta", "--create");
 
             Assert.Equal(MemoryImportCommand.Failed, code);
             Assert.False(File.Exists(MemoriesPath));
@@ -236,7 +271,7 @@ namespace Chatcheology.Tools.MemoryImport.Tests
         {
             Chatcheology.Data.Workspace.WorkspaceDatabase.Initialise(MemoriesPath);
 
-            var (code, _, error) = Run("psn-import", _psnFile, "--workspace-folder", _workspace, "--local", "alpha", "--other", "beta");
+            var (code, _, error) = Run("psn-import", _psnFile, "--workspace-folder", _workspace, "--local", "alpha", "--other", "beta", "--pair-a", "alpha");
 
             Assert.Equal(MemoryImportCommand.Failed, code);
             Assert.Contains("workspace", error, StringComparison.Ordinal);
@@ -245,7 +280,7 @@ namespace Chatcheology.Tools.MemoryImport.Tests
         [Fact]
         public void FetchImages_PrintsCountsOnly()
         {
-            Run("psn-import", _psnFile, "--workspace-folder", _workspace, "--local", "alpha", "--other", "beta", "--create");
+            Run("psn-import", _psnFile, "--workspace-folder", _workspace, "--local", "alpha", "--other", "beta", "--pair-a", "alpha", "--create");
             var source = new FakeSource(new() { [Quest.Icon!] = Png });
 
             var (code, output, _) = RunWith(source, "fetch-images", "--workspace-folder", _workspace);

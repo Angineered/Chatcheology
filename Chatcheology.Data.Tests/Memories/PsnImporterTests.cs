@@ -9,7 +9,7 @@ namespace Chatcheology.Data.Tests.Memories
     public class PsnImporterTests
     {
         private static PsnActivity Read(SyntheticPsnFile file, int gap = 60) =>
-            PsnSharedActivityReader.Parse(file.ToBytes(), LocalPrefix, OtherPrefix, gap);
+            PsnSharedActivityReader.Parse(file.ToBytes(), LocalPrefix, OtherPrefix, file.PairAPrefix, gap);
 
         [Fact]
         public void Import_WritesCollectionEntriesPeriodsAndItems()

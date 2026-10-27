@@ -102,12 +102,12 @@ namespace Chatcheology.Tools.MemoryImport
                 throw new UsageException("a PSN file is needed.");
             }
 
-            if (parsed.Local is null || parsed.Other is null)
+            if (parsed.Local is null || parsed.Other is null || parsed.PairA is null)
             {
-                throw new UsageException("--local and --other are both needed.");
+                throw new UsageException("--local, --other and --pair-a are all needed.");
             }
 
-            return PsnSharedActivityReader.Read(parsed.PsnFile, parsed.Local, parsed.Other, parsed.GapMinutes);
+            return PsnSharedActivityReader.Read(parsed.PsnFile, parsed.Local, parsed.Other, parsed.PairA, parsed.GapMinutes);
         }
 
         private static int RunDryRun(ParsedArguments parsed, TextWriter output)
@@ -235,12 +235,13 @@ namespace Chatcheology.Tools.MemoryImport
         {
             output.WriteLine("MemoryImport: PSN shared-activity import into the memories file, and image fetch.");
             output.WriteLine();
-            output.WriteLine("  [psn-dry-run] <psn-file> --local <prefix> --other <prefix> [--gap <minutes>]");
-            output.WriteLine("  psn-import <psn-file> --workspace-folder <folder> --local <prefix> --other <prefix>");
+            output.WriteLine("  [psn-dry-run] <psn-file> --local <prefix> --other <prefix> --pair-a <prefix> [--gap <minutes>]");
+            output.WriteLine("  psn-import <psn-file> --workspace-folder <folder> --local <prefix> --other <prefix> --pair-a <prefix>");
             output.WriteLine("             [--collection <name>] [--gap <minutes>] [--create]");
             output.WriteLine("  fetch-images --workspace-folder <folder> [--max-bytes <n>]");
             output.WriteLine();
             output.WriteLine("Prefixes are the account field prefixes in the PSN file (case-insensitive).");
+            output.WriteLine("--pair-a names which of --local/--other is side a of the matching pairs (first set in gameKey).");
             output.WriteLine("Output is counts and dates only.");
         }
 
@@ -261,6 +262,8 @@ namespace Chatcheology.Tools.MemoryImport
             internal string? Local { get; private set; }
 
             internal string? Other { get; private set; }
+
+            internal string? PairA { get; private set; }
 
             internal string CollectionName { get; private set; } = PsnImporter.DefaultCollectionName;
 
@@ -315,6 +318,10 @@ namespace Chatcheology.Tools.MemoryImport
 
                         case "--other":
                             parsed.Other = NextValue(argument);
+                            break;
+
+                        case "--pair-a":
+                            parsed.PairA = NextValue(argument);
                             break;
 
                         case "--collection":
@@ -376,7 +383,7 @@ namespace Chatcheology.Tools.MemoryImport
 
                 if (parsed.Command == "fetch-images")
                 {
-                    if (parsed.PsnFile is not null || parsed.Local is not null || parsed.Other is not null
+                    if (parsed.PsnFile is not null || parsed.Local is not null || parsed.Other is not null || parsed.PairA is not null
                         || collectionGiven || gapGiven || parsed.Create)
                     {
                         throw new UsageException("fetch-images takes --workspace-folder and --max-bytes only.");

@@ -14,25 +14,31 @@ Run with `dotnet run --project tools\MemoryImport\MemoryImport.csproj -- <argume
 
 ## Input
 
-Schema `chatcheology-psn-shared-activity-v1` only; any other schema is refused. Only `timezone`,
-`games` and `events` are used.
+Schema `chatcheology-psn-shared-activity-v1` only; any other schema is refused. The reader is
+strict: it accepts only the shape below and stops with the game or event index on anything else
+(missing field, wrong type, alternate field name). Field names match case-insensitively. Of the root
+fields only `timezone`, `games` and `events` are used; `sources`, `rules`, `summary` and
+`yearlyGameDateCounts` are ignored.
 
-Account fields are named after the two PSN accounts. `--local <prefix>` and `--other <prefix>` give
-the two field prefixes (case-insensitive, letters and digits only, not the same). Both must be
-present in every game (`<prefix>TrophySet`) and every event (`<prefix>Trophies`); otherwise the run
-stops with the game or event index. The local prefix maps to the chat's Local participant role, the
-other to Other. Prefixes are never printed.
+`<a>`/`<b>` stand for the two account prefixes. `--local <prefix>` and `--other <prefix>` map them
+to the chat's Local and Other participant roles (letters and digits only, not the same).
+`--pair-a <prefix>` names which of the two is side a of the matching pairs: the account whose trophy
+set is first in each game `key`. Prefixes are never printed.
 
-Per event: `id` (`<set>|<set>|<date>`, the idempotency key; its two sets name the game), `quality`
-(copied as the day level), the two trophy lists (each trophy: `id` or `trophyId`, `type` or
-`trophyType`, `utc`, `time`), and `matchingTrophies`. Per game: `title`, `icon`, the two trophy sets.
-Each trophy's `utc` is converted to the file's IANA `timezone` and must equal its `time` field to the
-second; a mismatch stops the run with the event index.
-
-A matching pair side is read either from a nested object named after the prefix (`id`/`trophyId`,
-`time`) or from flat `<prefix>Id`/`<prefix>TrophyId` and `<prefix>Time` fields. A pair is located by
-(role, trophy id, local time); a pair not located or whose two trophies fall in different periods
-is counted and reported, never guessed.
+- Game (fields used): `key` (`<setA>|<setB>`), `game` (the title), `icon` (URL or null),
+  `<a>TrophySet`, `<b>TrophySet`. The key must be the side-a account's set then the other's; where
+  the two sets differ this proves `--pair-a`, and a mismatch stops the run.
+- Event (fields used): `id` (`<gameKey>|yyyy-MM-dd`, the idempotency key), `gameKey` (must equal the
+  first two parts of `id`; links to the game), `date` (local date, must equal the last part of
+  `id`), `quality` (copied as the day level), `<a>Trophies`, `<b>Trophies`, `matchingTrophies`.
+  The event's own `title` is not used; the title comes from the game.
+- Trophy: `id` (integer), `type`, `time` (`HH:mm:ss` local, on the event's date),
+  `utc` (`yyyy-MM-ddTHH:mm:ssZ`). The UTC time converted to the file's IANA `timezone` must equal
+  the event date plus `time`; a mismatch stops the run with the event index.
+- Matching pair: `id` (integer), `aTime`, `bTime` (`HH:mm:ss`). Side a is the `--pair-a` account.
+  A pair is located by (role, trophy id, event date + time). A pair not located, or whose two
+  trophies fall in different periods, is counted and reported, never guessed. `type` and `seconds`
+  are not used: "seconds apart" is taken from the two located trophies' UTC times.
 
 ## Periods and labels
 
@@ -54,7 +60,7 @@ The day level (`quality`) is stored as-is and never recomputed.
 `psn-dry-run` (the default; writes nothing):
 
 ```
-[psn-dry-run] <psn-file> --local <prefix> --other <prefix> [--gap <minutes>]
+[psn-dry-run] <psn-file> --local <prefix> --other <prefix> --pair-a <prefix> [--gap <minutes>]
 ```
 
 Prints games, records, items, periods per label, timeline cards (periods with both accounts),
@@ -64,7 +70,7 @@ last date.
 `psn-import` (one transaction):
 
 ```
-psn-import <psn-file> --workspace-folder <folder> --local <prefix> --other <prefix>
+psn-import <psn-file> --workspace-folder <folder> --local <prefix> --other <prefix> --pair-a <prefix>
            [--collection <name>] [--gap <minutes>] [--create]
 ```
 
