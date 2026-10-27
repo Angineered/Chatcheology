@@ -22,6 +22,9 @@ namespace Chatcheology.Data.ArchiveExport
     /// </remarks>
     internal sealed class MemoriesArchiveSource
     {
+        /// <summary>The first memories file format with <c>ItemDefinition</c> (CH-43); fixed, whatever the current format is.</summary>
+        private const int FirstFormatWithDefinitions = 2;
+
         internal required IReadOnlyList<ArchiveCollection> Collections { get; init; }
 
         /// <summary>Every entry with its periods and their items; each item carries its role.</summary>
@@ -72,7 +75,7 @@ namespace Chatcheology.Data.ArchiveExport
                         exception);
                 }
 
-                var hasDefinitions = formatVersion >= MemoriesDatabase.CurrentFormatVersion;
+                var hasDefinitions = formatVersion >= FirstFormatWithDefinitions;
                 var collections = ReadCollections(connection);
                 var images = ReadImages(connection, mediaFolder, hasDefinitions);
                 var entries = ReadEntries(connection, images, cancellationToken);

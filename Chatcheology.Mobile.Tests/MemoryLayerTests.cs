@@ -542,6 +542,52 @@ namespace Chatcheology.Mobile.Tests
             Assert.Equal(1, search.Find("caption").TotalMatches);
         }
 
+        private static ArchiveMessage Attached(string text, params string?[] names) => new()
+        {
+            MessageID = 1,
+            SequenceNumber = 1,
+            DateTimeLocal = At(10, 9, 0),
+            Kind = ArchiveMessageKind.User,
+            SenderParticipantID = Other,
+            Text = text,
+            IsForwarded = null,
+            ForwardScore = null,
+            Attachments = names.Select((name, index) => new ArchiveAttachment
+            {
+                AttachmentID = 10 + index,
+                MessageID = 1,
+                Ordinal = index + 1,
+                State = name is null ? ArchiveAttachmentState.Unmatched : ArchiveAttachmentState.Restored,
+                MediaSha256 = name is null ? null : new string('a', 64),
+                OriginalFileName = name,
+                IsForwarded = null,
+                ForwardScore = null,
+                LowQualityCopyOfAttachmentID = null,
+                Basis = null,
+            }).ToList(),
+            Source = ArchiveMessageSource.Export,
+        };
+
+        [Theory]
+        [InlineData(" (file attached)\ncaption")]
+        [InlineData("   (file attached)\ncaption")]
+        [InlineData("a/b (file attached)\ncaption")]
+        [InlineData("a\\b (file attached)\ncaption")]
+        public void AFileAttachedLine_ThatIsNotAFileName_StaysVisible(string text)
+        {
+            Assert.Equal(text, MessageRow.PresentedText(Attached(text, [null])));
+        }
+
+        [Fact]
+        public void AFileAttachedLine_NamingAnotherFileThanTheAttachment_StaysVisible()
+        {
+            const string Text = "IMG-0009.jpg (file attached)\ncaption";
+
+            Assert.Equal(Text, MessageRow.PresentedText(Attached(Text, "IMG-0001.jpg")));
+            Assert.Equal("caption", MessageRow.PresentedText(Attached("IMG-0001.jpg (file attached)\ncaption", "IMG-0001.jpg")));
+            Assert.Equal("caption", MessageRow.PresentedText(Attached("IMG-0002.jpg (file attached)\ncaption", [null])));
+        }
+
         // ---------------------------------------------------------------------------------------
         // Settings.
         // ---------------------------------------------------------------------------------------

@@ -209,9 +209,10 @@ namespace Chatcheology.Mobile.Conversation
         public const string FileAttachedSuffix = " (file attached)";
 
         /// <summary>
-        /// The text a bubble shows (and search finds): empty for the media placeholder; for a message with
-        /// attachments whose first line is an older export's <c>NAME (file attached)</c> line, the lines
-        /// after it (the caption), or empty when there are none (CH-33). Otherwise the text as stored.
+        /// The text a bubble shows (and search finds): empty for the media placeholder; for a user message
+        /// with attachments whose first line is an older export's <c>NAME (file attached)</c> line naming one
+        /// of them, the lines after it (the caption), or empty when there are none (CH-33). Otherwise the
+        /// text as stored.
         /// </summary>
         public static string PresentedText(ArchiveMessage message)
         {
@@ -224,7 +225,7 @@ namespace Chatcheology.Mobile.Conversation
                 return string.Empty;
             }
 
-            if (message.Attachments.Count == 0)
+            if (message.Attachments.Count == 0 || message.Kind != ArchiveMessageKind.User)
             {
                 return text;
             }
@@ -233,6 +234,22 @@ namespace Chatcheology.Mobile.Conversation
             var firstLine = (newline < 0 ? text : text[..newline]).TrimEnd('\r');
 
             if (!firstLine.EndsWith(FileAttachedSuffix, StringComparison.Ordinal))
+            {
+                return text;
+            }
+
+            // Hidden only when the line names the attachment: the name equals an attachment's
+            // OriginalFileName or, when no attachment has a name (none restored), it meets Core's rule for
+            // ParsedMessage.AttachedFileName exactly (not blank, no path separator). Anything else is the
+            // sender's own text and stays visible, searchable and shareable.
+            var name = firstLine[..^FileAttachedSuffix.Length];
+            var names = message.Attachments.Select(a => a.OriginalFileName).OfType<string>().ToList();
+
+            var namesAttachment = names.Count > 0
+                ? names.Contains(name, StringComparer.Ordinal)
+                : !string.IsNullOrWhiteSpace(name) && name.AsSpan().IndexOfAny('/', '\\') < 0;
+
+            if (!namesAttachment)
             {
                 return text;
             }
