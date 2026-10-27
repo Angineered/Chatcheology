@@ -1,0 +1,235 @@
+using System.Security.Cryptography;
+using Microsoft.Data.Sqlite;
+
+namespace Chatcheology.Data.Memories
+{
+    /// <summary>Downloads one image. Behind an interface so tests never touch the network.</summary>
+    public interface IMemoryImageSource
+    {
+        /// <summary>
+        /// Returns the body of <paramref name="uri"/>, or null on any failure. Must never return
+        /// more than <paramref name="maxBytes"/> + 1 bytes (one over the cap is how "too large" is seen).
+        /// </summary>
+        byte[]? Fetch(Uri uri, long maxBytes);
+    }
+
+    /// <summary>What one image fetch run did. Counts only.</summary>
+    /// <param name="Fetched">Distinct source URLs downloaded and stored this run.</param>
+    /// <param name="AlreadyPresent">Distinct source URLs whose image was already stored.</param>
+    /// <param name="Failed">Distinct source URLs refused (host, scheme) or not downloaded (error, size, not an image).</param>
+    public sealed record MemoryImageFetchResult(int Fetched, int AlreadyPresent, int Failed);
+
+    /// <summary>
+    /// Fetches each distinct entry image source URL not yet stored, only over HTTPS from the
+    /// allowlisted hosts, with a size cap, and stores it in the memories media folder by SHA-256.
+    /// </summary>
+    public static class MemoryImageFetcher
+    {
+        /// <summary>The default size cap per image.</summary>
+        public const long DefaultMaxBytes = 5 * 1024 * 1024;
+
+        /// <summary>The only hosts an image is fetched from (exact host match).</summary>
+        public static IReadOnlyList<string> AllowedHosts { get; } =
+        [
+            "image.api.playstation.com",
+            "psnobj.prod.dl.playstation.net",
+        ];
+
+        /// <summary>True when the URL is absolute, HTTPS, default port and on the allowlist.</summary>
+        public static bool IsAllowed(string url) =>
+            Uri.TryCreate(url, UriKind.Absolute, out var uri)
+            && uri.Scheme == Uri.UriSchemeHttps
+            && uri.IsDefaultPort
+            && string.IsNullOrEmpty(uri.UserInfo)
+            && AllowedHosts.Contains(uri.Host, StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>Runs the fetch over every entry in the memories file.</summary>
+        public static MemoryImageFetchResult FetchMissing(string memoriesPath, IMemoryImageSource source, long maxBytes = DefaultMaxBytes)
+        {
+            ArgumentNullException.ThrowIfNull(source);
+
+            if (maxBytes < 1)
+            {
+                throw new ArgumentException("The size cap must be positive.", nameof(maxBytes));
+            }
+
+            using var connection = MemoriesDatabase.OpenConnection(memoriesPath);
+            var mediaFolder = MemoriesDatabase.MediaFolderFor(memoriesPath);
+
+            var urls = ReadUrls(connection);
+            int fetched = 0, present = 0, failed = 0;
+
+            foreach (var (url, missing) in urls)
+            {
+                if (!missing)
+                {
+                    present++;
+                    continue;
+                }
+
+                if (!IsAllowed(url))
+                {
+                    failed++;
+                    continue;
+                }
+
+                byte[]? body;
+
+                try
+                {
+                    body = source.Fetch(new Uri(url), maxBytes);
+                }
+                catch (Exception exception) when (exception is not OutOfMemoryException)
+                {
+                    body = null;
+                }
+
+                if (body is null || body.Length == 0 || body.Length > maxBytes || DetectExtension(body) is not { } extension)
+                {
+                    failed++;
+                    continue;
+                }
+
+                var sha = Convert.ToHexStringLower(SHA256.HashData(body));
+                Store(mediaFolder, sha, extension, body);
+
+                using var transaction = connection.BeginTransaction();
+                using var command = connection.CreateCommand();
+                command.Transaction = transaction;
+                command.CommandText =
+                    """
+                    INSERT OR IGNORE INTO MediaFile (Sha256, Extension, SizeBytes) VALUES ($sha, $ext, $size);
+                    UPDATE Entry SET ImageSha256 = $sha WHERE ImageSourceUrl = $url;
+                    """;
+                command.Parameters.AddWithValue("$sha", sha);
+                command.Parameters.AddWithValue("$ext", extension);
+                command.Parameters.AddWithValue("$size", body.LongLength);
+                command.Parameters.AddWithValue("$url", url);
+                command.ExecuteNonQuery();
+                transaction.Commit();
+
+                fetched++;
+            }
+
+            return new MemoryImageFetchResult(fetched, present, failed);
+        }
+
+        /// <summary>Distinct URLs, and whether any entry using one still has no stored image.</summary>
+        private static List<(string Url, bool Missing)> ReadUrls(SqliteConnection connection)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText =
+                """
+                SELECT e.ImageSourceUrl, MAX(CASE WHEN e.ImageSha256 IS NULL THEN 1 ELSE 0 END)
+                FROM Entry e
+                WHERE e.ImageSourceUrl IS NOT NULL
+                GROUP BY e.ImageSourceUrl
+                ORDER BY e.ImageSourceUrl;
+                """;
+
+            var urls = new List<(string, bool)>();
+            using var reader = command.ExecuteReader();
+
+            while (reader.Read())
+            {
+                var anyNull = reader.GetInt64(1) == 1;
+                urls.Add((reader.GetString(0), anyNull));
+            }
+
+            return urls;
+        }
+
+        private static void Store(string mediaFolder, string sha, string extension, byte[] body)
+        {
+            Directory.CreateDirectory(mediaFolder);
+            var target = Path.Combine(mediaFolder, $"{sha}.{extension}");
+
+            if (File.Exists(target))
+            {
+                return;
+            }
+
+            var temporary = target + ".partial";
+            File.WriteAllBytes(temporary, body);
+            File.Move(temporary, target, overwrite: false);
+        }
+
+        /// <summary>The image type from its first bytes, or null when it is not one this file stores.</summary>
+        internal static string? DetectExtension(ReadOnlySpan<byte> body)
+        {
+            if (body.Length >= 8 && body[..8].SequenceEqual(new byte[] { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A }))
+            {
+                return "png";
+            }
+
+            if (body.Length >= 3 && body[0] == 0xFF && body[1] == 0xD8 && body[2] == 0xFF)
+            {
+                return "jpg";
+            }
+
+            if (body.Length >= 6 && (body[..6].SequenceEqual("GIF87a"u8) || body[..6].SequenceEqual("GIF89a"u8)))
+            {
+                return "gif";
+            }
+
+            if (body.Length >= 12 && body[..4].SequenceEqual("RIFF"u8) && body[8..12].SequenceEqual("WEBP"u8))
+            {
+                return "webp";
+            }
+
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// The real image source: HTTPS GET, no redirects followed, a timeout, and a read that stops one
+    /// byte past the cap. Re-checks the allowlist itself.
+    /// </summary>
+    public sealed class HttpsMemoryImageSource : IMemoryImageSource, IDisposable
+    {
+        private readonly HttpClient _client = new(new HttpClientHandler { AllowAutoRedirect = false })
+        {
+            Timeout = TimeSpan.FromSeconds(30),
+        };
+
+        /// <inheritdoc/>
+        public byte[]? Fetch(Uri uri, long maxBytes)
+        {
+            ArgumentNullException.ThrowIfNull(uri);
+
+            if (!MemoryImageFetcher.IsAllowed(uri.AbsoluteUri))
+            {
+                return null;
+            }
+
+            using var request = new HttpRequestMessage(HttpMethod.Get, uri);
+            using var response = _client.Send(request, HttpCompletionOption.ResponseHeadersRead);
+
+            if (!response.IsSuccessStatusCode
+                || response.Content.Headers.ContentLength > maxBytes)
+            {
+                return null;
+            }
+
+            using var stream = response.Content.ReadAsStream();
+            using var buffer = new MemoryStream();
+            var chunk = new byte[81920];
+            int read;
+
+            while ((read = stream.Read(chunk, 0, chunk.Length)) > 0)
+            {
+                buffer.Write(chunk, 0, read);
+
+                if (buffer.Length > maxBytes)
+                {
+                    break;
+                }
+            }
+
+            return buffer.ToArray();
+        }
+
+        /// <inheritdoc/>
+        public void Dispose() => _client.Dispose();
+    }
+}
