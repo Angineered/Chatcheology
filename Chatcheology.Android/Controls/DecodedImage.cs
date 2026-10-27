@@ -15,6 +15,11 @@ namespace Chatcheology.Android.Controls
     /// file that does not decode shows <see cref="AttachmentCard.CannotPreviewHeading"/> in the same box,
     /// so the row keeps its height either way.
     /// </summary>
+    /// <remarks>
+    /// With <see cref="VideoKey"/> set, <see cref="Path"/> is a video and the picture is its preview frame
+    /// (CH-40, <see cref="VideoFrames"/>); when no frame can be read, <see cref="Failed"/> is raised and
+    /// the owner shows the video's card instead.
+    /// </remarks>
     public sealed class DecodedImage : MauiView
     {
         /// <summary>The picture file.</summary>
@@ -30,6 +35,23 @@ namespace Chatcheology.Android.Controls
 
         /// <summary>Whether the current file failed to decode; a tap then opens it in another app.</summary>
         public bool HasFailed { get; internal set; }
+
+        /// <summary>
+        /// The media hash of a video whose preview frame is shown, or <see langword="null"/> for a picture.
+        /// Set it before <see cref="Path"/>.
+        /// </summary>
+        public string? VideoKey { get; set; }
+
+        /// <summary>
+        /// What the box says when the picture will not decode; <see cref="AttachmentCard.CannotPreviewHeading"/>
+        /// unless set (a small thumbnail sets a short mark). Set it before <see cref="Path"/>.
+        /// </summary>
+        public string FailedText { get; set; } = AttachmentCard.CannotPreviewHeading;
+
+        /// <summary>Raised on the UI thread when the current file could not be decoded.</summary>
+        public event EventHandler? Failed;
+
+        internal void RaiseFailed() => Failed?.Invoke(this, EventArgs.Empty);
     }
 
     /// <summary>Draws a <see cref="DecodedImage"/>: an image view, and the "Can't preview" heading when decoding fails.</summary>
@@ -54,7 +76,6 @@ namespace Chatcheology.Android.Controls
         {
             var context = Context;
             var frame = new FrameLayout(context);
-            frame.SetBackgroundColor(((Microsoft.Maui.Graphics.Color)Application.Current!.Resources["CardBackground"]).ToPlatform());
 
             _image = new ImageView(context);
             _image.SetScaleType(ImageView.ScaleType.CenterCrop);
@@ -64,20 +85,45 @@ namespace Chatcheology.Android.Controls
             {
                 Text = AttachmentCard.CannotPreviewHeading,
                 Gravity = GravityFlags.Center,
-                Visibility = ViewStates.Gone,
+                Visibility = ViewStates.Invisible,
             };
-            _failed.SetTextColor(((Microsoft.Maui.Graphics.Color)Application.Current!.Resources["MutedText"]).ToPlatform());
             _failed.SetPadding(16, 16, 16, 16);
             frame.AddView(_failed, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, ViewGroup.LayoutParams.MatchParent));
+
+            Recolour(frame);
 
             return frame;
         }
 
+        protected override void ConnectHandler(FrameLayout platformView)
+        {
+            base.ConnectHandler(platformView);
+
+            if (Application.Current is { } app)
+            {
+                app.RequestedThemeChanged += OnThemeChanged;
+            }
+        }
+
         protected override void DisconnectHandler(FrameLayout platformView)
         {
+            if (Application.Current is { } app)
+            {
+                app.RequestedThemeChanged -= OnThemeChanged;
+            }
+
             _generation++;
             _image?.SetImageBitmap(null);
             base.DisconnectHandler(platformView);
+        }
+
+        /// <summary>The phone switched between light and dark (CH-41): the box and its text follow.</summary>
+        private void OnThemeChanged(object? sender, AppThemeChangedEventArgs e) => Recolour(PlatformView);
+
+        private void Recolour(FrameLayout? frame)
+        {
+            frame?.SetBackgroundColor(Palette.Current("CardBackground").ToPlatform());
+            _failed?.SetTextColor(Palette.Current("MutedText").ToPlatform());
         }
 
         private static void MapPath(DecodedImageHandler handler, DecodedImage view) => handler.Load(view.Path);
@@ -89,9 +135,11 @@ namespace Chatcheology.Android.Controls
 
             _image?.SetImageBitmap(null);
 
+            // Invisible, not gone: it keeps its measured place, so showing it needs no new layout pass,
+            // which a fixed-size cell (the gallery's) would not give it.
             if (_failed is not null)
             {
-                _failed.Visibility = ViewStates.Gone;
+                _failed.Visibility = ViewStates.Invisible;
             }
 
             if (string.IsNullOrEmpty(path))
@@ -104,8 +152,11 @@ namespace Chatcheology.Android.Controls
             var width = Math.Max(1, (int)Math.Round(Math.Max(VirtualView.WidthRequest, 1) * density));
             var height = Math.Max(1, (int)Math.Round(Math.Max(VirtualView.HeightRequest, 1) * density));
             var frame = PlatformView;
+            var videoKey = VirtualView.VideoKey;
 
-            Task.Run(() => ImageDecoding.DecodeToCover(path, width, height)).ContinueWith(
+            Task.Run(() => videoKey is null
+                    ? ImageDecoding.DecodeToCover(path, width, height)
+                    : VideoFrames.FrameToCover(path, videoKey, width, height)).ContinueWith(
                 decoded =>
                 {
                     var bitmap = decoded.IsCompletedSuccessfully ? decoded.Result : null;
@@ -125,10 +176,13 @@ namespace Chatcheology.Android.Controls
                         {
                             VirtualView.HasFailed = true;
 
-                            if (_failed is not null)
+                            if (_failed is not null && videoKey is null)
                             {
+                                _failed.Text = VirtualView.FailedText;
                                 _failed.Visibility = ViewStates.Visible;
                             }
+
+                            VirtualView.RaiseFailed();
                         }
                     });
                 },

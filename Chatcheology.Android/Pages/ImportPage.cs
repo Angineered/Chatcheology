@@ -155,7 +155,7 @@ namespace Chatcheology.Android.Pages
 
             if (result is { Outcome: ImportOutcome.Installed or ImportOutcome.AlreadyInstalled, ArchiveId: { } id })
             {
-                var open = new Button { Text = "Open the archive", BackgroundColor = (Color)Application.Current!.Resources["Primary"], TextColor = Colors.White };
+                var open = new Button { Text = "Open the archive", TextColor = Colors.White }.Themed(VisualElement.BackgroundColorProperty, "Primary");
                 open.Clicked += async (_, _) =>
                 {
                     if (!Leave())

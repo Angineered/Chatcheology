@@ -4,19 +4,81 @@
              x:Class="Chatcheology.Android.App">
     <Application.Resources>
         <ResourceDictionary>
-            <!-- The conversation's colours, close to the chat app's own so the archive reads the way
-                 the chat did. -->
-            <Color x:Key="ChatBackground">#EFEAE2</Color>
-            <Color x:Key="BubbleMine">#D9FDD3</Color>
-            <Color x:Key="BubbleTheirs">#FFFFFF</Color>
-            <Color x:Key="BubbleSystem">#FFF5C4</Color>
-            <Color x:Key="SeparatorBackground">#E1F0F7</Color>
-            <Color x:Key="MutedText">#667781</Color>
-            <Color x:Key="SenderText">#2E6B5E</Color>
-            <Color x:Key="CardBackground">#F0F2F5</Color>
-            <Color x:Key="Primary">#2E6B5E</Color>
-            <Color x:Key="Highlight">#FFE58F</Color>
-            <Color x:Key="LinkText">#027EB5</Color>
+            <!-- The app's colours, each as a Light and a Dark pair (CH-41): the phone's setting decides,
+                 there is no switch in the app. Close to the chat app's own, so the archive reads the way
+                 the chat did. Pages use them through AppThemeBinding (XAML) or Palette (code), so a
+                 change of the phone's setting recolours what is on screen. -->
+            <Color x:Key="ChatBackgroundLight">#EFEAE2</Color>
+            <Color x:Key="ChatBackgroundDark">#0B141A</Color>
+            <Color x:Key="PageBackgroundLight">#FFFFFF</Color>
+            <Color x:Key="PageBackgroundDark">#111B21</Color>
+            <Color x:Key="BubbleMineLight">#D9FDD3</Color>
+            <Color x:Key="BubbleMineDark">#005C4B</Color>
+            <Color x:Key="BubbleTheirsLight">#FFFFFF</Color>
+            <Color x:Key="BubbleTheirsDark">#202C33</Color>
+            <Color x:Key="BubbleSystemLight">#FFF5C4</Color>
+            <Color x:Key="BubbleSystemDark">#2A2614</Color>
+            <Color x:Key="SeparatorBackgroundLight">#E1F0F7</Color>
+            <Color x:Key="SeparatorBackgroundDark">#1D2A33</Color>
+            <Color x:Key="BodyTextLight">#111B21</Color>
+            <Color x:Key="BodyTextDark">#E9EDEF</Color>
+            <Color x:Key="MutedTextLight">#667781</Color>
+            <Color x:Key="MutedTextDark">#9AA9B2</Color>
+            <Color x:Key="SenderTextLight">#2E6B5E</Color>
+            <Color x:Key="SenderTextDark">#7FD1B9</Color>
+            <Color x:Key="CardBackgroundLight">#F0F2F5</Color>
+            <Color x:Key="CardBackgroundDark">#2A3942</Color>
+            <Color x:Key="PrimaryLight">#2E6B5E</Color>
+            <Color x:Key="PrimaryDark">#2E6B5E</Color>
+            <Color x:Key="BarBackgroundLight">#2E6B5E</Color>
+            <Color x:Key="BarBackgroundDark">#1F2C34</Color>
+            <Color x:Key="HighlightLight">#FFE58F</Color>
+            <Color x:Key="HighlightDark">#6B5A1E</Color>
+            <Color x:Key="LinkTextLight">#027EB5</Color>
+            <Color x:Key="LinkTextDark">#53BDEB</Color>
+            <Color x:Key="ButtonBackgroundLight">#E3E8EB</Color>
+            <Color x:Key="ButtonBackgroundDark">#2F3E47</Color>
+            <Color x:Key="StarLight">#C98A00</Color>
+            <Color x:Key="StarDark">#F2C14E</Color>
+
+            <!-- Pages and the controls that do not set a colour of their own. -->
+            <Style TargetType="ContentPage" ApplyToDerivedTypes="True">
+                <Setter Property="BackgroundColor" Value="{AppThemeBinding Light={StaticResource PageBackgroundLight}, Dark={StaticResource PageBackgroundDark}}" />
+            </Style>
+            <Style TargetType="Label">
+                <Setter Property="TextColor" Value="{AppThemeBinding Light={StaticResource BodyTextLight}, Dark={StaticResource BodyTextDark}}" />
+            </Style>
+            <Style TargetType="Picker">
+                <Setter Property="TextColor" Value="{AppThemeBinding Light={StaticResource BodyTextLight}, Dark={StaticResource BodyTextDark}}" />
+                <Setter Property="TitleColor" Value="{AppThemeBinding Light={StaticResource MutedTextLight}, Dark={StaticResource MutedTextDark}}" />
+            </Style>
+            <Style TargetType="SearchBar">
+                <Setter Property="TextColor" Value="{AppThemeBinding Light={StaticResource BodyTextLight}, Dark={StaticResource BodyTextDark}}" />
+                <Setter Property="PlaceholderColor" Value="{AppThemeBinding Light={StaticResource MutedTextLight}, Dark={StaticResource MutedTextDark}}" />
+                <Setter Property="CancelButtonColor" Value="{AppThemeBinding Light={StaticResource MutedTextLight}, Dark={StaticResource MutedTextDark}}" />
+            </Style>
+            <!-- Buttons without colours of their own (the date picker's steps, "Open in another app",
+                 "Back", "Remove it"): readable in both modes, and visibly dimmed when disabled. Buttons
+                 that set their own colours (the day buttons, Import, Remove archive) keep them. -->
+            <Style TargetType="Button">
+                <Setter Property="BackgroundColor" Value="{AppThemeBinding Light={StaticResource ButtonBackgroundLight}, Dark={StaticResource ButtonBackgroundDark}}" />
+                <Setter Property="TextColor" Value="{AppThemeBinding Light={StaticResource BodyTextLight}, Dark={StaticResource BodyTextDark}}" />
+                <Setter Property="VisualStateManager.VisualStateGroups">
+                    <VisualStateGroupList>
+                        <VisualStateGroup x:Name="CommonStates">
+                            <VisualState x:Name="Normal" />
+                            <VisualState x:Name="Disabled">
+                                <VisualState.Setters>
+                                    <Setter Property="Opacity" Value="0.35" />
+                                </VisualState.Setters>
+                            </VisualState>
+                        </VisualStateGroup>
+                    </VisualStateGroupList>
+                </Setter>
+            </Style>
+            <Style TargetType="ActivityIndicator">
+                <Setter Property="Color" Value="{AppThemeBinding Light={StaticResource PrimaryLight}, Dark={StaticResource SenderTextDark}}" />
+            </Style>
         </ResourceDictionary>
     </Application.Resources>
 </Application>

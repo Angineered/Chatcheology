@@ -31,7 +31,7 @@ namespace Chatcheology.Android.Pages
             _conversation = conversation;
 
             Title = "Search";
-            _summary.TextColor = (Color)Application.Current!.Resources["MutedText"];
+            _summary.TextIn("MutedText");
 
             _results.ItemTemplate = new DataTemplate(() => new HitView());
             _results.SelectionChanged += OnSelected;
@@ -157,12 +157,11 @@ namespace Chatcheology.Android.Pages
         private sealed class HitView : ContentView
         {
             private readonly Label _header = new() { FontSize = 12 };
-            private readonly Label _snippet = new() { FontSize = 15, TextColor = Colors.Black, MaxLines = 3 };
+            private readonly Label _snippet = new() { FontSize = 15, MaxLines = 3 };
 
             public HitView()
             {
-                var resources = Application.Current!.Resources;
-                _header.TextColor = (Color)resources["MutedText"];
+                _header.TextIn("MutedText");
 
                 Content = new VerticalStackLayout
                 {
@@ -183,7 +182,6 @@ namespace Chatcheology.Android.Pages
 
                 _header.Text = $"{hit.DateText} · {hit.TimeText} · {hit.SenderText}";
 
-                var highlight = (Color)Application.Current!.Resources["Highlight"];
                 var formatted = new FormattedString();
                 var at = 0;
 
@@ -203,8 +201,7 @@ namespace Chatcheology.Android.Pages
                     {
                         Text = hit.Snippet.Substring(range.Start, range.Length),
                         FontAttributes = FontAttributes.Bold,
-                        BackgroundColor = highlight,
-                    });
+                    }.Themed(Span.BackgroundColorProperty, "Highlight"));
 
                     at = range.Start + range.Length;
                 }

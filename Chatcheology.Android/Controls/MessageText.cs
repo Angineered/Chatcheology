@@ -16,7 +16,7 @@ namespace Chatcheology.Android.Controls
         public MessageText()
         {
             FontSize = 15;
-            TextColor = Colors.Black;
+            Palette.Set(this, TextColorProperty, "BodyText");
 
             // A text with links takes its own touches: the long press for Share is watched here too.
             MessageLongPress.Watch(this);
@@ -45,7 +45,6 @@ namespace Chatcheology.Android.Controls
             }
 
             var formatted = new FormattedString();
-            var linkColour = (Color)Application.Current!.Resources["LinkText"];
 
             foreach (var span in row.TextSpans)
             {
@@ -53,7 +52,7 @@ namespace Chatcheology.Android.Controls
 
                 if (span.Kind != TextSpanKind.Text && span.Target is { } target)
                 {
-                    piece.TextColor = linkColour;
+                    Palette.Set(piece, Span.TextColorProperty, "LinkText");
                     piece.TextDecorations = TextDecorations.Underline;
 
                     var tap = new TapGestureRecognizer();

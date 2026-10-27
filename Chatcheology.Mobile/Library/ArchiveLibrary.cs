@@ -89,7 +89,8 @@ namespace Chatcheology.Mobile.Library
         }
 
         /// <summary>
-        /// Deletes the app's copy of an installed archive and forgets what the app stored about it. The
+        /// Deletes the app's copy of an installed archive and forgets what the app stored about it, except its
+        /// stars (<see cref="ArchiveSettings.Forget"/>). The
         /// source the archive was imported from is not touched. The caller closes any reader on it first.
         /// </summary>
         /// <exception cref="ArgumentException">The folder is not directly inside the installed archives.</exception>
