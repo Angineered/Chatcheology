@@ -824,7 +824,9 @@ namespace Chatcheology.Data.Tests.ArchiveExport
                     tables.Add(reader.GetString(0));
                 }
 
-                Assert.Equal(ArchiveFormat.TableNamesOf(ArchiveFormat.FormatVersion).Order(StringComparer.Ordinal), tables);
+                Assert.Equal(
+                    ArchiveFormat.TableNamesOf(ArchiveFormat.FormatVersion).Append(ArchiveFormat.EntryImageTableName).Order(StringComparer.Ordinal),
+                    tables);
             }
 
             // Byte search of the whole file, in both encodings SQLite could have used.

@@ -24,8 +24,11 @@ namespace Chatcheology.Archive.Tests
             var tables = ArchiveSample.Rows(
                 Database, "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name;");
 
-            Assert.Equal(ArchiveFormat.TableNamesOf(ArchiveFormat.FormatVersion).Order(StringComparer.Ordinal), tables);
-            Assert.Equal(12, tables.Count);
+            // The required tables, plus EntryImage (CH-46), which a reader does not require.
+            Assert.Equal(
+                ArchiveFormat.TableNamesOf(ArchiveFormat.FormatVersion).Append(ArchiveFormat.EntryImageTableName).Order(StringComparer.Ordinal),
+                tables);
+            Assert.Equal(13, tables.Count);
         }
 
         [Fact]

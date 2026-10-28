@@ -100,7 +100,7 @@ namespace Chatcheology.Data.Memories
             var version = MemoriesDatabase.ReadFormatVersion(connection);
 
             var games = FetchKind(connection, mediaFolder, source, maxBytes, GameImageQuery, GameImageUpdate);
-            var icons = version == MemoriesDatabase.MarkerFormatVersion
+            var icons = version >= MemoriesDatabase.FirstFormatWithDefinitions
                 ? FetchKind(connection, mediaFolder, source, maxBytes, TrophyIconQuery, TrophyIconUpdate)
                 : new MemoryImageCounts(0, 0, 0);
 

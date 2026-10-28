@@ -25,6 +25,22 @@ namespace Chatcheology.Desktop.ViewModels
 
         /// <summary>Asks before a memory is deleted. True to delete it.</summary>
         public required Func<string, bool> ConfirmDelete { get; init; }
+
+        /// <summary>
+        /// Asks for one or more image files to add as photos (CH-46). Empty when declined. Without it,
+        /// <see cref="ChooseImage"/> is asked for one.
+        /// </summary>
+        public Func<IReadOnlyList<string>>? ChooseImages { get; init; }
+
+        /// <summary>Asks before a personal collection is deleted (CH-46). True to delete it.</summary>
+        public Func<string, bool> ConfirmDeleteCollection { get; init; } = _ => false;
+
+        /// <summary>Asks before unused images are deleted from the memories folder (CH-46). True to delete them.</summary>
+        public Func<string, bool> ConfirmTidyImages { get; init; } = _ => false;
+
+        /// <summary>The files to add, from <see cref="ChooseImages"/> or else <see cref="ChooseImage"/>.</summary>
+        internal IReadOnlyList<string> ChooseImageFiles() =>
+            ChooseImages is { } many ? many() ?? [] : ChooseImage() is { } one ? [one] : [];
     }
 
     /// <summary>What the Memories area works on: the open workspace and its selected conversation.</summary>
@@ -129,6 +145,8 @@ namespace Chatcheology.Desktop.ViewModels
             NewEntryCommand = new RelayCommand(NewEntry, () => CanWrite() && SelectedCollection is not null);
             EditEntryCommand = new AsyncRelayCommand(EditEntryAsync, () => CanWrite() && SelectedEntry?.IsEditable == true);
             DeleteEntryCommand = new AsyncRelayCommand(DeleteEntryAsync, () => CanWrite() && SelectedEntry is not null);
+            DeleteCollectionCommand = new AsyncRelayCommand(DeleteCollectionAsync, () => CanWrite() && SelectedCollection is not null);
+            TidyImagesCommand = new AsyncRelayCommand(TidyImagesAsync, () => CanWrite() && FileExists);
         }
 
         // -----------------------------------------------------------------------------------
@@ -155,6 +173,18 @@ namespace Chatcheology.Desktop.ViewModels
 
         /// <summary>Deletes the selected memory (after confirmation) and its links.</summary>
         public AsyncRelayCommand DeleteEntryCommand { get; }
+
+        /// <summary>
+        /// Deletes the selected personal collection after confirmation: with its memories, their links and
+        /// their extra photos when it is not empty (CH-46). Imported collections are never listed for it.
+        /// </summary>
+        public AsyncRelayCommand DeleteCollectionCommand { get; }
+
+        /// <summary>
+        /// Lists the images of the memories folder that nothing uses, and deletes them after confirmation
+        /// (CH-46).
+        /// </summary>
+        public AsyncRelayCommand TidyImagesCommand { get; }
 
         /// <summary>The personal collections.</summary>
         public ObservableCollection<PersonalCollectionViewModel> Collections { get; } = [];
@@ -209,7 +239,13 @@ namespace Chatcheology.Desktop.ViewModels
         public bool FileExists
         {
             get => _fileExists;
-            private set => SetProperty(ref _fileExists, value);
+            private set
+            {
+                if (SetProperty(ref _fileExists, value))
+                {
+                    TidyImagesCommand.RaiseCanExecuteChanged();
+                }
+            }
         }
 
         /// <summary>What the last action did. Fixed phrases; never a path.</summary>
@@ -320,6 +356,8 @@ namespace Chatcheology.Desktop.ViewModels
             NewEntryCommand.RaiseCanExecuteChanged();
             EditEntryCommand.RaiseCanExecuteChanged();
             DeleteEntryCommand.RaiseCanExecuteChanged();
+            DeleteCollectionCommand.RaiseCanExecuteChanged();
+            TidyImagesCommand.RaiseCanExecuteChanged();
             Form?.RaiseCommandStates();
         }
 
@@ -573,6 +611,127 @@ namespace Chatcheology.Desktop.ViewModels
                     SelectedCollection?.CollectionID, null)).ConfigureAwait(true);
         }
 
+        private async Task DeleteCollectionAsync()
+        {
+            if (_backend is not { } backend || SelectedCollection is not { } collection)
+            {
+                return;
+            }
+
+            var count = collection.Entries.Count;
+            var question = count == 0
+                ? $"Delete the empty collection \"{collection.Name}\"?"
+                : $"Delete the collection \"{collection.Name}\" and the {CountText(count, "memory", "memories")} in it, " +
+                  "with their links and photos? The image files stay in the memories folder. This cannot be undone.";
+
+            if (!_dialogs.ConfirmDeleteCollection(question))
+            {
+                StatusText = "Nothing was deleted.";
+                return;
+            }
+
+            var id = collection.CollectionID;
+
+            await WriteAsync(
+                () => backend.Store.DeleteCollection(id, count),
+                result =>
+                {
+                    CollectionDeleted?.Invoke(this, id);
+
+                    return (result.Entries == 0
+                        ? "Collection deleted."
+                        : "Collection deleted, with " + CountText(result.Entries, "memory", "memories") +
+                          (result.Links == 0 ? "." : " and " + CountText(result.Links, "link", "links") + "."),
+                        null, null);
+                }).ConfigureAwait(true);
+        }
+
+        private async Task TidyImagesAsync()
+        {
+            if (_backend is not { } backend)
+            {
+                return;
+            }
+
+            var generation = _generation;
+            ChangeBusy(+1);
+
+            try
+            {
+                var survey = await Task.Run(backend.Store.SurveyUnusedImages).ConfigureAwait(true);
+
+                if (generation != _generation)
+                {
+                    return;
+                }
+
+                var others = survey.OtherItems == 0
+                    ? string.Empty
+                    : " " + CountText(survey.OtherItems, "other file or folder", "other files or folders") +
+                      " in the folder " + (survey.OtherItems == 1 ? "is" : "are") + " not named like a stored image and " +
+                      (survey.OtherItems == 1 ? "is" : "are") + " never touched.";
+
+                if (survey.UnusedFiles.Count == 0)
+                {
+                    StatusText = "No unused images: " + CountText(survey.UsedFiles, "image is", "images are") + " in use." + others;
+                    return;
+                }
+
+                var question =
+                    CountText(survey.UnusedFiles.Count, "image", "images") + " (" + SizeText(survey.UnusedBytes) +
+                    ") in the memories folder " + (survey.UnusedFiles.Count == 1 ? "is" : "are") +
+                    " not used by any memory, game image or trophy icon. Delete " +
+                    (survey.UnusedFiles.Count == 1 ? "it" : "them") + "? This cannot be undone." + others;
+
+                if (!_dialogs.ConfirmTidyImages(question))
+                {
+                    StatusText = "Nothing was deleted.";
+                    return;
+                }
+
+                var listed = survey.UnusedFiles;
+                var result = await Task.Run(() => backend.Store.DeleteUnusedImages(listed)).ConfigureAwait(true);
+
+                if (generation != _generation)
+                {
+                    return;
+                }
+
+                var status = "Deleted " + CountText(result.Deleted, "unused image", "unused images") + " (" + SizeText(result.DeletedBytes) + ").";
+
+                if (result.NowUsed > 0)
+                {
+                    status += " " + CountText(result.NowUsed, "image was", "images were") + " kept: a memory uses it now.";
+                }
+
+                if (result.Failed > 0)
+                {
+                    status += " " + CountText(result.Failed, "image", "images") + " could not be deleted.";
+                }
+
+                StatusText = status;
+            }
+            catch (Exception exception) when (IsExpected(exception))
+            {
+                if (generation == _generation)
+                {
+                    StatusText = Describe(exception, "The images could not be tidied up. Nothing was deleted.");
+                }
+            }
+            finally
+            {
+                ChangeBusy(-1);
+            }
+        }
+
+        private static string CountText(int count, string one, string many) =>
+            count == 1 ? "1 " + one : count.ToString(CultureInfo.CurrentCulture) + " " + many;
+
+        private static string SizeText(long bytes) =>
+            bytes >= 1024 * 1024
+                ? (bytes / (1024.0 * 1024.0)).ToString("0.0", CultureInfo.CurrentCulture) + " MB"
+                : Math.Max(bytes == 0 ? 0 : 1, bytes / 1024).ToString(CultureInfo.CurrentCulture) + " KB";
+
         private async Task WriteAsync<T>(Func<T> write, Func<T, (string Status, long? CollectionID, long? EntryID)> done)
         {
             var generation = _generation;
@@ -673,6 +832,10 @@ namespace Chatcheology.Desktop.ViewModels
         /// or deleted), so the conversation's memory layers can be read again (CH-42 step 5).
         /// </summary>
         public event EventHandler? FileChanged;
+
+        /// <summary>Raised when a personal collection was deleted here, with its identifier (CH-46).</summary>
+        public event EventHandler<long>? CollectionDeleted;
+
 
         /// <summary>
         /// Opens a personal memory in the form, opening the area first when it is closed: the Edit action

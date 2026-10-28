@@ -131,9 +131,19 @@ namespace Chatcheology.Mobile.Conversation
             DateText = MemoryWording.EntryDate(entry.Entry.DatePrecision, entry.Entry.StartLocal, entry.Entry.EndLocal);
             Summary = entry.Entry.Summary ?? string.Empty;
             ImagePath = entry.ImagePath;
+            ExtraPhotoCount = entry.ExtraPhotos.Count;
             SourceText = entry.SourceText;
             CollectionName = entry.Collection.Name;
         }
+
+        /// <summary>How many extra photos (whose file is there) the memory has after its cover (CH-46).</summary>
+        public int ExtraPhotoCount { get; }
+
+        /// <summary>Whether the card shows the "+N" badge: a cover is drawn and there are extra photos.</summary>
+        public bool HasExtraPhotos => HasImage && ExtraPhotoCount > 0;
+
+        /// <summary>"+4", or empty.</summary>
+        public string ExtraPhotosBadge => HasExtraPhotos ? MemoryWording.ExtraPhotosBadge(ExtraPhotoCount) : string.Empty;
 
         /// <summary>The title.</summary>
         public string Title { get; }

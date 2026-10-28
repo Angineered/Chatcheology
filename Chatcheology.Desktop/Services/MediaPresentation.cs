@@ -46,7 +46,13 @@ namespace Chatcheology.Desktop.Services
         /// statement about this file on this machine, never about whether the attachment is
         /// resolved.</para>
         /// </remarks>
-        internal static BitmapSource? TryLoadThumbnail(string fullPath)
+        internal static BitmapSource? TryLoadThumbnail(string fullPath) => TryLoadImage(fullPath, ThumbnailWidth);
+
+        /// <summary>The width a memory photo is decoded at for the large photo view (CH-46).</summary>
+        internal const int LargeWidth = 1600;
+
+        /// <summary>As <see cref="TryLoadThumbnail"/>, decoded at <paramref name="decodeWidth"/> pixels wide.</summary>
+        internal static BitmapSource? TryLoadImage(string fullPath, int decodeWidth)
         {
             try
             {
@@ -62,7 +68,7 @@ namespace Chatcheology.Desktop.Services
 
                 image.BeginInit();
                 image.CacheOption = BitmapCacheOption.OnLoad;
-                image.DecodePixelWidth = ThumbnailWidth;
+                image.DecodePixelWidth = decodeWidth;
                 image.StreamSource = stream;
                 image.EndInit();
                 image.Freeze();

@@ -38,11 +38,12 @@ namespace Chatcheology.Archive
 
         private readonly string _messageColumns;
 
-        private ArchiveReader(string folderPath, SqliteConnection connection, ArchiveInfo info)
+        private ArchiveReader(string folderPath, SqliteConnection connection, ArchiveInfo info, bool hasEntryImageTable)
         {
             FolderPath = folderPath;
             _connection = connection;
             Info = info;
+            HasEntryImages = info.FormatVersion >= 2 && hasEntryImageTable;
 
             // A version 1 archive has no Source column: every message in it is a workspace message.
             _messageColumns = info.FormatVersion >= 2 ? MessageColumnsV2 : MessageColumnsV1;
@@ -50,6 +51,12 @@ namespace Chatcheology.Archive
 
         /// <summary>Whether the archive has the memory tables (format version 2 and later).</summary>
         public bool HasMemories => Info.FormatVersion >= 2;
+
+        /// <summary>
+        /// Whether the archive has the <c>EntryImage</c> table (CH-46). A version 2 archive written before
+        /// it lacks the table and reads as having no extra photos.
+        /// </summary>
+        public bool HasEntryImages { get; }
 
         /// <summary>The archive folder, as a full path.</summary>
         public string FolderPath { get; }
@@ -117,7 +124,7 @@ namespace Chatcheology.Archive
                         "The archive database records a format version this reader does not know.");
                 }
 
-                RequireTables(connection, version);
+                var tables = RequireTables(connection, version);
 
                 var info = ReadInfo(connection);
 
@@ -127,7 +134,7 @@ namespace Chatcheology.Archive
                         "The archive's recorded format version does not match its database version.");
                 }
 
-                return new ArchiveReader(folder, connection, info);
+                return new ArchiveReader(folder, connection, info, tables.Contains(ArchiveFormat.EntryImageTableName));
             }
             catch (SqliteException)
             {
@@ -601,6 +608,86 @@ namespace Chatcheology.Archive
             return entry.ImageRelativePath is { } relative
                 ? Path.Combine(FolderPath, relative.Replace('/', Path.DirectorySeparatorChar))
                 : null;
+        }
+
+        /// <summary>
+        /// The extra photos of one entry after its cover, by ordinal (CH-46). None in an archive without
+        /// the <c>EntryImage</c> table.
+        /// </summary>
+        public IReadOnlyList<ArchiveEntryImage> ReadEntryImages(long entryID)
+        {
+            if (!HasEntryImages)
+            {
+                return [];
+            }
+
+            using var command = _connection.CreateCommand();
+            command.CommandText =
+                $"""
+                {EntryImageColumns}
+                WHERE EntryID = $entry
+                ORDER BY Ordinal;
+                """;
+            command.Parameters.AddWithValue("$entry", entryID);
+
+            return ReadEntryImageRows(command);
+        }
+
+        /// <summary>Every extra photo, ordered by entry and ordinal. For the validator and the comparer.</summary>
+        public IReadOnlyList<ArchiveEntryImage> ReadAllEntryImages()
+        {
+            if (!HasEntryImages)
+            {
+                return [];
+            }
+
+            using var command = _connection.CreateCommand();
+            command.CommandText = $"{EntryImageColumns} ORDER BY EntryID, Ordinal;";
+
+            return ReadEntryImageRows(command);
+        }
+
+        /// <summary>
+        /// The full path of an extra photo's file. Composing the path is not a claim the file is there.
+        /// </summary>
+        public string EntryImageFullPath(ArchiveEntryImage image)
+        {
+            ArgumentNullException.ThrowIfNull(image);
+
+            if (!ArchiveFormat.IsSha256(image.Sha256))
+            {
+                throw new ArchiveFormatException("An extra photo names a hash that is not 64 lower-case hex digits.");
+            }
+
+            if (image.Extension.Length < 2 || ArchiveFormat.SafeExtension(image.Extension) != image.Extension)
+            {
+                throw new ArchiveFormatException("An extra photo names an extension that is not a plain one.");
+            }
+
+            return Path.Combine(FolderPath, image.RelativePath.Replace('/', Path.DirectorySeparatorChar));
+        }
+
+        private const string EntryImageColumns = "SELECT EntryID, Ordinal, Sha256, Extension, Caption FROM EntryImage";
+
+        private static List<ArchiveEntryImage> ReadEntryImageRows(SqliteCommand command)
+        {
+            var images = new List<ArchiveEntryImage>();
+
+            using var reader = command.ExecuteReader();
+
+            while (reader.Read())
+            {
+                images.Add(new ArchiveEntryImage
+                {
+                    EntryID = Integer(reader, 0),
+                    Ordinal = Int32(reader, 1),
+                    Sha256 = Text(reader, 2),
+                    Extension = Text(reader, 3),
+                    Caption = NullableText(reader, 4),
+                });
+            }
+
+            return images;
         }
 
         /// <summary>Every entry, ordered by identifier. For the validator and the comparer.</summary>
@@ -1123,7 +1210,7 @@ namespace Chatcheology.Archive
             return periods;
         }
 
-        private static void RequireTables(SqliteConnection connection, int version)
+        private static HashSet<string> RequireTables(SqliteConnection connection, int version)
         {
             using var command = connection.CreateCommand();
             command.CommandText = "SELECT name FROM sqlite_master WHERE type = 'table';";
@@ -1142,6 +1229,8 @@ namespace Chatcheology.Archive
             {
                 throw new ArchiveFormatException("The archive database is missing one of the format's tables.");
             }
+
+            return tables;
         }
 
         // -------------------------------------------------------------------------------------

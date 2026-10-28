@@ -54,8 +54,11 @@ namespace Chatcheology.Desktop
                 new MemoriesDialogs
                 {
                     ChooseImage = ChooseImage,
+                    ChooseImages = ChooseImages,
                     ConfirmCreateFile = text => Confirm(text, "Create memories file"),
                     ConfirmDelete = text => Confirm(text, "Delete memory"),
+                    ConfirmDeleteCollection = text => Confirm(text, "Delete collection"),
+                    ConfirmTidyImages = text => Confirm(text, "Tidy up images"),
                 },
                 layerSettings: layerSettings);
 
@@ -113,6 +116,23 @@ namespace Chatcheology.Desktop
             };
 
             return dialog.ShowDialog(this) == true ? dialog.FileName : null;
+        }
+
+        /// <remarks>
+        /// Photos for a personal memory (CH-46): one or more files, only read; copies go into the memories
+        /// folder when the memory is saved. No initial directory and no remembered location.
+        /// </remarks>
+        private IReadOnlyList<string> ChooseImages()
+        {
+            var dialog = new OpenFileDialog
+            {
+                Title = "Choose photos for this memory",
+                Filter = "Images (*.png;*.jpg;*.jpeg;*.gif;*.webp)|*.png;*.jpg;*.jpeg;*.gif;*.webp|All files (*.*)|*.*",
+                CheckFileExists = true,
+                Multiselect = true,
+            };
+
+            return dialog.ShowDialog(this) == true ? dialog.FileNames : [];
         }
 
         /// <remarks>Cancel is the default, so a stray Enter changes nothing.</remarks>
@@ -239,7 +259,21 @@ namespace Chatcheology.Desktop
             }
         }
 
+        /// <remarks>
+        /// A photo in the memory details (CH-46) shows it large; the view moves through that memory's photos
+        /// only. The single image is the cover (photo 0).
+        /// </remarks>
+        private void MemoryPhotoClick(object sender, MouseButtonEventArgs e)
+        {
+            if (sender is FrameworkElement element)
+            {
+                e.Handled = true;
+                _viewModel.OpenMemoryPhoto(element.DataContext is MemoryStripPhotoViewModel photo ? photo.Index : 0);
+            }
+        }
+
         /// <remarks>A link in the memory details: a message moves the conversation; an entry opens its row.</remarks>
+
         private async void MemoryLinkClick(object sender, RoutedEventArgs e)
         {
             if (sender is FrameworkContentElement { DataContext: MemoryLinkLine link })

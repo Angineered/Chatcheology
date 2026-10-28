@@ -26,6 +26,92 @@ namespace Chatcheology.Desktop.ViewModels
         public RelayCommand RemoveCommand { get; }
     }
 
+    /// <summary>
+    /// One photo in the form (CH-46): the first is the cover (shown on the card); the others are the
+    /// extra photos, in order, each with an optional caption.
+    /// </summary>
+    public sealed class MemoryFormPhotoViewModel : ObservableObject
+    {
+        private readonly MemoryEntryFormViewModel _form;
+        private string _caption;
+        private bool _isCover;
+
+        internal MemoryFormPhotoViewModel(
+            MemoryEntryFormViewModel form, PersonalImageChoice choice, string? sha256, ImageSource? preview, string text, string? caption)
+        {
+            _form = form;
+            Choice = choice;
+            Sha256 = sha256;
+            Preview = preview;
+            Text = text;
+            _caption = caption ?? string.Empty;
+
+            MoveUpCommand = new RelayCommand(() => _form.Move(this, -1), () => _form.CanMove(this, -1));
+            MoveDownCommand = new RelayCommand(() => _form.Move(this, +1), () => _form.CanMove(this, +1));
+            MakeCoverCommand = new RelayCommand(() => _form.MakeCover(this), () => !IsCover && _form.CanEditPhotos);
+            RemoveCommand = new RelayCommand(() => _form.RemovePhoto(this), () => _form.CanEditPhotos);
+        }
+
+        /// <summary>What the save carries: the stored photo by hash, or the chosen file.</summary>
+        internal PersonalImageChoice Choice { get; }
+
+        /// <summary>The photo's hash, when known (a stored photo, or a chosen file that was read).</summary>
+        internal string? Sha256 { get; }
+
+        /// <summary>The preview, or <see langword="null"/>.</summary>
+        public ImageSource? Preview { get; }
+
+        /// <summary>"Current image", "New image: 120 KB" (with the file name for an added one), or why there is no preview.</summary>
+        public string Text { get; }
+
+        /// <summary>The caption (kept for an extra photo; the cover has none).</summary>
+        public string Caption
+        {
+            get => _caption;
+            set => SetProperty(ref _caption, value ?? string.Empty);
+        }
+
+        /// <summary>Whether this is the cover (the first photo).</summary>
+        public bool IsCover
+        {
+            get => _isCover;
+            internal set
+            {
+                if (SetProperty(ref _isCover, value))
+                {
+                    OnPropertyChanged(nameof(CanEditCaption));
+                    OnPropertyChanged(nameof(RoleText));
+                }
+            }
+        }
+
+        /// <summary>The cover carries no caption; every other photo can.</summary>
+        public bool CanEditCaption => !IsCover;
+
+        /// <summary>"Cover" or "Photo".</summary>
+        public string RoleText => IsCover ? "Cover (shown on the card; no caption)" : "Photo";
+
+        /// <summary>One place earlier.</summary>
+        public RelayCommand MoveUpCommand { get; }
+
+        /// <summary>One place later.</summary>
+        public RelayCommand MoveDownCommand { get; }
+
+        /// <summary>Moves it first: it becomes the cover.</summary>
+        public RelayCommand MakeCoverCommand { get; }
+
+        /// <summary>Drops it from the memory (the stored file stays).</summary>
+        public RelayCommand RemoveCommand { get; }
+
+        internal void RaiseCommandStates()
+        {
+            MoveUpCommand.RaiseCanExecuteChanged();
+            MoveDownCommand.RaiseCanExecuteChanged();
+            MakeCoverCommand.RaiseCanExecuteChanged();
+            RemoveCommand.RaiseCanExecuteChanged();
+        }
+    }
+
     /// <summary>A message in the picker.</summary>
     public sealed record MessagePickRow(MessageLinkCandidate Message)
     {
@@ -41,12 +127,15 @@ namespace Chatcheology.Desktop.ViewModels
     }
 
     /// <summary>
-    /// The form for one personal memory: title, dates and precision, description, source, one optional
-    /// image, and links to messages and entries (CH-42 step 4).
+    /// The form for one personal memory: title, dates and precision, description, source, its photos, and
+    /// links to messages and entries (CH-42 step 4; several photos CH-46).
     /// </summary>
     /// <remarks>
     /// Nothing is written until Save, and Save is one transaction in the memories file. Each field's
-    /// problem is shown next to it. The chosen image file is only read (for the preview and on save).
+    /// problem is shown next to it. Chosen image files are only read (for the previews and on save). The
+    /// first photo is the cover; the others follow in order, each with an optional caption. Adding several
+    /// files at once checks each (type, 20 MB cap, not already in the memory); one that fails is named in
+    /// the photos' message and the others are still added.
     /// </remarks>
     public sealed class MemoryEntryFormViewModel : ObservableObject
     {
@@ -69,9 +158,6 @@ namespace Chatcheology.Desktop.ViewModels
         private DateTime? _startDate;
         private DateTime? _endDate;
         private PersonalDatePrecision _precision = PersonalDatePrecision.Day;
-        private PersonalImageChoice _image = PersonalImageChoice.None;
-        private ImageSource? _imagePreview;
-        private string _imageText = string.Empty;
         private DateTime? _pickerDate;
         private MessagePickRow? _selectedMessage;
         private EntryPickRow? _selectedEntry;
@@ -113,6 +199,7 @@ namespace Chatcheology.Desktop.ViewModels
             CancelCommand = new RelayCommand(() => _closed(null, null), () => !IsSaving);
             ChooseImageCommand = new AsyncRelayCommand(ChooseImageAsync, () => !IsSaving);
             RemoveImageCommand = new RelayCommand(RemoveImage, () => !IsSaving && HasImage);
+            Photos.CollectionChanged += (_, _) => OnPhotosChanged();
             AddMessageLinkCommand = new RelayCommand(AddMessageLink, () => !IsSaving && SelectedPickerMessage is not null);
             AddEntryLinkCommand = new RelayCommand(AddEntryLink, () => !IsSaving && SelectedPickerEntry is not null);
 
@@ -131,9 +218,24 @@ namespace Chatcheology.Desktop.ViewModels
 
             if (existing.ImageSha256 is { } sha)
             {
-                _image = PersonalImageChoice.Existing(sha);
-                _imagePreview = existing.ImagePath is { } path ? MediaPresentation.TryLoadThumbnail(path) : null;
-                _imageText = existing.ImagePath is null ? "The memory's image file is not in the memories folder." : "Current image";
+                Photos.Add(new MemoryFormPhotoViewModel(
+                    this,
+                    PersonalImageChoice.Existing(sha),
+                    sha,
+                    existing.ImagePath is { } path ? MediaPresentation.TryLoadThumbnail(path) : null,
+                    existing.ImagePath is null ? "The memory's image file is not in the memories folder." : "Current image",
+                    null));
+            }
+
+            foreach (var photo in existing.ExtraPhotos)
+            {
+                Photos.Add(new MemoryFormPhotoViewModel(
+                    this,
+                    PersonalImageChoice.Existing(photo.Sha256),
+                    photo.Sha256,
+                    photo.Path is { } file ? MediaPresentation.TryLoadThumbnail(file) : null,
+                    photo.Path is null ? "This photo's file is not in the memories folder." : "Current image",
+                    photo.Caption));
             }
 
             foreach (var link in existing.Links)
@@ -157,10 +259,13 @@ namespace Chatcheology.Desktop.ViewModels
         /// <summary>Closes the form; nothing is written.</summary>
         public RelayCommand CancelCommand { get; }
 
-        /// <summary>Asks for an image file and shows it (the file is only read).</summary>
+        /// <summary>
+        /// Asks for one or more image files and adds each that passes the checks as a photo (the files are
+        /// only read). The first photo of a memory is its cover.
+        /// </summary>
         public AsyncRelayCommand ChooseImageCommand { get; }
 
-        /// <summary>Drops the image from this memory (stored files stay).</summary>
+        /// <summary>Drops every photo from this memory (stored files stay).</summary>
         public RelayCommand RemoveImageCommand { get; }
 
         /// <summary>Adds a link to the picked message.</summary>
@@ -277,25 +382,25 @@ namespace Chatcheology.Desktop.ViewModels
             }
         }
 
-        /// <summary>The image preview, or null.</summary>
-        public ImageSource? ImagePreview
-        {
-            get => _imagePreview;
-            private set => SetProperty(ref _imagePreview, value);
-        }
+        /// <summary>
+        /// The memory's photos in order: the first is the cover, the rest the extra photos (CH-46).
+        /// </summary>
+        public ObservableCollection<MemoryFormPhotoViewModel> Photos { get; } = [];
 
-        /// <summary>A line about the image: "Current image", "New image: 120 KB", or empty.</summary>
-        public string ImageText
-        {
-            get => _imageText;
-            private set => SetProperty(ref _imageText, value);
-        }
+        /// <summary>The cover's preview, or null.</summary>
+        public ImageSource? ImagePreview => Photos.FirstOrDefault()?.Preview;
 
-        /// <summary>Whether the memory will carry an image.</summary>
-        public bool HasImage => _image != PersonalImageChoice.None;
+        /// <summary>A line about the cover: "Current image", "New image: 120 KB", or empty.</summary>
+        public string ImageText => Photos.FirstOrDefault()?.Text ?? string.Empty;
 
-        /// <summary>The image the save will carry.</summary>
-        internal PersonalImageChoice Image => _image;
+        /// <summary>Whether the memory will carry an image (a cover).</summary>
+        public bool HasImage => Photos.Count > 0;
+
+        /// <summary>The cover the save will carry.</summary>
+        internal PersonalImageChoice Image => Photos.FirstOrDefault()?.Choice ?? PersonalImageChoice.None;
+
+        /// <summary>Whether photos can be moved, made the cover or removed now.</summary>
+        internal bool CanEditPhotos => !IsSaving && !_isChoosingImage;
 
         /// <summary>The memory's links.</summary>
         public ObservableCollection<MemoryLinkViewModel> Links { get; } = [];
@@ -412,6 +517,11 @@ namespace Chatcheology.Desktop.ViewModels
             RemoveImageCommand.RaiseCanExecuteChanged();
             AddMessageLinkCommand.RaiseCanExecuteChanged();
             AddEntryLinkCommand.RaiseCanExecuteChanged();
+
+            foreach (var photo in Photos)
+            {
+                photo.RaiseCommandStates();
+            }
         }
 
         // -----------------------------------------------------------------------------------
@@ -428,7 +538,8 @@ namespace Chatcheology.Desktop.ViewModels
             Precision = Precision,
             Summary = Summary,
             Source = Source,
-            Image = _image,
+            Image = Image,
+            ExtraPhotos = Photos.Skip(1).Select(p => new PersonalPhotoDraft(p.Choice, p.Caption)).ToList(),
             Links = Links.Select(l => l.Target).ToList(),
         };
 
@@ -489,7 +600,9 @@ namespace Chatcheology.Desktop.ViewModels
 
         private async Task ChooseImageAsync()
         {
-            if (_dialogs.ChooseImage() is not { } path)
+            var paths = _dialogs.ChooseImageFiles();
+
+            if (paths.Count == 0)
             {
                 return;
             }
@@ -501,22 +614,45 @@ namespace Chatcheology.Desktop.ViewModels
             try
             {
                 var max = _backend.Store.MaxImageBytes;
-                var (file, error, preview) = await Task.Run(() =>
-                {
-                    var read = PersonalImageFile.Read(path, max, out var problem);
-                    return (read, problem, read is null ? null : MediaPresentation.TryLoadThumbnail(path));
-                }).ConfigureAwait(true);
 
-                if (file is null)
+                // Each file is read and checked on its own: one that fails is named, the others are added.
+                var read = await Task.Run(() => paths
+                    .Select(path =>
+                    {
+                        var file = PersonalImageFile.Read(path, max, out var problem);
+                        return (Path: path, File: file, Error: problem, Preview: file is null ? null : MediaPresentation.TryLoadThumbnail(path));
+                    })
+                    .ToList()).ConfigureAwait(true);
+
+                var problems = new List<string>();
+
+                foreach (var (path, file, error, preview) in read)
                 {
-                    ImageError = error ?? "The chosen file could not be used.";
-                    return;
+                    var name = System.IO.Path.GetFileName(path);
+
+                    if (file is null)
+                    {
+                        problems.Add(name + ": " + (error ?? "The chosen file could not be used."));
+                        continue;
+                    }
+
+                    if (Photos.Any(p => p.Sha256 == file.Sha256))
+                    {
+                        problems.Add(name + ": that photo is already in this memory.");
+                        continue;
+                    }
+
+                    Photos.Add(new MemoryFormPhotoViewModel(
+                        this,
+                        PersonalImageChoice.FromFile(path),
+                        file.Sha256,
+                        preview,
+                        "New image: " + Size(file.SizeBytes) + (preview is null ? " (no preview)" : string.Empty) +
+                        (paths.Count > 1 ? " (" + name + ")" : string.Empty),
+                        null));
                 }
 
-                _image = PersonalImageChoice.FromFile(path);
-                ImagePreview = preview;
-                ImageText = "New image: " + Size(file.SizeBytes) + (preview is null ? " (no preview)" : string.Empty);
-                OnPropertyChanged(nameof(HasImage));
+                ImageError = string.Join("\n", problems);
             }
             finally
             {
@@ -527,13 +663,65 @@ namespace Chatcheology.Desktop.ViewModels
 
         private void RemoveImage()
         {
-            _image = PersonalImageChoice.None;
-            ImagePreview = null;
-            ImageText = string.Empty;
+            Photos.Clear();
             ImageError = string.Empty;
-            OnPropertyChanged(nameof(HasImage));
-            RemoveImageCommand.RaiseCanExecuteChanged();
         }
+
+        /// <summary>Whether <paramref name="photo"/> can move by <paramref name="offset"/> places.</summary>
+        internal bool CanMove(MemoryFormPhotoViewModel photo, int offset)
+        {
+            var index = Photos.IndexOf(photo);
+
+            return CanEditPhotos && index >= 0 && index + offset >= 0 && index + offset < Photos.Count;
+        }
+
+        /// <summary>Moves <paramref name="photo"/> by <paramref name="offset"/> places; moved first, it is the cover.</summary>
+        internal void Move(MemoryFormPhotoViewModel photo, int offset)
+        {
+            if (CanMove(photo, offset))
+            {
+                var index = Photos.IndexOf(photo);
+                Photos.Move(index, index + offset);
+            }
+        }
+
+        /// <summary>Makes <paramref name="photo"/> the cover: it moves first, and the others keep their order.</summary>
+        internal void MakeCover(MemoryFormPhotoViewModel photo)
+        {
+            var index = Photos.IndexOf(photo);
+
+            if (CanEditPhotos && index > 0)
+            {
+                Photos.Move(index, 0);
+            }
+        }
+
+        /// <summary>Drops <paramref name="photo"/>; when it was the cover, the next one becomes the cover.</summary>
+        internal void RemovePhoto(MemoryFormPhotoViewModel photo)
+        {
+            if (CanEditPhotos && Photos.Remove(photo))
+            {
+                ImageError = string.Empty;
+            }
+        }
+
+        private void OnPhotosChanged()
+        {
+            for (var index = 0; index < Photos.Count; index++)
+            {
+                Photos[index].IsCover = index == 0;
+            }
+
+            OnPropertyChanged(nameof(HasImage));
+            OnPropertyChanged(nameof(ImagePreview));
+            OnPropertyChanged(nameof(ImageText));
+            OnPropertyChanged(nameof(HasExtraPhotos));
+            RaiseCommandStates();
+        }
+
+        /// <summary>Whether there are photos after the cover.</summary>
+        public bool HasExtraPhotos => Photos.Count > 1;
+
 
         private async Task LoadPickerAsync(DateTime? date)
         {

@@ -152,10 +152,12 @@ namespace Chatcheology.Data.Memories.Personal
             });
         }
 
-        /// <summary>One personal memory with its links, for the form.</summary>
+        /// <summary>One personal memory with its links and extra photos, for the form.</summary>
         /// <exception cref="PersonalMemoryValidationException">No such entry, an imported one, or one with a time of day.</exception>
         public PersonalEntryDetails ReadEntry(long entryID) => Read(connection =>
         {
+            var hasPhotos = MemoriesDatabase.ReadFormatVersion(connection) >= MemoriesDatabase.FirstFormatWithEntryImages;
+
             using var command = connection.CreateCommand();
             command.CommandText =
                 """
@@ -238,7 +240,29 @@ namespace Chatcheology.Data.Memories.Personal
                 }
             }
 
-            return details with { Links = links };
+            var photos = new List<PersonalPhotoDetails>();
+
+            if (hasPhotos)
+            {
+                command.Parameters.Clear();
+                command.CommandText = "SELECT Sha256, Extension, Caption FROM EntryImage WHERE EntryID = $id ORDER BY Ordinal;";
+                command.Parameters.AddWithValue("$id", entryID);
+
+                using var reader = command.ExecuteReader();
+
+                while (reader.Read())
+                {
+                    var path = Path.Combine(MediaFolder, reader.GetString(0) + "." + reader.GetString(1));
+
+                    photos.Add(new PersonalPhotoDetails(
+                        reader.GetString(0),
+                        reader.GetString(1),
+                        reader.IsDBNull(2) ? null : reader.GetString(2),
+                        File.Exists(path) ? path : null));
+                }
+            }
+
+            return details with { Links = links, ExtraPhotos = photos };
         });
 
         /// <summary>Every entry (any collection) starting on <paramref name="day"/>, for the link picker.</summary>
@@ -403,7 +427,7 @@ namespace Chatcheology.Data.Memories.Personal
         /// <exception cref="PersonalMemoryValidationException">Anything wrong with the draft, or the entry is imported or gone.</exception>
         public void UpdateEntry(long entryID, PersonalEntryDraft draft) => Save(entryID, draft);
 
-        /// <summary>Deletes a personal memory and every link from or to it.</summary>
+        /// <summary>Deletes a personal memory, every link from or to it, and its extra-photo rows (stored files are kept).</summary>
         /// <returns>The number of links removed.</returns>
         /// <exception cref="PersonalMemoryValidationException">The entry is imported or gone.</exception>
         public int DeleteEntry(long entryID) => Write(transaction =>
@@ -414,10 +438,59 @@ namespace Chatcheology.Data.Memories.Personal
             command.Parameters.AddWithValue("$id", entryID);
             var links = command.ExecuteNonQuery();
 
+            command.CommandText = "DELETE FROM EntryImage WHERE EntryID = $id;";
+            command.ExecuteNonQuery();
+
             command.CommandText = "DELETE FROM Entry WHERE EntryID = $id;";
             command.ExecuteNonQuery();
 
             return links;
+        });
+
+        /// <summary>
+        /// Deletes a personal collection with its memories, every link from or to them, and their
+        /// extra-photo rows, in one transaction. Stored image files are kept.
+        /// </summary>
+        /// <param name="collectionID">A personal collection.</param>
+        /// <param name="expectedEntries">
+        /// How many memories the operator was told it removes. When the collection holds another number
+        /// by the time of deleting, nothing is deleted.
+        /// </param>
+        /// <exception cref="PersonalMemoryValidationException">
+        /// The collection is imported or gone, or its number of memories changed. Nothing was written.
+        /// </exception>
+        public CollectionDeleteResult DeleteCollection(long collectionID, int expectedEntries) => Write(transaction =>
+        {
+            RequirePersonalCollection(transaction, collectionID, PersonalFields.Collection);
+
+            using var command = Command(transaction, "SELECT COUNT(*) FROM Entry WHERE CollectionID = $id;");
+            command.Parameters.AddWithValue("$id", collectionID);
+
+            if (Convert.ToInt32(command.ExecuteScalar(), CultureInfo.InvariantCulture) != expectedEntries)
+            {
+                throw new PersonalMemoryValidationException(
+                    PersonalFields.Collection,
+                    "The collection's memories changed since you were asked, so nothing was deleted. Try again.");
+            }
+
+            command.CommandText =
+                """
+                DELETE FROM EntryLink
+                WHERE FromEntryID IN (SELECT EntryID FROM Entry WHERE CollectionID = $id)
+                   OR ToEntryID IN (SELECT EntryID FROM Entry WHERE CollectionID = $id);
+                """;
+            var links = command.ExecuteNonQuery();
+
+            command.CommandText = "DELETE FROM EntryImage WHERE EntryID IN (SELECT EntryID FROM Entry WHERE CollectionID = $id);";
+            var photos = command.ExecuteNonQuery();
+
+            command.CommandText = "DELETE FROM Entry WHERE CollectionID = $id;";
+            var entries = command.ExecuteNonQuery();
+
+            command.CommandText = "DELETE FROM Collection WHERE CollectionID = $id;";
+            command.ExecuteNonQuery();
+
+            return new CollectionDeleteResult(entries, links, photos);
         });
 
         private long Save(long? entryID, PersonalEntryDraft draft)
@@ -426,8 +499,9 @@ namespace Chatcheology.Data.Memories.Personal
 
             var errors = new Dictionary<string, string>(PersonalMemoryRules.Validate(draft));
 
-            // The image is read and checked before anything is opened for writing.
+            // Every chosen file is read and checked before anything is opened for writing.
             PersonalImageFile? image = null;
+            var imageErrors = new List<string>();
 
             if (draft.Image.NewFilePath is { } imagePath)
             {
@@ -435,7 +509,48 @@ namespace Chatcheology.Data.Memories.Personal
 
                 if (imageError is not null)
                 {
-                    errors[PersonalFields.Image] = imageError;
+                    imageErrors.Add(imageError);
+                }
+            }
+
+            var extras = new List<(string? Sha, PersonalImageFile? File, string? Caption)>();
+
+            if (!errors.ContainsKey(PersonalFields.Image))
+            {
+                foreach (var photo in draft.ExtraPhotos)
+                {
+                    var caption = photo.Caption?.Trim() is { Length: > 0 } text ? text : null;
+
+                    if (photo.Image.NewFilePath is { } path)
+                    {
+                        var file = PersonalImageFile.Read(path, MaxImageBytes, out var photoError);
+
+                        if (photoError is not null)
+                        {
+                            // By file name, so the operator knows which one (CH-46).
+                            imageErrors.Add(Path.GetFileName(path) + ": " + photoError);
+                        }
+
+                        extras.Add((file?.Sha256, file, caption));
+                    }
+                    else
+                    {
+                        extras.Add((photo.Image.ExistingSha256, null, caption));
+                    }
+                }
+            }
+
+            if (imageErrors.Count > 0)
+            {
+                errors[PersonalFields.Image] = string.Join(" ", imageErrors);
+            }
+            else if (extras.Count > 0)
+            {
+                var shas = extras.Select(e => e.Sha).Prepend(image?.Sha256 ?? draft.Image.ExistingSha256).ToList();
+
+                if (shas.Distinct(StringComparer.Ordinal).Count() != shas.Count)
+                {
+                    errors[PersonalFields.Image] = "The same photo is in this memory more than once.";
                 }
             }
 
@@ -454,7 +569,7 @@ namespace Chatcheology.Data.Memories.Personal
                 throw new PersonalMemoryValidationException(errors);
             }
 
-            string? newImageFile = null;
+            var newImageFiles = new List<string>();
 
             try
             {
@@ -486,6 +601,10 @@ namespace Chatcheology.Data.Memories.Personal
                     {
                         failures[PersonalFields.Image] = "The memory's image is no longer recorded; choose it again or remove it.";
                     }
+                    else if (extras.Any(e => e.File is null && !MediaRecorded(transaction, e.Sha!)))
+                    {
+                        failures[PersonalFields.Image] = "One of the memory's photos is no longer recorded; choose it again or remove it.";
+                    }
 
                     if (failures.Count > 0)
                     {
@@ -496,14 +615,27 @@ namespace Chatcheology.Data.Memories.Personal
 
                     if (image is not null)
                     {
-                        newImageFile = StoreImage(transaction, image);
+                        if (StoreImage(transaction, image) is { } created)
+                        {
+                            newImageFiles.Add(created);
+                        }
+
                         imageSha = image.Sha256;
+                    }
+
+                    foreach (var extra in extras.Where(e => e.File is not null))
+                    {
+                        if (StoreImage(transaction, extra.File!) is { } created)
+                        {
+                            newImageFiles.Add(created);
+                        }
                     }
 
                     var id = entryID is { } update
                         ? UpdateRow(transaction, update, draft, imageSha)
                         : InsertRow(transaction, draft, imageSha);
 
+                    ReplacePhotos(transaction, id, extras.Select(e => (e.Sha!, e.Caption)).ToList());
                     ReplaceLinks(transaction, id, links);
 
                     return id;
@@ -511,12 +643,36 @@ namespace Chatcheology.Data.Memories.Personal
             }
             catch
             {
-                if (newImageFile is not null && File.Exists(newImageFile))
+                foreach (var file in newImageFiles.Where(File.Exists))
                 {
-                    File.Delete(newImageFile);
+                    File.Delete(file);
                 }
 
                 throw;
+            }
+        }
+
+        /// <summary>Replaces the entry's extra-photo rows with <paramref name="photos"/>, numbered from 1 in order.</summary>
+        private static void ReplacePhotos(SqliteTransaction transaction, long entryID, IReadOnlyList<(string Sha, string? Caption)> photos)
+        {
+            using var command = Command(transaction, "DELETE FROM EntryImage WHERE EntryID = $id;");
+            command.Parameters.AddWithValue("$id", entryID);
+            command.ExecuteNonQuery();
+
+            command.CommandText =
+                """
+                INSERT INTO EntryImage (EntryID, Ordinal, Sha256, Extension, Caption)
+                VALUES ($id, $ordinal, $sha, (SELECT Extension FROM MediaFile WHERE Sha256 = $sha), $caption);
+                """;
+
+            for (var index = 0; index < photos.Count; index++)
+            {
+                command.Parameters.Clear();
+                command.Parameters.AddWithValue("$id", entryID);
+                command.Parameters.AddWithValue("$ordinal", index + 1);
+                command.Parameters.AddWithValue("$sha", photos[index].Sha);
+                command.Parameters.AddWithValue("$caption", (object?)photos[index].Caption ?? DBNull.Value);
+                command.ExecuteNonQuery();
             }
         }
 
@@ -647,6 +803,25 @@ namespace Chatcheology.Data.Memories.Personal
         }
 
         // -----------------------------------------------------------------------------------
+        // Tidying up images (CH-46).
+        // -----------------------------------------------------------------------------------
+
+        /// <summary>
+        /// The files of the memories media folder that nothing in the memories file uses, with their size,
+        /// and how many other items the folder holds (never touched). Read-only.
+        /// </summary>
+        public UnusedImagesSurvey SurveyUnusedImages() => MemoriesMediaTidy.Survey(MemoriesPath, MediaFolder);
+
+        /// <summary>
+        /// Deletes the listed files that are still unused when checked again under a write lock. The memories
+        /// file is not changed; imported game images and trophy icons in use are never touched.
+        /// </summary>
+        /// <param name="listed">The names <see cref="SurveyUnusedImages"/> listed and the operator confirmed.</param>
+        /// <exception cref="FileNotFoundException">There is no memories file. Nothing is deleted.</exception>
+        public UnusedImagesDeleteResult DeleteUnusedImages(IReadOnlyCollection<string> listed) =>
+            MemoriesMediaTidy.Delete(MemoriesPath, MediaFolder, listed);
+
+        // -----------------------------------------------------------------------------------
         // Checks.
         // -----------------------------------------------------------------------------------
 
@@ -771,6 +946,10 @@ namespace Chatcheology.Data.Memories.Personal
             {
                 using var connection = MemoriesDatabase.OpenConnection(MemoriesPath);
                 using var transaction = connection.BeginTransaction();
+
+                // An older file is upgraded on the first write (CH-46: format 3 adds extra photos), inside
+                // the same transaction, so a failed save leaves the file as it was.
+                MemoriesDatabase.UpgradeToCurrent(connection, transaction);
 
                 var result = write(transaction);
 

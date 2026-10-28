@@ -79,6 +79,51 @@ namespace Chatcheology.Mobile.Tests.Support
             return sequence;
         }
 
+        /// <summary>Adds a message at <paramref name="at"/> carrying one restored photo; returns its sequence number.</summary>
+        internal int Photo(DateTime at)
+        {
+            var sequence = _messages.Count + 1;
+            var id = 1000L + sequence;
+            var sha = Image("chat photo " + sequence.ToString(CultureInfo.InvariantCulture), ".jpg");
+
+            _messages.Add(new ArchiveMessage
+            {
+                MessageID = id,
+                SequenceNumber = sequence,
+                DateTimeLocal = at,
+                Kind = ArchiveMessageKind.User,
+                SenderParticipantID = Other,
+                Text = string.Empty,
+                IsForwarded = null,
+                ForwardScore = null,
+                Attachments =
+                [
+                    new ArchiveAttachment
+                    {
+                        AttachmentID = id * 10,
+                        MessageID = id,
+                        Ordinal = 1,
+                        State = ArchiveAttachmentState.Restored,
+                        MediaSha256 = sha,
+                        OriginalFileName = "IMG-" + sequence.ToString(CultureInfo.InvariantCulture) + ".jpg",
+                        IsForwarded = null,
+                        ForwardScore = null,
+                        LowQualityCopyOfAttachmentID = null,
+                        Basis = new ArchiveAttachmentBasis
+                        {
+                            BasisType = "Synthetic",
+                            BasisText = "Synthetic basis",
+                            Actor = null,
+                            ConfirmedUtc = new DateTime(2026, 10, 1, 0, 0, 0, DateTimeKind.Utc),
+                        },
+                    },
+                ],
+                Source = ArchiveMessageSource.Workspace,
+            });
+
+            return sequence;
+        }
+
         /// <summary>Adds a game-day record of the imported collection.</summary>
         internal void Game(long entryID, string title, string dayLevel, bool image = false, params PeriodSpec[] periods)
         {
@@ -137,9 +182,22 @@ namespace Chatcheology.Mobile.Tests.Support
 
         /// <summary>Adds a personal memory.</summary>
         internal void Memory(
-            long entryID, string title, DateTime start, DateTime? end = null, string precision = "Day", string? summary = null, bool image = false)
+            long entryID, string title, DateTime start, DateTime? end = null, string precision = "Day", string? summary = null, bool image = false,
+            params string?[] photoCaptions)
         {
             var sha = image ? Image("memory photo " + title, ".jpg") : null;
+
+            // CH-46: one extra photo per caption (null for none), after the cover.
+            var photos = photoCaptions
+                .Select((caption, index) => new ArchiveEntryImage
+                {
+                    EntryID = entryID,
+                    Ordinal = index + 1,
+                    Sha256 = Image("extra photo " + index.ToString(CultureInfo.InvariantCulture) + " " + title, ".png"),
+                    Extension = ".png",
+                    Caption = caption,
+                })
+                .ToList();
 
             _entries.Add(new ArchiveEntry
             {
@@ -157,6 +215,7 @@ namespace Chatcheology.Mobile.Tests.Support
                 ImageExtension = sha is null ? null : ".jpg",
                 Source = null,
                 DayLevel = null,
+                Images = photos,
             });
         }
 

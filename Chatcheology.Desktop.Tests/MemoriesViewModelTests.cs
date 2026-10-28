@@ -243,7 +243,7 @@ namespace Chatcheology.Desktop.Tests
             _image = Chosen("notes.png", "not an image"u8.ToArray());
             await Run(form.ChooseImageCommand, form);
 
-            Assert.Equal("The chosen file is not a PNG, JPEG, GIF or WebP image.", form.ImageError);
+            Assert.Equal("notes.png: The chosen file is not a PNG, JPEG, GIF or WebP image.", form.ImageError);
             Assert.False(form.HasImage);
 
             _image = Chosen("beach.png", Png);
