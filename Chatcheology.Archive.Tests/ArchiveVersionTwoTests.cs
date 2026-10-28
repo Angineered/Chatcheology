@@ -149,6 +149,188 @@ namespace Chatcheology.Archive.Tests
         }
 
         // ---------------------------------------------------------------------------------------
+        // Noted dates (CH-47).
+        // ---------------------------------------------------------------------------------------
+
+        /// <summary>Three invented noted dates; the archive is created in 2026 (<see cref="ArchiveSample.Created"/>).</summary>
+        private static readonly ArchiveNotedDate[] NotedDates =
+        [
+            new() { NotedDateID = 1, Title = "Invented anniversary", Month = 2, Day = 14, Year = 2019, Note = "An invented note" },
+            new() { NotedDateID = 2, Title = "Leap day", Month = 2, Day = 29, Year = null, Note = null },
+            new() { NotedDateID = 4, Title = "This year", Month = 12, Day = 31, Year = 2026, Note = null },
+        ];
+
+        [Fact]
+        public void NotedDates_RoundTrip_AndValidate()
+        {
+            var counts = WriteMemoryArchive(_folder.Path, notedDates: true);
+
+            Assert.Equal(3, counts.NotedDates);
+            Assert.Contains("\"notedDates\": 3", File.ReadAllText(Path.Combine(_folder.Path, ArchiveFormat.ManifestFileName)), StringComparison.Ordinal);
+
+            var result = ArchiveValidator.Validate(_folder.Path);
+            Assert.True(result.Passed, string.Join(", ", result.FirstProblems));
+
+            using var reader = ArchiveReader.Open(_folder.Path);
+
+            Assert.True(reader.HasNotedDates);
+            Assert.Equal(
+                NotedDates.Select(d => (d.NotedDateID, d.Title, d.Month, d.Day, d.Year, d.Note)),
+                reader.ReadNotedDates().Select(d => (d.NotedDateID, d.Title, d.Month, d.Day, d.Year, d.Note)));
+        }
+
+        [Fact]
+        public void AnArchiveWithoutTheNotedDateTable_ReadsAsNoNotedDates_AndValidates()
+        {
+            WriteMemoryArchive(_folder.Path);
+            ArchiveSample.Tamper(_folder.Path, "DROP TABLE NotedDate; VACUUM;");
+
+            // The manifest of a build before CH-47 had no notedDates count; it reads as 0.
+            var manifestPath = Path.Combine(_folder.Path, ArchiveFormat.ManifestFileName);
+            File.WriteAllText(
+                manifestPath,
+                File.ReadAllText(manifestPath).Replace("    \"notedDates\": 0,\n", string.Empty, StringComparison.Ordinal));
+            Assert.DoesNotContain("notedDates", File.ReadAllText(manifestPath), StringComparison.Ordinal);
+            Assert.Equal(0, ArchiveManifest.Parse(File.ReadAllBytes(manifestPath)).Counts.NotedDates);
+            File.WriteAllBytes(Path.Combine(_folder.Path, ArchiveContents.FileName), ArchiveContents.Build(_folder.Path));
+
+            var result = ArchiveValidator.Validate(_folder.Path);
+            Assert.True(result.Passed, string.Join(", ", result.FirstProblems));
+
+            using var reader = ArchiveReader.Open(_folder.Path);
+
+            Assert.True(reader.HasMemories);
+            Assert.False(reader.HasNotedDates);
+            Assert.Empty(reader.ReadNotedDates());
+            Assert.Equal(2, reader.ReadCollections().Count);
+        }
+
+        [Fact]
+        public void ANotedDateBreakingEachRule_IsFoundByTheValidator()
+        {
+            WriteMemoryArchive(_folder.Path, notedDates: true);
+
+            // The schema states the same rules; a damaged or hand-edited file can still break them.
+            ArchiveSample.Tamper(
+                _folder.Path,
+                $"""
+                PRAGMA ignore_check_constraints = ON;
+                INSERT INTO NotedDate VALUES (10, '  ', 1, 1, NULL, NULL);
+                INSERT INTO NotedDate VALUES (11, '{new string('t', 81)}', 1, 1, NULL, NULL);
+                INSERT INTO NotedDate VALUES (12, 'Day zero', 2, 0, NULL, NULL);
+                INSERT INTO NotedDate VALUES (13, 'Thirty-first of April', 4, 31, NULL, NULL);
+                INSERT INTO NotedDate VALUES (14, 'Leap day in a common year', 2, 29, 2019, NULL);
+                INSERT INTO NotedDate VALUES (15, 'Month thirteen', 13, 1, NULL, NULL);
+                INSERT INTO NotedDate VALUES (16, 'Future', 5, 1, 2027, NULL);
+                INSERT INTO NotedDate VALUES (17, 'Too early', 5, 1, 1899, NULL);
+                INSERT INTO NotedDate VALUES (18, 'Blank note', 5, 1, NULL, '   ');
+                INSERT INTO NotedDate VALUES (19, 'Long note', 5, 1, NULL, '{new string('n', 501)}');
+                """);
+
+            var result = ArchiveValidator.Validate(_folder.Path);
+
+            Assert.Equal(2, result.ProblemCounts[ArchiveProblemKind.NotedDateTitleInvalid]);
+            Assert.Equal(4, result.ProblemCounts[ArchiveProblemKind.NotedDateDateInvalid]);
+            Assert.Equal(2, result.ProblemCounts[ArchiveProblemKind.NotedDateYearInvalid]);
+            Assert.Equal(2, result.ProblemCounts[ArchiveProblemKind.NotedDateNoteInvalid]);
+            Assert.False(result.Checks.Single(c => c.Check == ArchiveCheck.LinksAndBasis).Passed);
+
+            // The manifest's count is now behind too.
+            Assert.Equal(1, result.ProblemCounts[ArchiveProblemKind.ManifestCountDiffers]);
+            Assert.All(result.FirstProblems, p => Assert.Null(p.SequenceNumber));
+        }
+
+        [Fact]
+        public void ANotedDateOfTheWrongKind_StopsTheRowChecks()
+        {
+            WriteMemoryArchive(_folder.Path, notedDates: true);
+            ArchiveSample.Tamper(_folder.Path, "PRAGMA ignore_check_constraints = ON; UPDATE NotedDate SET Month = 'February' WHERE NotedDateID = 1;");
+
+            using (var reader = ArchiveReader.Open(_folder.Path))
+            {
+                Assert.Throws<ArchiveFormatException>(() => reader.ReadNotedDates());
+            }
+
+            var result = ArchiveValidator.Validate(_folder.Path);
+
+            Assert.False(result.Passed);
+            Assert.Equal(1, result.ProblemCounts[ArchiveProblemKind.DatabaseUnreadable]);
+        }
+
+        [Fact]
+        public void AManifestNotedDateCount_ThatDiffers_IsFound()
+        {
+            WriteMemoryArchive(_folder.Path, notedDates: true);
+            ArchiveSample.Tamper(_folder.Path, "DELETE FROM NotedDate WHERE NotedDateID = 4;");
+
+            var result = ArchiveValidator.Validate(_folder.Path);
+
+            Assert.Equal(1, result.ProblemCounts[ArchiveProblemKind.ManifestCountDiffers]);
+            Assert.Equal(0, result.ProblemCounts[ArchiveProblemKind.NotedDateTitleInvalid]);
+        }
+
+        [Theory]
+        [InlineData("", 1, 1, null, null)]
+        [InlineData("x", 2, 30, null, null)]
+        [InlineData("x", 2, 29, 2019, null)]
+        [InlineData("x", 1, 1, 2027, null)]
+        [InlineData("x", 1, 1, null, " ")]
+        public void TheWriter_RefusesANotedDateBreakingARule(string title, int month, int day, int? year, string? note)
+        {
+            using var writer = Begin(Path.Combine(_folder.Path, ArchiveFormat.DatabaseFileName));
+
+            var refusal = Assert.Throws<InvalidOperationException>(() => writer.WriteNotedDate(new ArchiveNotedDate
+            {
+                NotedDateID = 1,
+                Title = title,
+                Month = month,
+                Day = day,
+                Year = year,
+                Note = note,
+            }));
+
+            Assert.Contains("noted date", refusal.Message, StringComparison.Ordinal);
+        }
+
+        [Fact]
+        public void TheLatestYear_IsTheArchivesCreationYear_AnywhereOnEarth()
+        {
+            Assert.Equal(2026, NotedDateRules.LatestYearAt(ArchiveSample.Created));
+            Assert.Equal(2027, NotedDateRules.LatestYearAt(new DateTime(2026, 12, 31, 11, 0, 0, DateTimeKind.Utc)));
+            Assert.Equal(2026, NotedDateRules.LatestYearAt(new DateTime(2026, 12, 31, 9, 59, 59, DateTimeKind.Utc)));
+        }
+
+        [Fact]
+        public void AVersionOneArchive_HasNoNotedDates()
+        {
+            ArchiveSample.WriteFolder(_folder.Path, gapless: true, formatVersion: 1);
+
+            using var reader = ArchiveReader.Open(_folder.Path);
+
+            Assert.False(reader.HasNotedDates);
+            Assert.Empty(reader.ReadNotedDates());
+        }
+
+        [Fact]
+        public void AVersionOneArchive_RefusesANotedDate()
+        {
+            var info = ArchiveSample.Info();
+
+            using var writer = ArchiveWriter.Create(Path.Combine(_folder.Path, ArchiveFormat.DatabaseFileName), new ArchiveInfo
+            {
+                FormatVersion = 1,
+                CreatedUtc = info.CreatedUtc,
+                ProducerVersion = info.ProducerVersion,
+                ConversationTitle = info.ConversationTitle,
+                SourceExportSha256 = info.SourceExportSha256,
+                TimeZoneID = info.TimeZoneID,
+                LocalParticipantID = info.LocalParticipantID,
+            });
+
+            Assert.Throws<InvalidOperationException>(() => writer.WriteNotedDate(NotedDates[0]));
+        }
+
+        // ---------------------------------------------------------------------------------------
         // Version 1.
         // ---------------------------------------------------------------------------------------
 
@@ -657,12 +839,20 @@ namespace Chatcheology.Archive.Tests
         }
 
         /// <summary>A whole version 2 archive folder with one export message, two collections and links.</summary>
-        private static ArchiveCounts WriteMemoryArchive(string folder, bool photos = false)
+        private static ArchiveCounts WriteMemoryArchive(string folder, bool photos = false, bool notedDates = false)
         {
             ArchiveCounts counts;
 
             using (var writer = Begin(Path.Combine(folder, ArchiveFormat.DatabaseFileName), photos: photos))
             {
+                if (notedDates)
+                {
+                    foreach (var date in NotedDates)
+                    {
+                        writer.WriteNotedDate(date);
+                    }
+                }
+
                 writer.WriteEntryLink(new ArchiveEntryLink { EntryLinkID = 1, FromEntryID = 20, ToEntryID = 10, ToMessageSequenceNumber = null });
                 writer.WriteEntryLink(new ArchiveEntryLink { EntryLinkID = 2, FromEntryID = 20, ToEntryID = null, ToMessageSequenceNumber = 3 });
 

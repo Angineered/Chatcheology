@@ -402,6 +402,22 @@ namespace Chatcheology.Archive
                     DEFERRABLE INITIALLY DEFERRED
             );
             """,
+
+            // CH-47: noted dates, copied from the memories file as they are (same identifiers, same checks).
+            // Not memories: nothing refers to them and they refer to nothing. Added to version 2 without a
+            // version bump: a reader treats a version 2 archive without this table as one with none.
+            $"""
+            CREATE TABLE NotedDate (
+                NotedDateID INTEGER PRIMARY KEY,
+                Title       TEXT NOT NULL,
+                Month       INTEGER NOT NULL,
+                Day         INTEGER NOT NULL,
+                Year        INTEGER NULL,
+                Note        TEXT NULL,
+
+                {NotedDateRules.TableChecks}
+            );
+            """,
         ];
     }
 }

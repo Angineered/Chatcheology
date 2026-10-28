@@ -38,12 +38,14 @@ namespace Chatcheology.Archive
 
         private readonly string _messageColumns;
 
-        private ArchiveReader(string folderPath, SqliteConnection connection, ArchiveInfo info, bool hasEntryImageTable)
+        private ArchiveReader(
+            string folderPath, SqliteConnection connection, ArchiveInfo info, bool hasEntryImageTable, bool hasNotedDateTable)
         {
             FolderPath = folderPath;
             _connection = connection;
             Info = info;
             HasEntryImages = info.FormatVersion >= 2 && hasEntryImageTable;
+            HasNotedDates = info.FormatVersion >= 2 && hasNotedDateTable;
 
             // A version 1 archive has no Source column: every message in it is a workspace message.
             _messageColumns = info.FormatVersion >= 2 ? MessageColumnsV2 : MessageColumnsV1;
@@ -57,6 +59,12 @@ namespace Chatcheology.Archive
         /// it lacks the table and reads as having no extra photos.
         /// </summary>
         public bool HasEntryImages { get; }
+
+        /// <summary>
+        /// Whether the archive has the <c>NotedDate</c> table (CH-47). A version 2 archive written before it
+        /// lacks the table and reads as having no noted dates; a version 1 archive has none.
+        /// </summary>
+        public bool HasNotedDates { get; }
 
         /// <summary>The archive folder, as a full path.</summary>
         public string FolderPath { get; }
@@ -134,7 +142,12 @@ namespace Chatcheology.Archive
                         "The archive's recorded format version does not match its database version.");
                 }
 
-                return new ArchiveReader(folder, connection, info, tables.Contains(ArchiveFormat.EntryImageTableName));
+                return new ArchiveReader(
+                    folder,
+                    connection,
+                    info,
+                    tables.Contains(ArchiveFormat.EntryImageTableName),
+                    tables.Contains(ArchiveFormat.NotedDateTableName));
             }
             catch (SqliteException)
             {
@@ -688,6 +701,41 @@ namespace Chatcheology.Archive
             }
 
             return images;
+        }
+
+        /// <summary>
+        /// Every noted date (CH-47), ordered by identifier, as stored. None in a version 1 archive or a version 2
+        /// archive without the <c>NotedDate</c> table. A value of the wrong kind is refused; the field rules are
+        /// the validator's to count.
+        /// </summary>
+        public IReadOnlyList<ArchiveNotedDate> ReadNotedDates()
+        {
+            if (!HasNotedDates)
+            {
+                return [];
+            }
+
+            using var command = _connection.CreateCommand();
+            command.CommandText = "SELECT NotedDateID, Title, Month, Day, Year, Note FROM NotedDate ORDER BY NotedDateID;";
+
+            var dates = new List<ArchiveNotedDate>();
+
+            using var reader = command.ExecuteReader();
+
+            while (reader.Read())
+            {
+                dates.Add(new ArchiveNotedDate
+                {
+                    NotedDateID = Integer(reader, 0),
+                    Title = Text(reader, 1),
+                    Month = Int32(reader, 2),
+                    Day = Int32(reader, 3),
+                    Year = NullableInt32(reader, 4),
+                    Note = NullableText(reader, 5),
+                });
+            }
+
+            return dates;
         }
 
         /// <summary>Every entry, ordered by identifier. For the validator and the comparer.</summary>

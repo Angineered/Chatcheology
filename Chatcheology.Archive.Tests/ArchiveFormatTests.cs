@@ -24,11 +24,14 @@ namespace Chatcheology.Archive.Tests
             var tables = ArchiveSample.Rows(
                 Database, "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name;");
 
-            // The required tables, plus EntryImage (CH-46), which a reader does not require.
+            // The required tables, plus EntryImage (CH-46) and NotedDate (CH-47), which a reader does not require.
             Assert.Equal(
-                ArchiveFormat.TableNamesOf(ArchiveFormat.FormatVersion).Append(ArchiveFormat.EntryImageTableName).Order(StringComparer.Ordinal),
+                ArchiveFormat.TableNamesOf(ArchiveFormat.FormatVersion)
+                    .Append(ArchiveFormat.EntryImageTableName)
+                    .Append(ArchiveFormat.NotedDateTableName)
+                    .Order(StringComparer.Ordinal),
                 tables);
-            Assert.Equal(13, tables.Count);
+            Assert.Equal(14, tables.Count);
         }
 
         [Fact]

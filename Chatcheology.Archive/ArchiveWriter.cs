@@ -447,6 +447,42 @@ namespace Chatcheology.Archive
         }
 
         /// <summary>
+        /// Writes one noted date (format version 2, CH-47) as the memories file holds it. Its fields must
+        /// keep <see cref="NotedDateRules"/>, the latest year being the archive's creation year.
+        /// </summary>
+        /// <exception cref="InvalidOperationException">The row breaks a format rule, or the archive is version 1.</exception>
+        public void WriteNotedDate(ArchiveNotedDate notedDate)
+        {
+            ArgumentNullException.ThrowIfNull(notedDate);
+            var transaction = RequireMemories();
+
+            var errors = NotedDateRules.Validate(
+                notedDate.Title, notedDate.Month, notedDate.Day, notedDate.Year, notedDate.Note,
+                NotedDateRules.LatestYearAt(_info.CreatedUtc));
+
+            if (errors.Count > 0)
+            {
+                // Names the rule, never the value.
+                throw new InvalidOperationException(
+                    "A noted date breaks a field rule (" + string.Join(", ", errors.Keys) + ").");
+            }
+
+            using var command = Command(
+                transaction,
+                """
+                INSERT INTO NotedDate (NotedDateID, Title, Month, Day, Year, Note)
+                VALUES ($id, $title, $month, $day, $year, $note);
+                """);
+            command.Parameters.AddWithValue("$id", notedDate.NotedDateID);
+            command.Parameters.AddWithValue("$title", notedDate.Title);
+            command.Parameters.AddWithValue("$month", notedDate.Month);
+            command.Parameters.AddWithValue("$day", notedDate.Day);
+            command.Parameters.AddWithValue("$year", (object?)notedDate.Year ?? DBNull.Value);
+            command.Parameters.AddWithValue("$note", (object?)notedDate.Note ?? DBNull.Value);
+            command.ExecuteNonQuery();
+        }
+
+        /// <summary>
         /// Checks the cross-row rules, stamps the format version, commits, and compacts the file.
         /// </summary>
         /// <returns>What was written.</returns>
@@ -530,6 +566,7 @@ namespace Chatcheology.Archive
                     EntryLinks = (int)Count(transaction, "SELECT COUNT(*) FROM EntryLink;"),
                     ItemDefinitions = (int)Count(transaction, "SELECT COUNT(*) FROM ItemDefinition;"),
                     EntryImages = (int)Count(transaction, "SELECT COUNT(*) FROM EntryImage;"),
+                    NotedDates = (int)Count(transaction, "SELECT COUNT(*) FROM NotedDate;"),
                     Collections = ReadCollectionCounts(transaction),
                 };
             }
@@ -883,6 +920,12 @@ namespace Chatcheology.Archive
         /// </summary>
         public int EntryImages { get; init; }
 
+        /// <summary>
+        /// Version 2 (CH-47): noted dates. A manifest written before CH-47 has none and reads as 0, matching
+        /// an archive without the <c>NotedDate</c> table.
+        /// </summary>
+        public int NotedDates { get; init; }
+
         /// <summary>Version 2: entries, periods and items of each collection, ordered by collection.</summary>
         public IReadOnlyList<ArchiveCollectionCounts> Collections { get; init; } = [];
 
@@ -902,6 +945,7 @@ namespace Chatcheology.Archive
             && EntryLinks == other.EntryLinks
             && ItemDefinitions == other.ItemDefinitions
             && EntryImages == other.EntryImages
+            && NotedDates == other.NotedDates
             && (Collections ?? []).SequenceEqual(other.Collections ?? []);
 
         /// <inheritdoc />
@@ -912,7 +956,7 @@ namespace Chatcheology.Archive
                 ExportMessages,
                 ExportPeriods,
                 EntryLinks,
-                HashCode.Combine(ItemDefinitions, EntryImages, (Collections ?? []).Count));
+                HashCode.Combine(ItemDefinitions, EntryImages, NotedDates, (Collections ?? []).Count));
     }
 
     /// <summary>Version 2: how many rows one collection holds.</summary>
