@@ -30,6 +30,9 @@ namespace Chatcheology.Desktop.Tests
         private bool _confirmCreate = true;
         private bool _confirmDelete = true;
         private bool _confirmTidy = true;
+        private bool _confirmCover;
+        private bool _withCoverDialog = true;
+        private readonly List<string> _coverAsked = [];
         private string? _image;
         private IReadOnlyList<string>? _images;
 
@@ -352,8 +355,18 @@ namespace Chatcheology.Desktop.Tests
             Assert.Equal(["", "Invented dunes", ""], form.Photos.Select(p => p.Caption));
             Assert.All(form.Photos, p => Assert.Equal("Current image", p.Text));
 
-            form.Photos[0].RemoveCommand.Execute(null);
+            // Removing the cover would make the captioned photo the cover: asked first; declined, nothing changes.
+            var cover = form.Photos[0];
+            cover.RemoveCommand.Execute(null);
+            Assert.Equal(3, form.Photos.Count);
+            Assert.Same(cover, form.Photos[0]);
+
+            _confirmCover = true;
+            cover.RemoveCommand.Execute(null);
             Assert.True(form.Photos[0].IsCover);
+            Assert.Equal(string.Empty, form.Photos[0].Caption);
+            Assert.Equal(2, _coverAsked.Count);
+            Assert.Contains("\"Invented dunes\" will be removed", _coverAsked[1], StringComparison.Ordinal);
 
             await Run(form.SaveCommand, form);
             await memories.AfterSave;
@@ -374,9 +387,68 @@ namespace Chatcheology.Desktop.Tests
             Assert.Equal(3, Directory.GetFiles(MemoriesDatabase.MediaFolderFor(MemoriesPath)).Length);
         }
 
+        [Fact]
+        public async Task MakingACaptionedPhotoTheCover_AsksFirst_AndOnlyThenDropsTheCaption()
+        {
+            var memories = await WithCollectionAsync("Holidays");
+            memories.NewEntryCommand.Execute(null);
+            var form = memories.Form!;
+
+            _images = [Chosen("a.png", MemoryLayersTests.Png(2)), Chosen("b.png", MemoryLayersTests.Png(3)), Chosen("c.png", MemoryLayersTests.Png(4))];
+            await Run(form.ChooseImageCommand, form);
+            var (a, b, c) = (form.Photos[0], form.Photos[1], form.Photos[2]);
+            b.Caption = "Invented dunes";
+
+            // Declined (make cover, move up into first place, move the cover down): nothing changes.
+            _confirmCover = false;
+            b.MakeCoverCommand.Execute(null);
+            b.MoveUpCommand.Execute(null);
+            a.MoveDownCommand.Execute(null);
+            Assert.Equal([a, b, c], form.Photos);
+            Assert.Equal("Invented dunes", b.Caption);
+            Assert.Equal(3, _coverAsked.Count);
+            Assert.Equal("The cover has no caption, so \"Invented dunes\" will be removed. Make it the cover?", _coverAsked[0]);
+
+            // A photo without a caption needs no question.
+            c.MakeCoverCommand.Execute(null);
+            Assert.Equal([c, a, b], form.Photos);
+            Assert.Equal(3, _coverAsked.Count);
+
+            // Accepted: it becomes the cover and its caption is gone, so nothing is lost silently on save.
+            _confirmCover = true;
+            b.MakeCoverCommand.Execute(null);
+
+            Assert.Equal([b, c, a], form.Photos);
+            Assert.True(b.IsCover);
+            Assert.Equal(string.Empty, b.Caption);
+            Assert.Equal(4, _coverAsked.Count);
+        }
+
+        [Fact]
+        public async Task WithNoCoverDialog_ACaptionedPhotoNeverBecomesTheCover()
+        {
+            _withCoverDialog = false;
+            var memories = await WithCollectionAsync("Holidays");
+            memories.NewEntryCommand.Execute(null);
+            var form = memories.Form!;
+
+            _images = [Chosen("a.png", MemoryLayersTests.Png(2)), Chosen("b.png", MemoryLayersTests.Png(3))];
+            await Run(form.ChooseImageCommand, form);
+            var second = form.Photos[1];
+            second.Caption = "Invented dunes";
+
+            second.MakeCoverCommand.Execute(null);
+            form.Photos[0].RemoveCommand.Execute(null);
+
+            Assert.Equal(2, form.Photos.Count);
+            Assert.Same(second, form.Photos[1]);
+            Assert.Equal("Invented dunes", second.Caption);
+        }
+
         // ---------------------------------------------------------------------------------------
         // Deleting a collection and tidying up images (CH-46).
         // ---------------------------------------------------------------------------------------
+
 
         [Fact]
         public async Task AnEmptyCollection_IsDeletedAfterASimpleConfirmation()
@@ -575,6 +647,13 @@ namespace Chatcheology.Desktop.Tests
         {
             ChooseImage = () => _image,
             ChooseImages = () => _images ?? (_image is { } one ? [one] : []),
+            ConfirmCoverCaption = _withCoverDialog
+                ? text =>
+                {
+                    _coverAsked.Add(text);
+                    return _confirmCover;
+                }
+                : null,
             ConfirmDeleteCollection = text =>
             {
                 _deleteCollectionAsked.Add(text);

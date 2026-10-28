@@ -736,6 +736,31 @@ namespace Chatcheology.Desktop.Tests
         });
 
         [Fact]
+        public void WhenTheCoversFileIsGone_TheCardAndDetailsShowTheFirstPresentPhoto() => OnDispatcher(async () =>
+        {
+            (_holidays, _beach) = Seed(_workspace, photos: true);
+            var media = MemoriesDatabase.MediaFolderFor(MemoriesDatabase.PathBeside(_workspace.DatabasePath));
+            File.Delete(Path.Combine(media, Convert.ToHexStringLower(SHA256.HashData(MemoriesViewModelTests.Png)) + ".png"));
+            File.Delete(Path.Combine(media, Convert.ToHexStringLower(SHA256.HashData(Png(4))) + ".png"));
+
+            var viewModel = await OpenAsync(_workspace, showAs: true);
+
+            // Only the first extra photo is left: it is drawn on the card and as the single image.
+            var row = Row(viewModel, _beach, null);
+            Assert.True(row.HasImage);
+            Assert.False(row.HasExtraPhotos);
+
+            viewModel.SelectMemoryRow(row);
+            Assert.True(viewModel.MemoryDetails!.ShowsSingleImage);
+            Assert.False(viewModel.MemoryDetails.HasPhotoStrip);
+
+            viewModel.OpenMemoryPhoto(0);
+            Assert.Equal("Photo", viewModel.MemoryPhotoViewer!.Title);
+
+            viewModel.CloseSession();
+        });
+
+        [Fact]
         public void ADeletedCollectionsLayerChoice_IsForgotten() => OnDispatcher(async () =>
         {
             AddMemories();

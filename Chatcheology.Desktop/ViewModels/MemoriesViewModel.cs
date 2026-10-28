@@ -32,6 +32,12 @@ namespace Chatcheology.Desktop.ViewModels
         /// </summary>
         public Func<IReadOnlyList<string>>? ChooseImages { get; init; }
 
+        /// <summary>
+        /// Asks before a photo with a caption becomes the cover, which has none (CH-46). True to go ahead
+        /// and drop the caption. Without it, such a photo does not become the cover.
+        /// </summary>
+        public Func<string, bool>? ConfirmCoverCaption { get; init; }
+
         /// <summary>Asks before a personal collection is deleted (CH-46). True to delete it.</summary>
         public Func<string, bool> ConfirmDeleteCollection { get; init; } = _ => false;
 

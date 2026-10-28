@@ -59,6 +59,7 @@ namespace Chatcheology.Desktop
                     ConfirmDelete = text => Confirm(text, "Delete memory"),
                     ConfirmDeleteCollection = text => Confirm(text, "Delete collection"),
                     ConfirmTidyImages = text => Confirm(text, "Tidy up images"),
+                    ConfirmCoverCaption = text => Confirm(text, "Make cover"),
                 },
                 layerSettings: layerSettings);
 

@@ -678,11 +678,22 @@ namespace Chatcheology.Desktop.ViewModels
         /// <summary>Moves <paramref name="photo"/> by <paramref name="offset"/> places; moved first, it is the cover.</summary>
         internal void Move(MemoryFormPhotoViewModel photo, int offset)
         {
-            if (CanMove(photo, offset))
+            if (!CanMove(photo, offset))
             {
-                var index = Photos.IndexOf(photo);
-                Photos.Move(index, index + offset);
+                return;
             }
+
+            var index = Photos.IndexOf(photo);
+
+            // Whichever photo ends up first becomes the cover and loses its caption: asked first.
+            var newCover = index + offset == 0 ? photo : index == 0 ? Photos[1] : null;
+
+            if (newCover is not null && !AcceptAsCover(newCover))
+            {
+                return;
+            }
+
+            Photos.Move(index, index + offset);
         }
 
         /// <summary>Makes <paramref name="photo"/> the cover: it moves first, and the others keep their order.</summary>
@@ -690,7 +701,7 @@ namespace Chatcheology.Desktop.ViewModels
         {
             var index = Photos.IndexOf(photo);
 
-            if (CanEditPhotos && index > 0)
+            if (CanEditPhotos && index > 0 && AcceptAsCover(photo))
             {
                 Photos.Move(index, 0);
             }
@@ -699,10 +710,43 @@ namespace Chatcheology.Desktop.ViewModels
         /// <summary>Drops <paramref name="photo"/>; when it was the cover, the next one becomes the cover.</summary>
         internal void RemovePhoto(MemoryFormPhotoViewModel photo)
         {
-            if (CanEditPhotos && Photos.Remove(photo))
+            var index = Photos.IndexOf(photo);
+
+            if (!CanEditPhotos || index < 0)
             {
-                ImageError = string.Empty;
+                return;
             }
+
+            if (index == 0 && Photos.Count > 1 && !AcceptAsCover(Photos[1]))
+            {
+                return;
+            }
+
+            Photos.Remove(photo);
+            ImageError = string.Empty;
+        }
+
+        /// <summary>
+        /// Whether <paramref name="photo"/> may become the cover. The cover has no caption, so a photo with
+        /// one asks first; on yes its caption is dropped. Declined, or with no dialog, nothing changes.
+        /// </summary>
+        private bool AcceptAsCover(MemoryFormPhotoViewModel photo)
+        {
+            var caption = photo.Caption.Trim();
+
+            if (caption.Length == 0)
+            {
+                return true;
+            }
+
+            if (_dialogs.ConfirmCoverCaption is not { } confirm
+                || !confirm($"The cover has no caption, so \"{caption}\" will be removed. Make it the cover?"))
+            {
+                return false;
+            }
+
+            photo.Caption = string.Empty;
+            return true;
         }
 
         private void OnPhotosChanged()

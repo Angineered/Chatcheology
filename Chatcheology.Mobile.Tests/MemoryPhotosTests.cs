@@ -164,6 +164,44 @@ namespace Chatcheology.Mobile.Tests
             Assert.Equal([null, "By the sea", "Sunset"], session.MemoryDetails(new MemoryKey(20, null))!.Photos.Select(p => p.Caption));
         }
 
+        [Theory]
+        [InlineData(1)]
+        [InlineData(2)]
+        public void WhenTheCoversFileIsGone_TheFirstPresentPhotoIsShown_AndTheBadgeCountsTheRest(int extras)
+        {
+            var builder = new MemoryArchiveBuilder();
+            builder.Message(Day);
+            builder.Memory(20, "Beach week", new DateTime(2025, 3, 10), image: true, photoCaptions: [.. Enumerable.Repeat<string?>("Invented", extras)]);
+
+            var library = new ArchiveLibrary(Path.Combine(_root.Path, "library"));
+            var settings = new ArchiveSettings(_store);
+            var staging = library.CreateStagingFolder();
+            builder.Write(staging);
+            Assert.True(library.Install(staging).Installed);
+            var archive = library.ListArchives(settings).Single();
+
+            string firstExtra;
+
+            using (var reader = ArchiveReader.Open(archive.Folder))
+            {
+                File.Delete(reader.ImageFullPath(reader.ReadEntriesOf(MemoryArchiveBuilder.Personal).Single())!);
+                firstExtra = reader.EntryImageFullPath(reader.ReadEntryImages(20)[0]);
+            }
+
+            using var session = ArchiveSession.Open(archive, settings);
+
+            var card = Cards(session).Single();
+            Assert.Equal(firstExtra, card.ImagePath);
+            Assert.Equal(extras - 1, card.ExtraPhotoCount);
+            Assert.Equal(extras > 1, card.HasExtraPhotos);
+
+            var details = session.MemoryDetails(new MemoryKey(20, null))!;
+            Assert.Equal(firstExtra, details.ImagePath);
+            Assert.Equal(firstExtra, details.Photos[0].Path);
+            Assert.Equal(extras > 1, details.HasPhotoStrip);
+            Assert.Equal(firstExtra, details.BrowsePhotos(0).Current.Path);
+        }
+
         [Fact]
         public async Task ThePhotosGallery_IsUnchanged_ByMemoryPhotos()
         {

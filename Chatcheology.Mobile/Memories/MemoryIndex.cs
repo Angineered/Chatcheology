@@ -665,6 +665,15 @@ namespace Chatcheology.Mobile.Memories
         /// <summary>Every photo whose file is there: the cover first, then the extra photos.</summary>
         internal IReadOnlyList<MemoryPhoto> Photos { get; }
 
+        /// <summary>
+        /// The image the card and the single-image details draw: the first photo whose file is there (the
+        /// cover, or when its file is gone the first extra photo), so no present photo is left unshown.
+        /// </summary>
+        internal string? ShownImagePath => Photos.Count > 0 ? Photos[0].Path : null;
+
+        /// <summary>The photos after the one drawn: the "+N" of the card.</summary>
+        internal int PhotosAfterShown => Math.Max(0, Photos.Count - 1);
+
         internal string SourceText { get; }
 
         internal DateTime FirstItemLocal { get; }
@@ -769,7 +778,7 @@ namespace Chatcheology.Mobile.Memories
                         ? DateSeparatorRow.DayText(DateOnly.FromDateTime(FirstItemLocal))
                         : MemoryWording.EntryDate(Entry.DatePrecision, Entry.StartLocal, Entry.EndLocal),
                 CollectionName = Collection.Name,
-                ImagePath = ImagePath,
+                ImagePath = ShownImagePath,
                 Photos = Photos,
                 Summary = Entry.Summary ?? string.Empty,
                 SourceText = SourceText,
@@ -847,8 +856,12 @@ namespace Chatcheology.Mobile.Memories
         /// <summary>The layer.</summary>
         public required string CollectionName { get; init; }
 
-        /// <summary>The image (the cover) when its file is there.</summary>
+        /// <summary>
+        /// The image drawn: the cover when its file is there, otherwise the first extra photo whose file is
+        /// (CH-46); always <see cref="Photos"/>' first.
+        /// </summary>
         public required string? ImagePath { get; init; }
+
 
         /// <summary>
         /// Every photo whose file is there, the cover first, then the extra photos with their captions

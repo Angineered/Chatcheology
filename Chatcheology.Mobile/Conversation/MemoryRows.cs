@@ -130,16 +130,17 @@ namespace Chatcheology.Mobile.Conversation
             Title = entry.Entry.Title;
             DateText = MemoryWording.EntryDate(entry.Entry.DatePrecision, entry.Entry.StartLocal, entry.Entry.EndLocal);
             Summary = entry.Entry.Summary ?? string.Empty;
-            ImagePath = entry.ImagePath;
-            ExtraPhotoCount = entry.ExtraPhotos.Count;
+            ImagePath = entry.ShownImagePath;
+            ExtraPhotoCount = entry.PhotosAfterShown;
             SourceText = entry.SourceText;
             CollectionName = entry.Collection.Name;
         }
 
-        /// <summary>How many extra photos (whose file is there) the memory has after its cover (CH-46).</summary>
+        /// <summary>How many photos (whose file is there) follow the one drawn (CH-46).</summary>
         public int ExtraPhotoCount { get; }
 
-        /// <summary>Whether the card shows the "+N" badge: a cover is drawn and there are extra photos.</summary>
+        /// <summary>Whether the card shows the "+N" badge: a photo is drawn and more follow it.</summary>
+
         public bool HasExtraPhotos => HasImage && ExtraPhotoCount > 0;
 
         /// <summary>"+4", or empty.</summary>
