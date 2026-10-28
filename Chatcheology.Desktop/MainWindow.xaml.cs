@@ -58,6 +58,7 @@ namespace Chatcheology.Desktop
                     ConfirmCreateFile = text => Confirm(text, "Create memories file"),
                     ConfirmDelete = text => Confirm(text, "Delete memory"),
                     ConfirmDeleteCollection = text => Confirm(text, "Delete collection"),
+                    ConfirmDeleteNotedDate = text => Confirm(text, "Delete noted date"),
                     ConfirmTidyImages = text => Confirm(text, "Tidy up images"),
                     ConfirmCoverCaption = text => Confirm(text, "Make cover"),
                 },
