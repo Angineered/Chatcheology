@@ -1134,7 +1134,7 @@ namespace Chatcheology.Desktop.ViewModels
                 _layerSettings.Write(session.DatabasePath, new LayerChoices(layers, off));
             }
 
-            _ = ApplyLayoutAsync();
+            LayersLoad = ApplyLayoutAsync();
         }
 
         /// <summary>Which rows are visible now, from the switches and filters.</summary>
