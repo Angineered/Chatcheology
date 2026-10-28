@@ -95,7 +95,7 @@ namespace Chatcheology.Desktop.ViewModels
             _closed = closed;
             _saving = saving;
 
-            SaveCommand = new AsyncRelayCommand(SaveAsync, () => !IsSaving && !_blocked() && !HasProblems);
+            SaveCommand = new AsyncRelayCommand(SaveAsync, () => !IsSaving && !_blocked());
             CancelCommand = new RelayCommand(() => _closed(null), () => !IsSaving);
 
             if (existing is not null)
@@ -307,6 +307,12 @@ namespace Chatcheology.Desktop.ViewModels
         {
             if (HasProblems)
             {
+                // Show every problem, write nothing, and never reach the store.
+                _titleTouched = _dateTouched = _yearTouched = _noteTouched = true;
+                OnPropertyChanged(nameof(TitleError));
+                OnPropertyChanged(nameof(DateError));
+                OnPropertyChanged(nameof(YearError));
+                OnPropertyChanged(nameof(NoteError));
                 return;
             }
 

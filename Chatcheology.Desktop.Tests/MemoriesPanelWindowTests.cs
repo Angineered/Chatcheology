@@ -152,7 +152,9 @@ namespace Chatcheology.Desktop.Tests
                     memories.NotedForm.Note = new string('n', 501);
                     Settle(window);
 
-                    Assert.False(memories.NotedForm.SaveCommand.CanExecute(null));
+                    Assert.True(memories.NotedForm.SaveCommand.CanExecute(null));
+                    memories.NotedForm.SaveCommand.Execute(null);
+                    Settle(window);
                     Assert.Equal("14 Feb", memories.NotedDates[0].DateText);
                     Assert.Empty(errors.Messages);
                 }

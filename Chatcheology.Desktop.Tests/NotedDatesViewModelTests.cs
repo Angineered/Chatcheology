@@ -221,16 +221,47 @@ namespace Chatcheology.Desktop.Tests
             await MemoriesViewModelTests.Run(command, memories);
 
         [Fact]
-        public async Task TheForm_ShowsEachProblemOnItsField_AndSaveStaysDisabled()
+        public async Task SavingAnIncompleteForm_ShowsEveryProblem_AndWritesNothing()
         {
             var memories = await OpenAsync();
             memories.NewNotedDateCommand.Execute(null);
             var form = memories.NotedForm!;
 
-            // Untouched: nothing is shown, but Save is not available.
+            form.Title = "Only a title";
+            Assert.Equal(string.Empty, form.DateError);
+            Assert.True(form.SaveCommand.CanExecute(null));
+
+            await SaveFormAsync(form);
+
+            Assert.Equal("Choose a month.", form.DateError);
+            Assert.Empty(_createAsked);
+            Assert.False(File.Exists(MemoriesPath));
+            Assert.Same(form, memories.NotedForm);
+
+            // Every field shows once Save was tried.
+            memories.NewNotedDateCommand.RaiseCanExecuteChanged();
+            form.CancelCommand.Execute(null);
+            memories.NewNotedDateCommand.Execute(null);
+            var second = memories.NotedForm!;
+            await SaveFormAsync(second);
+
+            Assert.Equal("Give the date a title.", second.TitleError);
+            Assert.Equal("Choose a month.", second.DateError);
+            Assert.Empty(_createAsked);
+            Assert.False(File.Exists(MemoriesPath));
+        }
+
+        [Fact]
+        public async Task TheForm_ShowsEachProblemOnItsField_AndSaveStaysAvailable()
+        {
+            var memories = await OpenAsync();
+            memories.NewNotedDateCommand.Execute(null);
+            var form = memories.NotedForm!;
+
+            // Untouched: nothing is shown, Save is available.
             Assert.Equal(string.Empty, form.TitleError);
             Assert.Equal(string.Empty, form.DateError);
-            Assert.False(form.SaveCommand.CanExecute(null));
+            Assert.True(form.SaveCommand.CanExecute(null));
 
             form.Title = "   ";
             Assert.Equal("Give the date a title.", form.TitleError);
@@ -257,7 +288,7 @@ namespace Chatcheology.Desktop.Tests
 
             form.YearText = "2019";
             Assert.Equal("29 February is only in a leap year: choose a leap year or leave the year out.", form.DateError);
-            Assert.False(form.SaveCommand.CanExecute(null));
+            Assert.True(form.SaveCommand.CanExecute(null));
 
             form.YearText = "2020";
             Assert.Equal(string.Empty, form.DateError);
@@ -267,14 +298,14 @@ namespace Chatcheology.Desktop.Tests
 
             form.YearText = "next year";
             Assert.Equal("Type the year as a number, or leave it out.", form.YearError);
-            Assert.False(form.SaveCommand.CanExecute(null));
+            Assert.True(form.SaveCommand.CanExecute(null));
 
             form.YearText = string.Empty;
             Assert.Equal(string.Empty, form.YearError);
 
             form.Note = new string('n', 501);
             Assert.Equal("Keep the note to 500 characters.", form.NoteError);
-            Assert.False(form.SaveCommand.CanExecute(null));
+            Assert.True(form.SaveCommand.CanExecute(null));
 
             // A blank note is just no note.
             form.Note = "   ";
