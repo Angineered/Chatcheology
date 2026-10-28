@@ -218,6 +218,7 @@ namespace Chatcheology.Data.ArchiveExport
             var expectedCollections = combined.CollectionCounts();
             CompareMemories(combined, reader, actualEntries, record);
             CompareDefinitions(combined, actualDefinitions, record);
+            CompareNotedDates(combined, reader.ReadNotedDates(), record);
 
             var attachments = expectedAttachments.Values.ToList();
 
@@ -234,7 +235,8 @@ namespace Chatcheology.Data.ArchiveExport
                     .Select(e => new ArchiveComparisonExportCounts(e.Position, e.Shown, e.MessageCount, e.ShownMessages.Count, e.HiddenCount))
                     .ToList() ?? [],
                 collections: expectedCollections,
-                definitions: combined.Memories?.Definitions.Count ?? 0);
+                definitions: combined.Memories?.Definitions.Count ?? 0,
+                notedDates: combined.ToArchiveNotedDates().Count);
         }
 
         // -------------------------------------------------------------------------------------
@@ -347,6 +349,29 @@ namespace Chatcheology.Data.ArchiveExport
                     || a.GroupId != e.GroupId
                     || a.IconSha256 != e.IconSha256)
                 + actualByKey.Keys.Count(key => !expected.ContainsKey(key)));
+        }
+
+        /// <summary>
+        /// Noted dates (CH-47): row by row on the identifier, every field compared; a date on one side only
+        /// (missing from the archive, or not in the memories file) is a difference too. An archive without
+        /// the table holds none.
+        /// </summary>
+        private static void CompareNotedDates(
+            ArchiveCombinedSource combined, IReadOnlyList<ArchiveNotedDate> actual, Recorder record)
+        {
+            var expected = combined.ToArchiveNotedDates().ToDictionary(d => d.NotedDateID);
+            var actualByID = actual.ToDictionary(d => d.NotedDateID);
+
+            record.AddCount(
+                ArchiveMismatchKind.NotedDateDiffers,
+                expected.Values.Count(e =>
+                    !actualByID.TryGetValue(e.NotedDateID, out var a)
+                    || !string.Equals(a.Title, e.Title, StringComparison.Ordinal)
+                    || a.Month != e.Month
+                    || a.Day != e.Day
+                    || a.Year != e.Year
+                    || !string.Equals(a.Note, e.Note, StringComparison.Ordinal))
+                + actualByID.Keys.Count(id => !expected.ContainsKey(id)));
         }
 
         private static bool SameEntry(ArchiveEntry e, ArchiveEntry a) =>
@@ -576,7 +601,8 @@ namespace Chatcheology.Data.ArchiveExport
                 int exportMessages,
                 IReadOnlyList<ArchiveComparisonExportCounts> exports,
                 IReadOnlyList<ArchiveCollectionCounts> collections,
-                int definitions) => new()
+                int definitions,
+                int notedDates) => new()
             {
                 ParticipantsCompared = participants,
                 MessagesCompared = messages,
@@ -591,6 +617,7 @@ namespace Chatcheology.Data.ArchiveExport
                 Exports = exports,
                 Collections = collections,
                 ItemDefinitions = definitions,
+                NotedDates = notedDates,
             };
         }
     }
@@ -694,6 +721,9 @@ namespace Chatcheology.Data.ArchiveExport
 
         /// <summary>Version 2: a used item definition is on one side only, or differs.</summary>
         ItemDefinitionDiffers,
+
+        /// <summary>Version 2 (CH-47): a noted date is on one side only (missing from the archive, or extra in it), or a field differs.</summary>
+        NotedDateDiffers,
     }
 
     /// <summary>One older export's messages as the older-exports file holds them. Counts only.</summary>
@@ -758,6 +788,9 @@ namespace Chatcheology.Data.ArchiveExport
 
         /// <summary>Version 2: item definitions some item of the memories file uses. 0 with no memories file or a format 1 one.</summary>
         public int ItemDefinitions { get; init; }
+
+        /// <summary>Version 2 (CH-47): noted dates in the memories file. 0 with no memories file or one before format 4.</summary>
+        public int NotedDates { get; init; }
 
         /// <summary>The archive says exactly what the workspace says.</summary>
         public bool Passed => MismatchCounts.Values.All(count => count == 0);

@@ -133,6 +133,18 @@ namespace Chatcheology.Data.Memories.Personal
 
         /// <summary>The memory as a whole (for example: it is imported).</summary>
         public const string Entry = "Entry";
+
+        /// <summary>A noted date's month and day (CH-47).</summary>
+        public const string Date = "Date";
+
+        /// <summary>A noted date's year (CH-47).</summary>
+        public const string Year = "Year";
+
+        /// <summary>A noted date's note (CH-47).</summary>
+        public const string Note = "Note";
+
+        /// <summary>A noted date as a whole (for example: it is no longer there) (CH-47).</summary>
+        public const string NotedDate = "NotedDate";
     }
 
     /// <summary>A save that was refused, with one message per field. Nothing was written.</summary>
