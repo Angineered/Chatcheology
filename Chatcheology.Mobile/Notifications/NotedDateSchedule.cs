@@ -94,7 +94,11 @@ namespace Chatcheology.Mobile.Notifications
         /// <param name="archives">Every installed archive's noted dates.</param>
         /// <param name="time">The app's notification time.</param>
         /// <param name="localNow">The phone's local time now.</param>
-        public static NextNotification? Next(IEnumerable<ArchiveNotedDates> archives, TimeOnly time, DateTime localNow)
+        /// <param name="postedThrough">
+        /// The last day whose notifications were posted, if any: when that is today, today is not scheduled again
+        /// (moving the time later on a day already notified does not notify twice).
+        /// </param>
+        public static NextNotification? Next(IEnumerable<ArchiveNotedDates> archives, TimeOnly time, DateTime localNow, DateOnly? postedThrough = null)
         {
             ArgumentNullException.ThrowIfNull(archives);
 
@@ -108,6 +112,12 @@ namespace Chatcheology.Mobile.Notifications
             var day = DateOnly.FromDateTime(localNow);
 
             if (day.ToDateTime(time) <= DateTime.SpecifyKind(localNow, DateTimeKind.Unspecified))
+            {
+                day = day.AddDays(1);
+            }
+
+            // Only today counts: a later recorded day (the clock was set back) is ignored rather than trusted.
+            if (postedThrough is { } posted && posted == day && posted == DateOnly.FromDateTime(localNow))
             {
                 day = day.AddDays(1);
             }

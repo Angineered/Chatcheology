@@ -7,10 +7,11 @@ namespace Chatcheology.Mobile.Settings
     /// </summary>
     /// <remarks>
     /// Keys: <c>app.notedDates.time</c> (the local time of day noted-date notifications are posted,
-    /// <c>HH:mm</c>; 09:00 when none is stored or the value cannot be read) and
+    /// <c>HH:mm</c>; 09:00 when none is stored or the value cannot be read),
     /// <c>app.notedDates.permissionAsked</c> (<c>yes</c> once Android 13+ has been asked for permission to
-    /// notify, so it is asked only once; a refusal is then the system's to remember). Removing an archive does
-    /// not touch them.
+    /// notify, so it is asked only once; a refusal is then the system's to remember) and
+    /// <c>app.notedDates.postedThrough</c> (the last day whose notifications were posted, <c>yyyy-MM-dd</c>, so a
+    /// day is not notified twice). Removing an archive does not touch them.
     /// </remarks>
     public sealed class NotificationSettings
     {
@@ -19,6 +20,8 @@ namespace Chatcheology.Mobile.Settings
 
         private const string TimeKey = "app.notedDates.time";
         private const string AskedKey = "app.notedDates.permissionAsked";
+        private const string PostedKey = "app.notedDates.postedThrough";
+        private const string DayFormat = "yyyy'-'MM'-'dd";
 
         private readonly ISettingsStore _store;
 
@@ -44,6 +47,15 @@ namespace Chatcheology.Mobile.Settings
         {
             get => _store.Get(AskedKey) == "yes";
             set => _store.Set(AskedKey, value ? "yes" : null);
+        }
+
+        /// <summary>The last day whose notifications were posted, or <see langword="null"/>.</summary>
+        public DateOnly? PostedThrough
+        {
+            get => DateOnly.TryParseExact(_store.Get(PostedKey), DayFormat, CultureInfo.InvariantCulture, DateTimeStyles.None, out var day)
+                ? day
+                : null;
+            set => _store.Set(PostedKey, value?.ToString(DayFormat, CultureInfo.InvariantCulture));
         }
     }
 }

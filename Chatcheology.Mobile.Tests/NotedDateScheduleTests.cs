@@ -97,6 +97,30 @@ namespace Chatcheology.Mobile.Tests
         }
 
         [Fact]
+        public void A_day_already_posted_is_not_scheduled_again_when_the_time_moves_later()
+        {
+            ArchiveNotedDates[] archives = [Archive("a", Date("1", "Invented day", 6, 1))];
+            var now = At(2026, 6, 1, 9, 30);
+            var later = new TimeOnly(10, 0);
+
+            Assert.Equal(new DateOnly(2026, 6, 1), NotedDateSchedule.Next(archives, later, now)!.Day);
+            Assert.Equal(new DateOnly(2027, 6, 1), NotedDateSchedule.Next(archives, later, now, postedThrough: new DateOnly(2026, 6, 1))!.Day);
+
+            // An earlier day posted changes nothing; a recorded day after today (the clock was set back) is ignored.
+            Assert.Equal(new DateOnly(2026, 6, 1), NotedDateSchedule.Next(archives, later, now, postedThrough: new DateOnly(2026, 5, 31))!.Day);
+            Assert.Equal(new DateOnly(2026, 6, 1), NotedDateSchedule.Next(archives, later, now, postedThrough: new DateOnly(2026, 6, 2))!.Day);
+
+            var store = new MemorySettings();
+            var settings = new NotificationSettings(store);
+            Assert.Null(settings.PostedThrough);
+            settings.PostedThrough = new DateOnly(2026, 6, 1);
+            Assert.Equal("2026-06-01", store.Values["app.notedDates.postedThrough"]);
+            Assert.Equal(new DateOnly(2026, 6, 1), settings.PostedThrough);
+            store.Values["app.notedDates.postedThrough"] = "not a day";
+            Assert.Null(settings.PostedThrough);
+        }
+
+        [Fact]
         public void Muted_gifted_dates_and_archives_with_On_this_day_off_are_left_out()
         {
             var muted = Archive("a", Date("1", "Muted gift", 5, 5, gifted: true, notify: false), Date("2", "Own", 5, 6));
