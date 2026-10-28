@@ -556,7 +556,7 @@ namespace Chatcheology.Desktop.Tests
             (_holidays, _beach) = Seed(workspace, definitions);
 
         /// <summary>Writes the synthetic memories file beside <paramref name="workspace"/>; returns the personal collection and memory.</summary>
-        internal static (long Holidays, long Beach) Seed(ArchiveTestWorkspace workspace, bool definitions = true)
+        internal static (long Holidays, long Beach) Seed(ArchiveTestWorkspace workspace, bool definitions = true, bool photos = false)
         {
             var path = MemoriesDatabase.PathBeside(workspace.DatabasePath);
             var now = new DateTime(2026, 10, 28, 9, 0, 0, DateTimeKind.Utc);
@@ -640,6 +640,10 @@ namespace Chatcheology.Desktop.Tests
                 Source = "My own memory",
                 Image = PersonalImageChoice.FromFile(picture),
                 Links = [PersonalLinkTarget.ToMessage(5), PersonalLinkTarget.ToEntry(100)],
+                ExtraPhotos = photos
+                    ? [new PersonalPhotoDraft(PersonalImageChoice.FromFile(Chosen(workspace, "dunes.png", Png(3))), "Invented dunes"),
+                       new PersonalPhotoDraft(PersonalImageChoice.FromFile(Chosen(workspace, "pier.png", Png(4))), null)]
+                    : [],
             });
 
             SqliteConnection.ClearAllPools();
@@ -647,7 +651,140 @@ namespace Chatcheology.Desktop.Tests
             return (holidays, beach);
         }
 
+        private static string Chosen(ArchiveTestWorkspace workspace, string name, byte[] bytes)
+        {
+            var path = Path.Combine(workspace.Root, "chosen", name);
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            File.WriteAllBytes(path, bytes);
+
+            return path;
+        }
+
+        // ---------------------------------------------------------------------------------------
+        // Several photos (CH-46).
+        // ---------------------------------------------------------------------------------------
+
+        [Fact]
+        public void APersonalCard_ShowsAPlusNBadge_AndItsDetails_AStripWithCaptions() => OnDispatcher(async () =>
+        {
+            (_holidays, _beach) = Seed(_workspace, photos: true);
+            var viewModel = await OpenAsync(_workspace, showAs: true);
+
+            var row = Row(viewModel, _beach, null);
+            Assert.True(row.HasImage);
+            Assert.True(row.HasExtraPhotos);
+            Assert.Equal("+2", row.ExtraPhotosBadge);
+
+            viewModel.SelectMemoryRow(row);
+            var details = viewModel.MemoryDetails!;
+
+            Assert.True(details.HasPhotoStrip);
+            Assert.False(details.ShowsSingleImage);
+            Assert.Equal([0, 1, 2], details.Photos.Select(p => p.Index));
+            Assert.Equal(["", "Invented dunes", ""], details.Photos.Select(p => p.Caption));
+            Assert.All(details.Photos, p => Assert.NotNull(p.Thumbnail));
+
+            viewModel.CloseSession();
+        });
+
+        [Fact]
+        public void TheLargePhotoView_MovesThroughThisMemorysPhotosOnly_AndClosesWithItsDetails() => OnDispatcher(async () =>
+        {
+            (_holidays, _beach) = Seed(_workspace, photos: true);
+            var viewModel = await OpenAsync(_workspace, showAs: true);
+            await SwitchAsync(viewModel, () => Layer(viewModel, Gaming).IsShown = true);
+
+            viewModel.SelectMemoryRow(Row(viewModel, _beach, null));
+            viewModel.OpenMemoryPhoto(1);
+
+            var viewer = viewModel.MemoryPhotoViewer!;
+            Assert.True(viewModel.IsMemoryPhotoViewerOpen);
+            Assert.Equal("Photo 2 of 3", viewer.Title);
+            Assert.Equal("Invented dunes", viewer.Caption);
+            Assert.True(viewer.HasImage);
+
+            viewer.NextCommand.Execute(null);
+            Assert.Equal("Photo 3 of 3", viewer.Title);
+            Assert.False(viewer.HasCaption);
+            Assert.False(viewer.NextCommand.CanExecute(null));
+
+            viewer.PreviousCommand.Execute(null);
+            viewer.PreviousCommand.Execute(null);
+            Assert.Equal("Photo 1 of 3", viewer.Title);
+            Assert.False(viewer.PreviousCommand.CanExecute(null));
+
+            // Only this memory's photos: the game image of entry 100 is not among them.
+            var gameImage = viewModel.MemoryLayers.Index.Details(new MemoryKey(100, 0))!.ImagePath;
+            Assert.DoesNotContain(gameImage, viewer.Browser.Photos.Select(p => p.Path));
+            Assert.Equal(3, viewer.Browser.Photos.Count);
+
+            viewer.CloseCommand.Execute(null);
+            Assert.False(viewModel.IsMemoryPhotoViewerOpen);
+
+            // Another row's details close it too.
+            viewModel.OpenMemoryPhoto(0);
+            Assert.True(viewModel.IsMemoryPhotoViewerOpen);
+            viewModel.SelectMemoryRow(Row(viewModel, 100, 0));
+            Assert.False(viewModel.IsMemoryPhotoViewerOpen);
+
+            // A PSN period card has one image at most: no strip, and a click shows that one.
+            Assert.False(viewModel.MemoryDetails!.HasPhotoStrip);
+            viewModel.OpenMemoryPhoto(5);
+            Assert.False(viewModel.IsMemoryPhotoViewerOpen);
+
+            viewModel.CloseSession();
+        });
+
+        [Fact]
+        public void ADeletedCollectionsLayerChoice_IsForgotten() => OnDispatcher(async () =>
+        {
+            AddMemories();
+            var asked = new List<string>();
+            var settings = new LayerSettings(_settingsPath);
+            var viewModel = new MainViewModel(
+                () => _workspace.DatabasePath,
+                ArchiveDialogs.None,
+                new ArchiveOperations(),
+                new MemoriesDialogs
+                {
+                    ChooseImage = () => null,
+                    ConfirmCreateFile = _ => false,
+                    ConfirmDelete = _ => false,
+                    ConfirmDeleteCollection = text =>
+                    {
+                        asked.Add(text);
+                        return true;
+                    },
+                },
+                null,
+                settings);
+
+            viewModel.OpenWorkspaceCommand.Execute(null);
+            await MemoriesViewModelTests.WaitUntil(() => viewModel.Messages.Count == 5 && !viewModel.IsBusy);
+            await viewModel.LayersLoad;
+            viewModel.LocalParticipant = viewModel.Participants[0];
+            await viewModel.LayersLoad;
+
+            await SwitchAsync(viewModel, () => Layer(viewModel, _holidays).IsShown = false);
+            Assert.False(settings.Read(_workspace.DatabasePath).Layers[_holidays]);
+
+            await MemoriesViewModelTests.Run(viewModel.Memories.OpenCommand, viewModel.Memories);
+            viewModel.Memories.SelectedCollection = viewModel.Memories.Collections.Single(c => c.CollectionID == _holidays);
+            await MemoriesViewModelTests.Run(viewModel.Memories.DeleteCollectionCommand, viewModel.Memories);
+
+            Assert.Contains("the 1 memory in it", Assert.Single(asked), StringComparison.Ordinal);
+            Assert.False(settings.Read(_workspace.DatabasePath).Layers.ContainsKey(_holidays));
+
+            // The layers are read again: the deleted collection's layer is gone.
+            await MemoriesViewModelTests.WaitUntil(() => viewModel.Layers.All(l => l.CollectionID != _holidays));
+            await viewModel.LayersLoad;
+            Assert.DoesNotContain(viewModel.Rows.OfType<MemoryRowViewModel>(), r => r.Key.EntryID == _beach);
+
+            viewModel.CloseSession();
+        });
+
         /// <summary>A small invented PNG, distinct from <see cref="MemoriesViewModelTests.Png"/>.</summary>
+
         internal static byte[] Png(int size)
         {
             var pixels = Enumerable.Repeat((byte)0x7F, size * size * 4).ToArray();

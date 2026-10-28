@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.IO;
 using System.Windows;
 using System.Windows.Threading;
 using Chatcheology.Data.Memories.Personal;
@@ -27,6 +28,10 @@ namespace Chatcheology.Desktop.Tests
                 var store = PersonalMemoryStore.Beside(
                     workspace.DatabasePath, new WorkspaceMessageLinkTargets(workspace.DatabasePath, 1));
                 var holidays = store.CreateCollection("Holidays", true, new DateTime(2026, 10, 28, 9, 0, 0, DateTimeKind.Utc));
+                var chosen = Path.Combine(workspace.Root, "chosen");
+                Directory.CreateDirectory(chosen);
+                File.WriteAllBytes(Path.Combine(chosen, "a.png"), MemoryLayersTests.Png(2));
+                File.WriteAllBytes(Path.Combine(chosen, "b.png"), MemoryLayersTests.Png(3));
                 store.AddEntry(new PersonalEntryDraft
                 {
                     CollectionID = holidays,
@@ -35,6 +40,10 @@ namespace Chatcheology.Desktop.Tests
                     Precision = PersonalDatePrecision.Day,
                     Source = "My own memory",
                     Links = [PersonalLinkTarget.ToMessage(1)],
+
+                    // CH-46: a cover and one captioned extra photo, so the form lists both.
+                    Image = PersonalImageChoice.FromFile(Path.Combine(chosen, "a.png")),
+                    ExtraPhotos = [new PersonalPhotoDraft(PersonalImageChoice.FromFile(Path.Combine(chosen, "b.png")), "Invented dunes")],
                 });
                 SqliteConnection.ClearAllPools();
 
@@ -74,6 +83,7 @@ namespace Chatcheology.Desktop.Tests
                     Settle(window);
 
                     Assert.Single(memories.Form.Links);
+                    Assert.Equal(2, memories.Form.Photos.Count);
                     Assert.Empty(errors.Messages);
                 }
                 finally
@@ -123,7 +133,9 @@ namespace Chatcheology.Desktop.Tests
                 nameof(EntryPickRow),
                 nameof(ImportedCollectionRow),
                 nameof(PersonalEntrySummary),
+                nameof(MemoryFormPhotoViewModel),
             ];
+
 
             internal List<string> Messages { get; } = [];
 

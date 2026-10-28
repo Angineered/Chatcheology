@@ -379,8 +379,11 @@
         </DataTemplate>
     </Window.Resources>
 
+    <!-- The window's content, with the large view of a memory's photo over it (CH-46). The DockPanel
+         below keeps its earlier indentation so the history of its contents stays readable. -->
     <Grid>
     <DockPanel>
+
         <!-- Toolbar. A WrapPanel, so items that do not fit the window's width move to a second
              row instead of being clipped off the right edge (CH-18: the archive buttons are last). -->
         <Border DockPanel.Dock="Top" Background="#FFE7E2D9" BorderBrush="#FFCFC8BC"
