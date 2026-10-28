@@ -1,11 +1,20 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- No permissions are requested. Debug builds get INTERNET from the .NET Android tooling, for the
-     debugger only; a Release build has none. Nothing is backed up or carried to another device:
-     allowBackup is off, and both rule files exclude every domain.
+<!-- Two permissions, both for noted-date notifications (CH-47): POST_NOTIFICATIONS (asked for once on
+     Android 13+, the first time a noted date would notify) and RECEIVE_BOOT_COMPLETED (to set the
+     noted-date alarm again after a restart). The alarm is inexact (setAndAllowWhileIdle), so there is no
+     exact-alarm permission, and there is no foreground service. AndroidX adds its own signature-level
+     DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION. Debug builds also get INTERNET from the .NET Android
+     tooling, for the debugger only; a Release build has none, and tools\Check-AndroidRelease.ps1 fails on
+     any permission beyond these. Nothing is backed up or carried to another device: allowBackup is off,
+     and both rule files exclude every domain.
 
-     The launcher activity is the only exported component. AndroidX's profile installer brings an
-     exported receiver (guarded by the DUMP permission) for baseline profiles of Java code; this app's
-     code is .NET, so the receiver does nothing useful here and is removed.
+     The launcher activity is the only exported component. The noted-date alarm and boot receivers are
+     declared in code (Platforms/Android/NotedDateReceivers.cs) with exported="false": the system still
+     delivers BOOT_COMPLETED and the app's own PendingIntent alarm to them.
+
+     AndroidX's profile installer brings an exported receiver (guarded by the DUMP permission) for
+     baseline profiles of Java code; this app's code is .NET, so the receiver does nothing useful here
+     and is removed.
 
      Media is handed to other apps only through the app's own FileProvider (ArchiveFileProvider: not
      exported, one-file read grants, files/archives/ only). MAUI Essentials' FileProvider, which this app
@@ -13,6 +22,8 @@
      also overridden with the archives folder only (Resources/xml), in case it ever comes back. -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
           xmlns:tools="http://schemas.android.com/tools">
+	<uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+	<uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 	<application
 		android:allowBackup="false"
 		android:fullBackupContent="@xml/backup_rules"

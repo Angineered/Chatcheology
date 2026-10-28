@@ -70,15 +70,26 @@ app on the phone was signed with another key; uninstalling it deletes its import
 `bin\Release\net10.0-android\org.chatcheology.viewer-Signed.apk`) with the SDK's aapt2 and
 zipalign: no INTERNET permission; `allowBackup` false; the backup and data-extraction rules present
 and excluding every domain; only the launcher activity exported; every FileProvider not exported,
-with per-URI grants, limited to `files/archives/`; `zipalign -c -P 16` passes. It exits 1 on any
-failure. Run it after every Release build that will be installed or published.
+with per-URI grants, limited to `files/archives/`; `zipalign -c -P 16` passes; the permissions are
+exactly `POST_NOTIFICATIONS` and `RECEIVE_BOOT_COMPLETED` (plus AndroidX's signature-level
+`DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION`), any other failing. It exits 1 on any failure. Run it
+after every Release build that will be installed or published. `tools\Test-CheckAndroidRelease.ps1`
+runs it on small synthetic APKs and shows each refused case (INTERNET, exact alarms, a foreground
+service, another permission, an exported receiver) failing.
 
 ## Privacy
 
-No permissions in a Release build (the .NET tooling adds INTERNET to Debug builds only, for the
-debugger). `allowBackup` is off, and `backup_rules.xml` and `data_extraction_rules.xml` exclude every
-domain, so neither cloud backup nor device-to-device transfer copies the archive. The launcher
-activity is the only exported component.
+A Release build has two permissions, both for noted-date notifications (CH-47): `POST_NOTIFICATIONS`
+(asked for once on Android 13+, the first time a noted date would notify) and `RECEIVE_BOOT_COMPLETED`
+(the alarm is set again after a restart). No INTERNET (the .NET tooling adds it to Debug builds only,
+for the debugger), no exact-alarm permission, no foreground service. `allowBackup` is off, and
+`backup_rules.xml` and `data_extraction_rules.xml` exclude every domain, so neither cloud backup nor
+device-to-device transfer copies the archive. The launcher activity is the only exported component;
+the noted-date alarm and boot receivers are not exported.
+
+Noted-date notifications are posted as private: a lock screen set to hide sensitive content shows only
+"Chatcheology: a noted date today", and the title after unlock. The notification time (default 09:00)
+is one setting for the whole app.
 
 The folder picker (`ACTION_OPEN_DOCUMENT_TREE`) gives the app read access to the picked folder only,
 for as long as it runs; no storage permission is requested. Media is handed to other apps only

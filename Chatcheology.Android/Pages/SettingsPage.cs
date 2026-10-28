@@ -6,8 +6,9 @@ namespace Chatcheology.Android.Pages
 {
     /// <summary>
     /// Settings for the open archive: Me (a participant, the archive's choice by default, remembered per
-    /// archive), On this day (on unless turned off, per archive; CH-39), Memories (one switch per layer,
-    /// with filters for an imported one; CH-42), Remove archive (after a confirmation) and About.
+    /// archive), On this day (on unless turned off, per archive; CH-39) with the noted-date notification time
+    /// (per app) and the noted dates (CH-47), Memories (one switch per layer, with filters for an imported one;
+    /// CH-42), Remove archive (after a confirmation) and About.
     /// </summary>
     internal sealed class SettingsPage : ContentPage
     {
@@ -18,6 +19,7 @@ namespace Chatcheology.Android.Pages
         private readonly IReadOnlyList<MeChoice> _choices;
         private readonly VerticalStackLayout _noted = new();
         private readonly Action _notedDatesChanged;
+        private readonly VerticalStackLayout _notificationsOff = new() { Spacing = 4, IsVisible = false };
         private bool _loading;
 
         internal SettingsPage(ArchiveSession session, Func<Task> meChanged, Func<Task> removeArchive, Action onThisDayChanged, Func<Task> layersChanged)
@@ -41,6 +43,7 @@ namespace Chatcheology.Android.Pages
             {
                 session.OnThisDayEnabled = e.Value;
                 onThisDayChanged();
+                _ = NotedDateNotifier.UpdateAsync();
             };
 
             var onThisDayRow = new Grid
@@ -52,7 +55,12 @@ namespace Chatcheology.Android.Pages
             onThisDayRow.Add(new Label { Text = "Show earlier years' messages from today's date when the conversation opens.", FontSize = 13, VerticalOptions = LayoutOptions.Center }.TextIn("MutedText"), 0);
             onThisDayRow.Add(onThisDay, 1);
 
-            _notedDatesChanged = onThisDayChanged;
+            // Every change to noted dates or mutes schedules the notifications again (CH-47).
+            _notedDatesChanged = () =>
+            {
+                onThisDayChanged();
+                _ = NotedDateNotifier.UpdateAsync();
+            };
             _noted.Spacing = 8;
             RebuildNotedDates();
 
@@ -77,6 +85,8 @@ namespace Chatcheology.Android.Pages
 
                         Heading("On this day"),
                         onThisDayRow,
+                        NotificationTimeRow(),
+                        _notificationsOff,
                         _noted,
 
                         memories,
@@ -94,6 +104,98 @@ namespace Chatcheology.Android.Pages
             };
         }
 
+        /// <inheritdoc />
+        protected override void OnAppearing()
+        {
+            base.OnAppearing();
+
+            // Read again each time: the system settings may have been changed meanwhile.
+            ShowNotificationState();
+        }
+
+        /// <summary>
+        /// The time noted dates notify (CH-47): one for the whole app, 09:00 until changed. A change schedules
+        /// the notifications again.
+        /// </summary>
+        private static Grid NotificationTimeRow()
+        {
+            var picker = new TimePicker
+            {
+                Time = NotedDateNotifier.Notifications.Time.ToTimeSpan(),
+                Format = "HH:mm",
+                VerticalOptions = LayoutOptions.Center,
+            };
+
+            SemanticProperties.SetDescription(picker, "Noted-date notification time");
+            picker.PropertyChanged += (_, e) =>
+            {
+                if (e.PropertyName != nameof(TimePicker.Time) || picker.Time is not { } value)
+                {
+                    return;
+                }
+
+                var chosen = new TimeOnly(value.Hours, value.Minutes);
+
+                if (chosen != NotedDateNotifier.Notifications.Time)
+                {
+                    NotedDateNotifier.Notifications.Time = chosen;
+                    _ = NotedDateNotifier.UpdateAsync();
+                }
+            };
+
+            var row = new Grid
+            {
+                ColumnDefinitions = { new ColumnDefinition(GridLength.Star), new ColumnDefinition(GridLength.Auto) },
+                ColumnSpacing = 12,
+            };
+
+            row.Add(new Label { Text = "Noted-date notification time (for every archive).", FontSize = 13, VerticalOptions = LayoutOptions.Center }.TextIn("MutedText"), 0);
+            row.Add(picker, 1);
+
+            return row;
+        }
+
+        /// <summary>
+        /// "Notifications are off" with a way to the system settings, when the app may not notify: refused on
+        /// Android 13+ (once asked), or turned off in the system settings.
+        /// </summary>
+        private void ShowNotificationState()
+        {
+            bool off;
+
+            try
+            {
+                off = !NotedDateNotifier.NotificationsEnabled
+                      && (!OperatingSystem.IsAndroidVersionAtLeast(33) || NotedDateNotifier.Notifications.PermissionAsked);
+            }
+            catch (Exception)
+            {
+                off = false;
+            }
+
+            if (off && _notificationsOff.Children.Count == 0)
+            {
+                var open = new Button { Text = "Open notification settings", HorizontalOptions = LayoutOptions.Start };
+                open.Clicked += (_, _) =>
+                {
+                    try
+                    {
+                        NotedDateNotifier.OpenSystemSettings();
+                    }
+                    catch (Exception)
+                    {
+                        // A button handler: nothing here may end the app.
+                    }
+                };
+
+                _notificationsOff.Add(new Label { Text = "Notifications are off", FontSize = 15, FontAttributes = FontAttributes.Bold });
+                _notificationsOff.Add(new Label { Text = "Noted dates still show on the card. To be reminded, allow notifications for Chatcheology.", FontSize = 13 }.TextIn("MutedText"));
+                _notificationsOff.Add(open);
+            }
+
+            _notificationsOff.IsVisible = off;
+        }
+
         /// <summary>
         /// "Noted dates" (CH-47): the archive's gifted dates, each with a Notify switch (a gifted date cannot be
         /// edited or deleted here), then the phone's own, each with Edit and Delete (after a confirmation), and Add.
@@ -102,7 +204,7 @@ namespace Chatcheology.Android.Pages
         {
             _noted.Children.Clear();
             _noted.Add(new Label { Text = "Noted dates", FontSize = 15, FontAttributes = FontAttributes.Bold, Margin = new Thickness(0, 6, 0, 0) });
-            _noted.Add(new Label { Text = "Days that matter to you, shown here every year. Notify is used for reminders.", FontSize = 13 }.TextIn("MutedText"));
+            _noted.Add(new Label { Text = "Days that matter to you, shown on the card every year and notified that morning. Notify off: no notification.", FontSize = 13 }.TextIn("MutedText"));
 
             var listings = _session.NotedDateListings;
             var gifted = listings.Where(date => date.IsGifted).ToList();

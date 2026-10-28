@@ -1,4 +1,5 @@
 using Android.App;
+using Android.Content;
 using Android.Content.PM;
 using Android.OS;
 using AndroidX.Activity.Result;
@@ -17,6 +18,7 @@ namespace Chatcheology.Android
             | ConfigChanges.ScreenLayout | ConfigChanges.SmallestScreenSize | ConfigChanges.Density)]
     public class MainActivity : MauiAppCompatActivity
     {
+        private static string? _pendingArchive;
         private ActivityResultLauncher? _pickFolder;
         private TaskCompletionSource<AndroidUri?>? _picking;
 
@@ -42,15 +44,54 @@ namespace Chatcheology.Android
             return _picking.Task;
         }
 
+        /// <summary>
+        /// The archive a noted-date notification asked to open (its folder name), taken once; or
+        /// <see langword="null"/>. The start screen opens it only when it is installed.
+        /// </summary>
+        internal static string? TakePendingArchive() => Interlocked.Exchange(ref _pendingArchive, null);
+
         /// <inheritdoc />
         protected override void OnCreate(Bundle? savedInstanceState)
         {
+            // Before the start screen exists, so it finds the archive when it first appears. A recreated activity
+            // carries its first intent again: only a fresh start reads it.
+            if (savedInstanceState is null)
+            {
+                TakeArchive(Intent);
+            }
+
             base.OnCreate(savedInstanceState);
 
             Current = this;
 
             // Registered before the activity starts, as the result API requires.
             _pickFolder = RegisterForActivityResult(new ActivityResultContracts.OpenDocumentTree(), new FolderPicked(this));
+        }
+
+        /// <summary>A noted-date notification was tapped while the app was running: open that archive.</summary>
+        protected override void OnNewIntent(Intent? intent)
+        {
+            base.OnNewIntent(intent);
+
+            if (TakeArchive(intent)
+                && Microsoft.Maui.Controls.Application.Current?.Windows.FirstOrDefault()?.Page is NavigationPage { RootPage: Pages.StartPage start })
+            {
+                _ = start.OpenFromNotificationAsync();
+            }
+        }
+
+        /// <summary>Keeps the archive a notification's tap names; the value is only ever matched against installed folder names.</summary>
+        private static bool TakeArchive(Intent? intent)
+        {
+            if (intent?.GetStringExtra(NotedDateNotifier.ArchiveExtra) is not { Length: > 0 and <= 64 } id)
+            {
+                return false;
+            }
+
+            intent.RemoveExtra(NotedDateNotifier.ArchiveExtra);
+            _pendingArchive = id;
+
+            return true;
         }
 
         /// <inheritdoc />

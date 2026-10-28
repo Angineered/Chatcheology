@@ -46,6 +46,7 @@ namespace Chatcheology.Android.Pages
         private OnThisDay? _onThisDay;
         private ToolbarItem? _onThisDayIcon;
         private int _layersVersion;
+        private readonly bool _showOnThisDay;
 
         /// <summary>Whether the page has begun closing its archive: nothing more is read.</summary>
         private bool _closed => _gate.IsClosed;
@@ -54,11 +55,19 @@ namespace Chatcheology.Android.Pages
         /// A page over a conversation the caller opened off the UI thread. The page owns the session from
         /// here on and closes it when it is closed.
         /// </summary>
-        internal ConversationPage(AppState state, OpenedConversation opened, Stopwatch? openWatch = null)
+        /// <param name="state">The app's shared state.</param>
+        /// <param name="opened">The opened conversation; the page owns its session.</param>
+        /// <param name="openWatch">The open timing, for the log.</param>
+        /// <param name="showOnThisDay">
+        /// Opened from a noted-date notification (CH-47): the On this day card opens even when it was already shown
+        /// today. An archive with no messages has no card.
+        /// </param>
+        internal ConversationPage(AppState state, OpenedConversation opened, Stopwatch? openWatch = null, bool showOnThisDay = false)
         {
             InitializeComponent();
 
             _state = state;
+            _showOnThisDay = showOnThisDay;
             _session = opened.Session;
             _timeline = opened.Timeline;
             _openedAt = opened.At;
@@ -577,6 +586,11 @@ namespace Chatcheology.Android.Pages
 
             _onThisDay = _session.OnThisDayFor(days, OnThisDay.TodayFrom(TimeProvider.System));
             UpdateOnThisDay(openByItself: true);
+
+            if (_showOnThisDay && !OnThisDayCard.IsVisible)
+            {
+                ShowOnThisDayCard();
+            }
         }
 
         /// <summary>Shows or hides the icon (and the card) as the setting and the years say.</summary>
@@ -874,6 +888,10 @@ namespace Chatcheology.Android.Pages
             {
                 await DisplayAlertAsync("Remove archive", "The archive could not be removed completely. Try again from the start screen.", "OK");
             }
+
+            // Its noted dates no longer notify (CH-47).
+            NotedDateNotifier.Cancel(archive.Id);
+            _ = NotedDateNotifier.UpdateAsync();
 
             await Navigation.PopToRootAsync();
         }
