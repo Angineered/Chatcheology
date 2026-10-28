@@ -54,7 +54,8 @@ namespace Chatcheology.Android
         protected override void OnCreate(Bundle? savedInstanceState)
         {
             // Before the start screen exists, so it finds the archive when it first appears. A recreated activity
-            // carries its first intent again: only a fresh start reads it.
+            // carries its first intent again: only a fresh start reads it. A start without the extra (the launcher)
+            // clears any archive left from an ignored tap.
             if (savedInstanceState is null)
             {
                 TakeArchive(Intent);
@@ -80,15 +81,36 @@ namespace Chatcheology.Android
             }
         }
 
-        /// <summary>Keeps the archive a notification's tap names; the value is only ever matched against installed folder names.</summary>
+        /// <summary>
+        /// Keeps the archive a notification's tap names, replacing any earlier one; an intent without it clears it.
+        /// The value is only ever matched against installed folder names. An intent whose extras cannot be read
+        /// (another app's crafted Parcelable throws on Android 12 and older) counts as one without it.
+        /// </summary>
         private static bool TakeArchive(Intent? intent)
         {
-            if (intent?.GetStringExtra(NotedDateNotifier.ArchiveExtra) is not { Length: > 0 and <= 64 } id)
+            string? id;
+
+            try
             {
+                id = intent?.GetStringExtra(NotedDateNotifier.ArchiveExtra);
+
+                if (id is not null)
+                {
+                    intent!.RemoveExtra(NotedDateNotifier.ArchiveExtra);
+                }
+            }
+            catch (Exception)
+            {
+                // BadParcelableException and the like: the extra is ignored.
+                id = null;
+            }
+
+            if (id is not { Length: > 0 and <= 64 })
+            {
+                _pendingArchive = null;
                 return false;
             }
 
-            intent.RemoveExtra(NotedDateNotifier.ArchiveExtra);
             _pendingArchive = id;
 
             return true;

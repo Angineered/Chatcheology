@@ -81,7 +81,8 @@ namespace Chatcheology.Android.Pages
         {
             try
             {
-                if (!_started || _state.Importing || MainActivity.TakePendingArchive() is not { } id)
+                // Taken first, so an ignored tap does not open later from a launcher start.
+                if (MainActivity.TakePendingArchive() is not { } id || !_started || _state.Importing)
                 {
                     return;
                 }

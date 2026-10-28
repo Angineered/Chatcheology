@@ -20,9 +20,14 @@ namespace Chatcheology.Android
     /// and schedules the next; <see cref="NotedDateBootReceiver"/> schedules again after a restart. Rescheduled on
     /// app start and after any change to noted dates, mutes, the On this day switch, the time, an import or a
     /// removal.</para>
-    /// <para><strong>Privacy.</strong> Posted as <c>VISIBILITY_PRIVATE</c> (and on a channel whose lock-screen
-    /// visibility is private) with a public version that says only <see cref="PublicText"/>, so a lock screen that
-    /// hides sensitive content shows the title only after unlock. The log says counts only.</para>
+    /// <para><strong>Privacy.</strong> The notification says only "A noted date today" or "N noted dates today"
+    /// (<see cref="NotedDateSchedule.TextFor"/>): no title and no conversation name, so nothing personal reaches a
+    /// lock screen whatever its setting; the titles are on the card after the tap. It is still posted as
+    /// <c>VISIBILITY_PRIVATE</c> on a channel whose lock-screen visibility is private, with a public version
+    /// that says the same. The log says counts only.</para>
+    /// <para><strong>Once a day per archive.</strong> Each archive's posted day is kept in its settings; an alarm
+    /// that fires for today posts only the archives not yet posted today and records them, even when
+    /// notifications are off (so a late-today catch-up does not repeat every minute).</para>
     /// </remarks>
     internal static class NotedDateNotifier
     {
@@ -34,9 +39,6 @@ namespace Chatcheology.Android
 
         /// <summary>The extra on a tap's intent: the archive's folder name.</summary>
         internal const string ArchiveExtra = "org.chatcheology.viewer.extra.ARCHIVE";
-
-        /// <summary>All a locked screen shows.</summary>
-        internal const string PublicText = "Chatcheology: a noted date today";
 
         private const string DayFormat = "yyyy'-'MM'-'dd";
 
@@ -73,8 +75,8 @@ namespace Chatcheology.Android
         {
             lock (Lock)
             {
-                var archives = Read();
-                var next = NotedDateSchedule.Next(archives, Notifications.Time, DateTime.Now, Notifications.PostedThrough);
+                var archives = Read(new ArchiveSettings(new AppState.PreferencesStore()));
+                var next = NotedDateSchedule.Next(archives, Notifications.Time, DateTime.Now);
                 var alarms = (AlarmManager?)Context.GetSystemService(Context.AlarmService);
 
                 if (alarms is not null)
@@ -114,8 +116,16 @@ namespace Chatcheology.Android
                     return;
                 }
 
-                var due = NotedDateSchedule.DueOn(Read(), today);
+                var settings = new ArchiveSettings(new AppState.PreferencesStore());
+                var due = NotedDateSchedule.DueOn(Read(settings), today);
                 var manager = Manager;
+
+                // Today is done for these archives, posted or not: one per archive per day, and no catch-up loop
+                // while notifications are off.
+                foreach (var notification in due)
+                {
+                    settings.SetNotedDatesPostedThrough(notification.ContentsSha256, today);
+                }
 
                 if (manager is null || !manager.AreNotificationsEnabled())
                 {
@@ -129,9 +139,6 @@ namespace Chatcheology.Android
                 {
                     manager.Notify(NotedDateSchedule.NotificationId(notification.ArchiveId), Build(notification));
                 }
-
-                // Today is done: a later time chosen today does not notify again.
-                Notifications.PostedThrough = today;
 
                 AndroidLog.Info(AppState.LogTag, $"noted-dates posted={due.Count}");
             }
@@ -168,8 +175,8 @@ namespace Chatcheology.Android
         /// <summary>The app's notification settings, in its private preferences.</summary>
         internal static NotificationSettings Notifications { get; } = new(new AppState.PreferencesStore());
 
-        private static IReadOnlyList<ArchiveNotedDates> Read() =>
-            NotedDateSchedule.Read(new ArchiveLibrary(FileSystem.AppDataDirectory), new ArchiveSettings(new AppState.PreferencesStore()));
+        private static IReadOnlyList<ArchiveNotedDates> Read(ArchiveSettings settings) =>
+            NotedDateSchedule.Read(new ArchiveLibrary(FileSystem.AppDataDirectory), settings);
 
         /// <summary>Android 13+: asks once for permission to notify. A refusal is the system's to remember; Settings says so.</summary>
         private static async Task AskPermissionOnceAsync()
@@ -223,17 +230,16 @@ namespace Chatcheology.Android
                 .SetFlags(ActivityFlags.NewTask | ActivityFlags.SingleTop | ActivityFlags.ClearTop);
             var tap = PendingIntent.GetActivity(Context, id, open, PendingIntentFlags.Immutable | PendingIntentFlags.UpdateCurrent);
 
-            // What a locked screen that hides sensitive content shows: no title, no conversation.
+            // Nothing sensitive is in it (no title, no conversation), so the public version says the same.
             var publicBuilder = new NotificationCompat.Builder(Context, ChannelId);
             publicBuilder.SetSmallIcon(Resource.Drawable.toolbar_onthisday);
-            publicBuilder.SetContentTitle(PublicText);
+            publicBuilder.SetContentTitle(due.Text);
             publicBuilder.SetContentIntent(tap);
             publicBuilder.SetAutoCancel(true);
 
             var builder = new NotificationCompat.Builder(Context, ChannelId);
             builder.SetSmallIcon(Resource.Drawable.toolbar_onthisday);
             builder.SetContentTitle(due.Text);
-            builder.SetContentText(due.ConversationTitle);
             builder.SetContentIntent(tap);
             builder.SetAutoCancel(true);
             builder.SetCategory(NotificationCompat.CategoryReminder);

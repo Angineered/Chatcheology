@@ -87,9 +87,10 @@ for the debugger), no exact-alarm permission, no foreground service. `allowBacku
 device-to-device transfer copies the archive. The launcher activity is the only exported component;
 the noted-date alarm and boot receivers are not exported.
 
-Noted-date notifications are posted as private: a lock screen set to hide sensitive content shows only
-"Chatcheology: a noted date today", and the title after unlock. The notification time (default 09:00)
-is one setting for the whole app.
+A noted-date notification says only "A noted date today" (or "N noted dates today"): never a title or
+the conversation's name, so nothing personal reaches a lock screen whatever its setting. The titles are
+on the On this day card after the tap. One notification per archive per day; the notification time
+(default 09:00) is one setting for the whole app.
 
 The folder picker (`ACTION_OPEN_DOCUMENT_TREE`) gives the app read access to the picked folder only,
 for as long as it runs; no storage permission is requested. Media is handed to other apps only
