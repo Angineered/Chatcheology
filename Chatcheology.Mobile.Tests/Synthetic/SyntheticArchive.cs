@@ -35,6 +35,7 @@ namespace Chatcheology.Mobile.Synthetic
     /// Whether to add the invented memory layers (<see cref="SyntheticMemories"/>, CH-42); needs at least
     /// 200 messages.
     /// </param>
+    /// <param name="NotedDates">Whether to add three invented noted dates (CH-47).</param>
     internal sealed record SyntheticArchiveOptions(
         int Messages = 3000,
         int Days = 120,
@@ -51,7 +52,8 @@ namespace Chatcheology.Mobile.Synthetic
         DateOnly? Start = null,
         int Videos = 0,
         byte[]? VideoBytes = null,
-        bool Memories = false);
+        bool Memories = false,
+        bool NotedDates = false);
 
     /// <summary>
     /// Writes a whole portable archive (the current format) of invented conversation through
@@ -325,6 +327,14 @@ namespace Chatcheology.Mobile.Synthetic
             if (options.Memories)
             {
                 SyntheticMemories.Write(writer, mediaFolder, messageTimes);
+            }
+
+            if (options.NotedDates)
+            {
+                // Invented dates: an anniversary with a note and a jumpable year, a date with no year, a leap day.
+                writer.WriteNotedDate(new ArchiveNotedDate { NotedDateID = 1, Title = "Our synthetic anniversary", Month = 3, Day = 14, Year = 2016, Note = "An invented note.", });
+                writer.WriteNotedDate(new ArchiveNotedDate { NotedDateID = 2, Title = "Invented birthday", Month = 8, Day = 2, Year = null, Note = null, });
+                writer.WriteNotedDate(new ArchiveNotedDate { NotedDateID = 3, Title = "Invented leap day", Month = 2, Day = 29, Year = 2020, Note = null, });
             }
 
             var counts = writer.Complete();

@@ -37,6 +37,7 @@ namespace Chatcheology.Mobile.Tests.Support
         internal const long Other = 2;
 
         private readonly List<ArchiveMessage> _messages = [];
+        private readonly List<ArchiveNotedDate> _notedDates = [];
         private DateTime _next = new(2025, 3, 1, 8, 0, 0);
 
         internal ArchiveBuilder(string title = "Alex and Sam")
@@ -78,6 +79,10 @@ namespace Chatcheology.Mobile.Tests.Support
 
             return sequence;
         }
+
+        /// <summary>Adds a gifted noted date (CH-47; the archive is created in October 2026).</summary>
+        internal void NotedDate(long id, string title, int month, int day, int? year = null, string? note = null) =>
+            _notedDates.Add(new ArchiveNotedDate { NotedDateID = id, Title = title, Month = month, Day = day, Year = year, Note = note });
 
         /// <summary>Adds a placeholder-only message with the attachments.</summary>
         internal int Media(params AttachmentSpec[] attachments) =>
@@ -131,6 +136,11 @@ namespace Chatcheology.Mobile.Tests.Support
             foreach (var message in _messages)
             {
                 writer.WriteMessage(message);
+            }
+
+            foreach (var notedDate in _notedDates)
+            {
+                writer.WriteNotedDate(notedDate);
             }
 
             var counts = writer.Complete();
