@@ -94,7 +94,16 @@ namespace Chatcheology.Data.Memories.Personal
 
         private T Query<T>(Func<SqliteCommand, T> query)
         {
-            var connection = WorkspaceDatabase.OpenReadOnlyConnection(_workspacePath);
+            SqliteConnection connection;
+
+            try
+            {
+                connection = WorkspaceDatabase.OpenReadOnlyConnection(_workspacePath);
+            }
+            catch (FileNotFoundException exception)
+            {
+                throw new WorkspaceMessagesUnavailableException(exception);
+            }
 
             try
             {
@@ -107,6 +116,19 @@ namespace Chatcheology.Data.Memories.Personal
                 connection.Dispose();
                 SqliteConnection.ClearPool(connection);
             }
+        }
+    }
+
+    /// <summary>
+    /// The workspace file is not there any more, so its messages cannot be read for a link. A fixed message;
+    /// the path stays in the inner exception only. Nothing was written.
+    /// </summary>
+    public sealed class WorkspaceMessagesUnavailableException : InvalidOperationException
+    {
+        /// <summary>Wraps the missing-file failure.</summary>
+        public WorkspaceMessagesUnavailableException(Exception innerException)
+            : base("The workspace file is not there any more, so its messages cannot be read. Nothing was written.", innerException)
+        {
         }
     }
 }

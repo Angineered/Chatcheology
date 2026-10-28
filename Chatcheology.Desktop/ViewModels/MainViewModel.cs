@@ -104,6 +104,8 @@ namespace Chatcheology.Desktop.ViewModels
                 if (e.PropertyName == nameof(MemoriesViewModel.IsWriting))
                 {
                     Archive.RaiseCommandStates();
+                    OpenWorkspaceCommand?.RaiseCanExecuteChanged();
+                    OnPropertyChanged(nameof(CanChangeConversation));
                 }
             };
 
@@ -126,7 +128,9 @@ namespace Chatcheology.Desktop.ViewModels
                 Memories.RaiseCommandStates();
             };
 
-            OpenWorkspaceCommand = new AsyncRelayCommand(OpenWorkspaceAsync, () => !Archive.IsRunning);
+            // Nor while the Memories area is writing the memories file beside this workspace.
+            OpenWorkspaceCommand = new AsyncRelayCommand(
+                OpenWorkspaceAsync, () => !Archive.IsRunning && !Memories.IsWriting);
 
             PreviousCommand = new AsyncRelayCommand(
                 () => NavigateAsync(PageDirection.Before, _page?.FirstSequenceNumber ?? 1),
@@ -195,12 +199,23 @@ namespace Chatcheology.Desktop.ViewModels
         /// <summary>Moves to the first message on or after the chosen date.</summary>
         public AsyncRelayCommand JumpToDateCommand { get; }
 
+        /// <summary>Whether another conversation may be chosen: not while the Memories area is writing.</summary>
+        public bool CanChangeConversation => !Memories.IsWriting;
+
         /// <summary>The conversation being browsed.</summary>
         public ConversationSummary? SelectedConversation
         {
             get => _selectedConversation;
             set
             {
+                // While the Memories area is writing, its message links name this conversation; the
+                // choice is refused and the list told to show the current one again.
+                if (Memories.IsWriting && !ReferenceEquals(value, _selectedConversation))
+                {
+                    OnPropertyChanged();
+                    return;
+                }
+
                 if (!SetProperty(ref _selectedConversation, value))
                 {
                     return;

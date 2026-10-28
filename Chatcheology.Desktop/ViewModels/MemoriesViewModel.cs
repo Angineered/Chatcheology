@@ -93,7 +93,9 @@ namespace Chatcheology.Desktop.ViewModels
 
         private MemoriesBackend? _backend;
         private bool _isOpen;
-        private bool _isBusy;
+        private int _busy;
+        private int _savesInFlight;
+        private int _generation;
         private bool _fileExists;
         private string _statusText = string.Empty;
         private string _collectionName = string.Empty;
@@ -167,25 +169,41 @@ namespace Chatcheology.Desktop.ViewModels
             private set => SetProperty(ref _isOpen, value);
         }
 
-        /// <summary>Whether a read or a write of the list is running.</summary>
-        public bool IsBusy
+        /// <summary>Whether a read or a write of the list is running (counted, so overlapping ones add up).</summary>
+        public bool IsBusy => _busy > 0;
+
+        /// <summary>
+        /// Whether the area is reading or writing the memories file: a list read or write, or a save from a
+        /// form, counted until the save has ended even if its form was closed meanwhile. The shell holds
+        /// archive export and checking, and workspace and conversation changes, off meanwhile.
+        /// </summary>
+        public bool IsWriting => IsBusy || _savesInFlight > 0;
+
+        private void ChangeBusy(int delta)
         {
-            get => _isBusy;
-            private set
+            var was = IsBusy;
+            _busy += delta;
+
+            if (was != IsBusy)
             {
-                if (SetProperty(ref _isBusy, value))
-                {
-                    OnPropertyChanged(nameof(IsWriting));
-                    RaiseCommandStates();
-                }
+                OnPropertyChanged(nameof(IsBusy));
+                OnPropertyChanged(nameof(IsWriting));
+                RaiseCommandStates();
             }
         }
 
-        /// <summary>
-        /// Whether the area is reading or writing the memories file (the list, or a save from the form).
-        /// The shell holds archive export and checking off meanwhile.
-        /// </summary>
-        public bool IsWriting => IsBusy || Form?.IsSaving == true;
+        private void OnSaving(bool started)
+        {
+            var was = IsWriting;
+            _savesInFlight += started ? 1 : -1;
+
+            if (was != IsWriting)
+            {
+                OnPropertyChanged(nameof(IsWriting));
+            }
+
+            RaiseCommandStates();
+        }
 
         /// <summary>Whether the memories file exists yet.</summary>
         public bool FileExists
@@ -271,7 +289,6 @@ namespace Chatcheology.Desktop.ViewModels
 
                 if (SetProperty(ref _form, value))
                 {
-                    OnPropertyChanged(nameof(IsWriting));
                     OnPropertyChanged(nameof(IsFormOpen));
                     OnPropertyChanged(nameof(IsListShown));
                     RaiseCommandStates();
@@ -283,7 +300,6 @@ namespace Chatcheology.Desktop.ViewModels
         {
             if (e.PropertyName == nameof(MemoryEntryFormViewModel.IsSaving))
             {
-                OnPropertyChanged(nameof(IsWriting));
                 CloseCommand.RaiseCanExecuteChanged();
             }
         }
@@ -308,8 +324,13 @@ namespace Chatcheology.Desktop.ViewModels
         }
 
         /// <summary>Closes the area and forgets the workspace (the workspace or conversation changed).</summary>
+        /// <remarks>
+        /// A save or read still running for the closed context keeps <see cref="IsWriting"/> up until it ends,
+        /// and its result is dropped (the context's generation has moved on).
+        /// </remarks>
         public void Close()
         {
+            _generation++;
             Form = null;
             IsOpen = false;
             _backend = null;
@@ -338,6 +359,8 @@ namespace Chatcheology.Desktop.ViewModels
                 return;
             }
 
+            _generation++;
+            Form = null;
             _backend = _backendFor(context);
             IsOpen = true;
 
@@ -355,11 +378,18 @@ namespace Chatcheology.Desktop.ViewModels
             collectionID ??= SelectedCollection?.CollectionID;
             entryID ??= SelectedEntry?.EntryID;
 
-            IsBusy = true;
+            var generation = _generation;
+            ChangeBusy(+1);
 
             try
             {
                 var overview = await Task.Run(backend.Store.ReadOverview).ConfigureAwait(true);
+
+                // Closed or reopened meanwhile: this read belongs to a context that is gone.
+                if (generation != _generation)
+                {
+                    return;
+                }
 
                 FileExists = overview.FileExists;
                 Collections.Clear();
@@ -387,11 +417,14 @@ namespace Chatcheology.Desktop.ViewModels
             }
             catch (Exception exception) when (IsExpected(exception))
             {
-                StatusText = Describe(exception, "The memories file could not be read.");
+                if (generation == _generation)
+                {
+                    StatusText = Describe(exception, "The memories file could not be read.");
+                }
             }
             finally
             {
-                IsBusy = false;
+                ChangeBusy(-1);
             }
         }
 
@@ -463,7 +496,7 @@ namespace Chatcheology.Desktop.ViewModels
             }
 
             StatusText = string.Empty;
-            Form = new MemoryEntryFormViewModel(backend, _dialogs, Collections.ToList(), collection.CollectionID, null, null, _blocked, OnFormClosed);
+            Form = CreateForm(backend, collection.CollectionID, null, null);
         }
 
         private async Task EditEntryAsync()
@@ -473,7 +506,8 @@ namespace Chatcheology.Desktop.ViewModels
                 return;
             }
 
-            IsBusy = true;
+            var generation = _generation;
+            ChangeBusy(+1);
 
             try
             {
@@ -489,21 +523,32 @@ namespace Chatcheology.Desktop.ViewModels
                     return (read, described);
                 }).ConfigureAwait(true);
 
+                // Closed or reopened meanwhile: no form for a context that is gone.
+                if (generation != _generation)
+                {
+                    return;
+                }
+
                 StatusText = string.Empty;
-                Form = new MemoryEntryFormViewModel(
-                    backend, _dialogs, Collections.ToList(), details.CollectionID, details, messages, _blocked, OnFormClosed);
+                Form = CreateForm(backend, details.CollectionID, details, messages);
             }
             catch (PersonalMemoryValidationException exception)
             {
-                StatusText = string.Join(" ", exception.Errors.Values);
+                if (generation == _generation)
+                {
+                    StatusText = string.Join(" ", exception.Errors.Values);
+                }
             }
             catch (Exception exception) when (IsExpected(exception))
             {
-                StatusText = Describe(exception, "The memory could not be read.");
+                if (generation == _generation)
+                {
+                    StatusText = Describe(exception, "The memory could not be read.");
+                }
             }
             finally
             {
-                IsBusy = false;
+                ChangeBusy(-1);
             }
         }
 
@@ -530,41 +575,81 @@ namespace Chatcheology.Desktop.ViewModels
 
         private async Task WriteAsync<T>(Func<T> write, Func<T, (string Status, long? CollectionID, long? EntryID)> done)
         {
-            IsBusy = true;
+            var generation = _generation;
+            ChangeBusy(+1);
 
             try
             {
                 var result = await Task.Run(write).ConfigureAwait(true);
+
+                if (generation != _generation)
+                {
+                    return;
+                }
+
                 var (status, collectionID, entryID) = done(result);
 
-                IsBusy = false;
                 await RefreshAsync(collectionID, entryID).ConfigureAwait(true);
-                StatusText = status;
+
+                if (generation == _generation)
+                {
+                    StatusText = status;
+                }
             }
             catch (PersonalMemoryValidationException exception)
             {
-                if (exception.Errors.TryGetValue(PersonalFields.CollectionName, out var nameError))
+                // A refusal for a context that is gone is not shown in the new one.
+                if (generation == _generation)
                 {
-                    CollectionNameError = nameError;
-                }
+                    if (exception.Errors.TryGetValue(PersonalFields.CollectionName, out var nameError))
+                    {
+                        CollectionNameError = nameError;
+                    }
 
-                StatusText = string.Join(" ", exception.Errors.Values) + " Nothing was written.";
+                    StatusText = string.Join(" ", exception.Errors.Values) + " Nothing was written.";
+                }
             }
             catch (Exception exception) when (IsExpected(exception))
             {
-                StatusText = Describe(exception, "The change could not be saved. Nothing was written.");
+                if (generation == _generation)
+                {
+                    StatusText = Describe(exception, "The change could not be saved. Nothing was written.");
+                }
             }
             finally
             {
-                IsBusy = false;
+                ChangeBusy(-1);
             }
+        }
+
+        /// <summary>A form for the current context; what it reports back is dropped once the context has moved on.</summary>
+        private MemoryEntryFormViewModel CreateForm(
+            MemoriesBackend backend, long collectionID, PersonalEntryDetails? details, IReadOnlyDictionary<int, MessageLinkCandidate?>? messages)
+        {
+            var generation = _generation;
+
+            return new MemoryEntryFormViewModel(
+                backend,
+                _dialogs,
+                Collections.ToList(),
+                collectionID,
+                details,
+                messages,
+                _blocked,
+                (saved, collection) => OnFormClosed(generation, saved, collection),
+                OnSaving);
         }
 
         /// <summary>The list's re-read after the last save from the form (for tests to wait on).</summary>
         internal Task AfterSave { get; private set; } = Task.CompletedTask;
 
-        private void OnFormClosed(long? savedEntryID, long? collectionID)
+        private void OnFormClosed(int generation, long? savedEntryID, long? collectionID)
         {
+            if (generation != _generation)
+            {
+                return;
+            }
+
             Form = null;
 
             if (savedEntryID is { } id)
@@ -589,6 +674,7 @@ namespace Chatcheology.Desktop.ViewModels
         /// </summary>
         internal static string Describe(Exception exception, string fallback) => exception switch
         {
+            WorkspaceMessagesUnavailableException => exception.Message,
             FileNotFoundException => "The memories file is not there any more. Nothing was written.",
             SqliteException { SqliteErrorCode: 5 or 6 } => "The memories file is busy: another program holds a lock on it. Nothing was written.",
             InvalidOperationException when exception.Message.Contains("memories file", StringComparison.Ordinal) => exception.Message,

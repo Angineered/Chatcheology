@@ -107,6 +107,23 @@ namespace Chatcheology.Data.Tests.Memories
         }
 
         [Fact]
+        public void CollectionNames_AreUniqueIgnoringCaseBeyondAscii()
+        {
+            _folder.CreateMemories();
+            var summer = _store.CreateCollection("Été", false, MemoriesTestFolder.Now);
+
+            var taken = Assert.Throws<PersonalMemoryValidationException>(() => _store.CreateCollection(" été ", false, MemoriesTestFolder.Now));
+            Assert.Equal("You already have a collection with that name.", taken.Errors[PersonalFields.CollectionName]);
+
+            var other = _store.CreateCollection("Hiver", false, MemoriesTestFolder.Now);
+            Assert.Throws<PersonalMemoryValidationException>(() => _store.RenameCollection(other, "ÉTÉ"));
+
+            // Its own name in another case is fine.
+            _store.RenameCollection(summer, "été");
+            Assert.Equal(["été", "Hiver"], _folder.Strings("SELECT Name FROM Collection ORDER BY CollectionID;"));
+        }
+
+        [Fact]
         public void ImportedCollections_CannotBeRenamedOrAddedTo()
         {
             _folder.CreateMemories();

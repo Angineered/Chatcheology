@@ -54,6 +54,12 @@ namespace Chatcheology.Desktop.ViewModels
         private readonly MemoriesDialogs _dialogs;
         private readonly Func<bool> _blocked;
         private readonly Action<long?, long?> _closed;
+
+        /// <summary>
+        /// Told when a save starts (true) and when it has ended (false), whatever became of the form
+        /// meanwhile: the area counts saves still writing the memories file, not open forms.
+        /// </summary>
+        private readonly Action<bool> _saving;
         private readonly long? _entryID;
 
         private PersonalCollectionViewModel? _collection;
@@ -91,12 +97,14 @@ namespace Chatcheology.Desktop.ViewModels
             PersonalEntryDetails? existing,
             IReadOnlyDictionary<int, MessageLinkCandidate?>? messages,
             Func<bool> blocked,
-            Action<long?, long?> closed)
+            Action<long?, long?> closed,
+            Action<bool> saving)
         {
             _backend = backend ?? throw new ArgumentNullException(nameof(backend));
             _dialogs = dialogs ?? throw new ArgumentNullException(nameof(dialogs));
             _blocked = blocked ?? throw new ArgumentNullException(nameof(blocked));
             _closed = closed ?? throw new ArgumentNullException(nameof(closed));
+            _saving = saving ?? throw new ArgumentNullException(nameof(saving));
 
             Collections = collections;
             _collection = collections.FirstOrDefault(c => c.CollectionID == collectionID);
@@ -443,20 +451,20 @@ namespace Chatcheology.Desktop.ViewModels
             }
 
             IsSaving = true;
+            _saving(true);
+
+            long? saved = null;
 
             try
             {
                 var store = _backend.Store;
-                var id = _entryID is { } existing
+                saved = _entryID is { } existing
                     ? await Task.Run(() =>
                     {
                         store.UpdateEntry(existing, draft);
                         return existing;
                     }).ConfigureAwait(true)
                     : await Task.Run(() => store.AddEntry(draft)).ConfigureAwait(true);
-
-                IsSaving = false;
-                _closed(id, draft.CollectionID);
             }
             catch (PersonalMemoryValidationException exception)
             {
@@ -468,7 +476,14 @@ namespace Chatcheology.Desktop.ViewModels
             }
             finally
             {
+                // The write has ended (committed or rolled back) before anyone is told.
                 IsSaving = false;
+                _saving(false);
+            }
+
+            if (saved is { } id)
+            {
+                _closed(id, draft.CollectionID);
             }
         }
 

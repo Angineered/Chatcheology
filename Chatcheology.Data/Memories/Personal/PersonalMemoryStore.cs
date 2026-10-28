@@ -667,19 +667,21 @@ namespace Chatcheology.Data.Memories.Personal
 
         private static void RequireUniqueName(SqliteTransaction transaction, string name, long? exceptCollectionID)
         {
+            // Compared here, not in SQL: SQLite's lower() folds ASCII only, so "Été" and "été" would differ.
             using var command = Command(transaction,
-                """
-                SELECT COUNT(*) FROM Collection
-                WHERE Kind = $kind AND lower(trim(Name)) = lower($name) AND CollectionID IS NOT $except;
-                """);
+                "SELECT CollectionID, Name FROM Collection WHERE Kind = $kind;");
             command.Parameters.AddWithValue("$kind", MemoriesDatabase.KindPersonal);
-            command.Parameters.AddWithValue("$name", name);
-            command.Parameters.AddWithValue("$except", (object?)exceptCollectionID ?? DBNull.Value);
 
-            if (Convert.ToInt64(command.ExecuteScalar(), CultureInfo.InvariantCulture) > 0)
+            using var reader = command.ExecuteReader();
+
+            while (reader.Read())
             {
-                throw new PersonalMemoryValidationException(
-                    PersonalFields.CollectionName, "You already have a collection with that name.");
+                if (reader.GetInt64(0) != exceptCollectionID
+                    && string.Equals(reader.GetString(1).Trim(), name.Trim(), StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new PersonalMemoryValidationException(
+                        PersonalFields.CollectionName, "You already have a collection with that name.");
+                }
             }
         }
 
