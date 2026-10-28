@@ -61,7 +61,17 @@ namespace Chatcheology.Desktop.Services
         {
             lock (_lock)
             {
-                return ReadAll().TryGetValue(KeyFor(workspacePath), out var stored) ? ToChoices(stored) : LayerChoices.None;
+                try
+                {
+                    return ReadAll().TryGetValue(KeyFor(workspacePath), out var stored) && stored is not null
+                        ? ToChoices(stored)
+                        : LayerChoices.None;
+                }
+                catch (Exception exception) when (exception is not OutOfMemoryException)
+                {
+                    // Whatever is wrong with the file, the layers start at their defaults.
+                    return LayerChoices.None;
+                }
             }
         }
 
@@ -72,7 +82,16 @@ namespace Chatcheology.Desktop.Services
 
             lock (_lock)
             {
-                var all = ReadAll();
+                Dictionary<string, StoredChoices?> all;
+
+                try
+                {
+                    all = ReadAll();
+                }
+                catch (Exception exception) when (exception is not OutOfMemoryException)
+                {
+                    all = [];
+                }
 
                 all[KeyFor(workspacePath)] = new StoredChoices
                 {
@@ -81,7 +100,7 @@ namespace Chatcheology.Desktop.Services
                         .ToDictionary(p => p.Key.ToString(CultureInfo.InvariantCulture), p => p.Value),
                     FiltersOff = choices.FiltersOff
                         .OrderBy(f => f.CollectionID).ThenBy(f => f.Filter, StringComparer.Ordinal)
-                        .Select(f => f.CollectionID.ToString(CultureInfo.InvariantCulture) + ":" + f.Filter)
+                        .Select(f => (string?)(f.CollectionID.ToString(CultureInfo.InvariantCulture) + ":" + f.Filter))
                         .ToList(),
                 };
 
@@ -100,7 +119,7 @@ namespace Chatcheology.Desktop.Services
             }
         }
 
-        private Dictionary<string, StoredChoices> ReadAll()
+        private Dictionary<string, StoredChoices?> ReadAll()
         {
             try
             {
@@ -109,9 +128,10 @@ namespace Chatcheology.Desktop.Services
                     return [];
                 }
 
-                return JsonSerializer.Deserialize<Dictionary<string, StoredChoices>>(File.ReadAllText(_path)) ?? [];
+                return JsonSerializer.Deserialize<Dictionary<string, StoredChoices?>>(File.ReadAllText(_path)) ?? [];
             }
-            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException)
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException
+                                                  or NotSupportedException or ArgumentException)
             {
                 return [];
             }
@@ -123,7 +143,7 @@ namespace Chatcheology.Desktop.Services
 
             foreach (var (key, value) in stored.Layers ?? [])
             {
-                if (long.TryParse(key, NumberStyles.None, CultureInfo.InvariantCulture, out var id))
+                if (key is not null && long.TryParse(key, NumberStyles.None, CultureInfo.InvariantCulture, out var id))
                 {
                     layers[id] = value;
                 }
@@ -133,6 +153,11 @@ namespace Chatcheology.Desktop.Services
 
             foreach (var text in stored.FiltersOff ?? [])
             {
+                if (text is null)
+                {
+                    continue;
+                }
+
                 var colon = text.IndexOf(':', StringComparison.Ordinal);
 
                 if (colon > 0
@@ -150,7 +175,7 @@ namespace Chatcheology.Desktop.Services
         {
             public Dictionary<string, bool>? Layers { get; set; }
 
-            public List<string>? FiltersOff { get; set; }
+            public List<string?>? FiltersOff { get; set; }
         }
     }
 }

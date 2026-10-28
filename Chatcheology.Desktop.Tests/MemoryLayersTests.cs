@@ -362,6 +362,190 @@ namespace Chatcheology.Desktop.Tests
             viewModel.CloseSession();
         });
 
+        [Fact]
+        public void Edit_WaitsWhileTheMemoriesAreaIsBusy() => OnDispatcher(async () =>
+        {
+            AddMemories();
+            var viewModel = await OpenAsync(_workspace);
+
+            viewModel.SelectMemoryRow(Row(viewModel, _beach, null));
+            Assert.True(viewModel.EditMemoryCommand.CanExecute(null));
+
+            // Opening the area reads the file; Edit is not offered meanwhile.
+            viewModel.Memories.OpenCommand.Execute(null);
+            Assert.True(viewModel.Memories.IsBusy);
+            Assert.False(viewModel.EditMemoryCommand.CanExecute(null));
+
+            await MemoriesViewModelTests.WaitUntil(() => !viewModel.Memories.IsBusy);
+            Assert.True(viewModel.EditMemoryCommand.CanExecute(null));
+
+            viewModel.CloseSession();
+        });
+
+        [Fact]
+        public void Paging_RowsAtAPagesFirstAndLastMessage_StayOnThatPage() => OnDispatcher(async () =>
+        {
+            // 320 messages, one a minute from 1 January 2026 00:00: pages 1-150, 151-300, 301-320.
+            using var workspace = new LongTestWorkspace(320);
+            SeedPeriods(workspace, [
+                (200, new DateTime(2026, 1, 1, 2, 29, 30)),   // between 150 (02:29) and 151 (02:30): after 150, last of page 1
+                (201, new DateTime(2026, 1, 1, 2, 30, 0)),    // the second of 151, the first of page 2: after 151
+                (202, new DateTime(2026, 1, 1, 4, 59, 0)),    // the second of 300, the last of page 2: after 300
+                (203, new DateTime(2025, 12, 31, 23, 0, 0)),  // before the first message: page 1 only
+                (204, new DateTime(2026, 1, 2, 0, 0, 0)),     // after the last message (320, 05:19): page 3 only
+            ]);
+
+            var viewModel = new MainViewModel(
+                () => workspace.DatabasePath,
+                ArchiveDialogs.None,
+                new ArchiveOperations(),
+                MemoriesDialogs.None,
+                null,
+                new LayerSettings(_settingsPath));
+
+            viewModel.OpenWorkspaceCommand.Execute(null);
+            await MemoriesViewModelTests.WaitUntil(() => viewModel.Messages.Count == 150 && !viewModel.IsBusy);
+            await viewModel.LayersLoad;
+            viewModel.LocalParticipant = viewModel.Participants[0];
+            await viewModel.LayersLoad;
+            await SwitchAsync(viewModel, () => Layer(viewModel, Gaming).IsShown = true);
+
+            var page = Keys(viewModel);
+            Assert.Equal(["e203:0", "m1", "m2"], page.Take(3));
+            Assert.Equal(["m149", "m150", "e200:0"], page.TakeLast(3));
+            Assert.Equal(152, page.Count);
+
+            viewModel.NextCommand.Execute(null);
+            await MemoriesViewModelTests.WaitUntil(() => viewModel.Messages[0].SequenceNumber == 151 && !viewModel.IsBusy);
+
+            page = Keys(viewModel);
+            Assert.Equal(["m151", "e201:0", "m152"], page.Take(3));
+            Assert.Equal(["m299", "m300", "e202:0"], page.TakeLast(3));
+            Assert.Equal(152, page.Count);
+
+            viewModel.NextCommand.Execute(null);
+            await MemoriesViewModelTests.WaitUntil(() => viewModel.Messages[0].SequenceNumber == 301 && !viewModel.IsBusy);
+
+            page = Keys(viewModel);
+            Assert.Equal("m301", page[0]);
+            Assert.Equal(["m320", "e204:0"], page.TakeLast(2));
+            Assert.Equal(21, page.Count);
+
+            // Back again: page 2 is rebuilt the same.
+            viewModel.PreviousCommand.Execute(null);
+            await MemoriesViewModelTests.WaitUntil(() => viewModel.Messages[0].SequenceNumber == 151 && !viewModel.IsBusy);
+            Assert.Equal(["m151", "e201:0"], Keys(viewModel).Take(2));
+
+            viewModel.CloseSession();
+        });
+
+        /// <summary>A Shared gaming collection whose entries each hold one strong period at the given local time.</summary>
+        private static void SeedPeriods(LongTestWorkspace workspace, IReadOnlyList<(long EntryID, DateTime Local)> entries)
+        {
+            var path = MemoriesDatabase.PathBeside(workspace.DatabasePath);
+            MemoriesDatabase.Create(path, new DateTime(2026, 10, 28, 9, 0, 0, DateTimeKind.Utc));
+
+            using (var connection = MemoriesDatabase.OpenConnection(path))
+            using (var command = connection.CreateCommand())
+            {
+                var sql = new System.Text.StringBuilder(
+                    $"INSERT INTO Collection VALUES ({Gaming}, 'Imported', 'Shared gaming', 'Synthetic shared activity', 0, 60);\n");
+                var item = 1;
+
+                foreach (var (id, local) in entries)
+                {
+                    var l = local.ToString("yyyy-MM-ddTHH:mm:ss", CultureInfo.InvariantCulture);
+                    var u = local.AddHours(-2).ToString("yyyy-MM-ddTHH:mm:ss", CultureInfo.InvariantCulture) + "Z";
+                    var key = id.ToString(CultureInfo.InvariantCulture);
+
+                    sql.Append(CultureInfo.InvariantCulture,
+                        $"""
+                        INSERT INTO Entry (EntryID, CollectionID, SourceKey, Title, StartLocal, EndLocal, StartUtc, EndUtc,
+                                           DatePrecision, Summary, ImageSha256, ImageSourceUrl, Source, DayLevel)
+                        VALUES ({key}, {Gaming}, 'invented|{key}', 'Invented Game {key}', '{l}', '{l}', '{u}', '{u}', 'Second',
+                                NULL, NULL, NULL, 'PSN trophies', 'strong');
+                        INSERT INTO EntryPeriod VALUES ({key}, 0, '{u}', '{u}', '{l}', '{l}', 'strong', 1, 1);
+                        INSERT INTO EntryItem (EntryItemID, EntryID, PeriodIndex, Role, SetId, ItemId, ItemType, TimeUtc, TimeLocal, Name, IconSha256)
+                        VALUES ({item}, {key}, 0, 'Local', 'setA', '{item}', 'bronze', '{u}', '{l}', NULL, NULL),
+                               ({item + 1}, {key}, 0, 'Other', 'setB', '{item + 1}', 'bronze', '{u}', '{l}', NULL, NULL);
+
+                        """);
+                    item += 2;
+                }
+
+                command.CommandText = sql.ToString();
+                command.ExecuteNonQuery();
+            }
+
+            SqliteConnection.ClearAllPools();
+        }
+
+        /// <summary>A synthetic workspace of <c>count</c> invented messages, one a minute, two fictional participants.</summary>
+        private sealed class LongTestWorkspace : IDisposable
+        {
+            private readonly string _root = Path.Combine(Path.GetTempPath(), "Chatcheology.Desktop.Tests", Guid.NewGuid().ToString("N"));
+
+            internal LongTestWorkspace(int count)
+            {
+                Directory.CreateDirectory(_root);
+                DatabasePath = Path.Combine(_root, "workspace.db");
+                Chatcheology.Data.Workspace.WorkspaceDatabase.Initialise(DatabasePath);
+
+                var sql = new System.Text.StringBuilder(
+                    """
+                    INSERT INTO ImportSource (SourceType, DisplayName, ImportedDateTimeUtc)
+                    VALUES ('SyntheticExport', 'Synthetic export', '2026-04-01T00:00:00.0000000Z');
+                    INSERT INTO Conversation (Title, CreatedDateTimeUtc) VALUES ('Ada and Bo', '2026-04-01T00:00:00.0000000Z');
+                    INSERT INTO Participant (DisplayName) VALUES ('Ada Fictional');
+                    INSERT INTO Participant (DisplayName) VALUES ('Bo Fictional');
+                    INSERT INTO ConversationParticipant (ConversationID, ParticipantID) VALUES (1, 1);
+                    INSERT INTO ConversationParticipant (ConversationID, ParticipantID) VALUES (1, 2);
+
+                    """);
+
+                var start = new DateTime(2026, 1, 1);
+
+                for (var i = 1; i <= count; i++)
+                {
+                    var time = start.AddMinutes(i - 1).ToString("yyyy-MM-ddTHH:mm:ss", CultureInfo.InvariantCulture);
+                    var n = i.ToString(CultureInfo.InvariantCulture);
+
+                    sql.Append(CultureInfo.InvariantCulture,
+                        $"""
+                        INSERT INTO Message (ConversationID, ImportSourceID, SequenceNumber, MessageDateTimeLocal,
+                            SenderParticipantID, MessageType, MessageContent, RawContent, SourceLineStart, SourceLineEnd)
+                        VALUES (1, 1, {n}, '{time}', {(i % 2) + 1}, 'User', 'Invented line {n}', 'raw', {n}, {n});
+
+                        """);
+                }
+
+                using (var connection = Chatcheology.Data.Workspace.WorkspaceDatabase.OpenConnection(DatabasePath))
+                using (var command = connection.CreateCommand())
+                {
+                    command.CommandText = sql.ToString();
+                    command.ExecuteNonQuery();
+                }
+
+                SqliteConnection.ClearAllPools();
+            }
+
+            internal string DatabasePath { get; }
+
+            public void Dispose()
+            {
+                SqliteConnection.ClearAllPools();
+
+                try
+                {
+                    Directory.Delete(_root, recursive: true);
+                }
+                catch (IOException)
+                {
+                    // A leaked handle shows up as a failure elsewhere.
+                }
+            }
+        }
+
         // ---------------------------------------------------------------------------------------
         // The synthetic memories file.
         // ---------------------------------------------------------------------------------------

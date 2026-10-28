@@ -139,6 +139,12 @@ namespace Chatcheology.Desktop.ViewModels
                     OpenWorkspaceCommand?.RaiseCanExecuteChanged();
                     OnPropertyChanged(nameof(CanChangeConversation));
                 }
+
+                // Edit waits while the Memories area reads or writes the file.
+                if (e.PropertyName is nameof(MemoriesViewModel.IsWriting) or nameof(MemoriesViewModel.IsBusy))
+                {
+                    EditMemoryCommand?.RaiseCanExecuteChanged();
+                }
             };
 
             // A save, rename or delete in the Memories area shows in the conversation at once.
@@ -147,7 +153,8 @@ namespace Chatcheology.Desktop.ViewModels
             CloseMemoryDetailsCommand = new RelayCommand(CloseMemoryDetails, () => MemoryDetails is not null);
             EditMemoryCommand = new AsyncRelayCommand(
                 EditMemoryAsync,
-                () => MemoryDetails?.IsPersonal == true && !Archive.IsRunning && !Review.IsBusy);
+                () => MemoryDetails?.IsPersonal == true && !Archive.IsRunning && !Review.IsBusy
+                      && !Memories.IsWriting && !Memories.IsBusy);
 
             // A decision in flight holds the archive commands off, and they are told when it ends.
             Review.PropertyChanged += (_, e) =>

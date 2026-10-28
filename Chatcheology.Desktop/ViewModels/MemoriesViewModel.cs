@@ -703,6 +703,10 @@ namespace Chatcheology.Desktop.ViewModels
             {
                 await EditEntryAsync().ConfigureAwait(true);
             }
+            else
+            {
+                StatusText = "The memory cannot be opened for editing right now. Try again when the current action has finished.";
+            }
         }
 
         internal static bool IsExpected(Exception exception) =>
