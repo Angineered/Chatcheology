@@ -26,7 +26,7 @@ namespace Chatcheology.Desktop.Tests
                     new DispatcherSynchronizationContext(Dispatcher.CurrentDispatcher));
 
                 using var workspace = new ArchiveTestWorkspace();
-                var (_, beach) = MemoryLayersTests.Seed(workspace);
+                var (_, beach) = MemoryLayersTests.Seed(workspace, photos: true);
 
                 var errors = new BindingErrors();
                 PresentationTraceSources.Refresh();
@@ -75,6 +75,21 @@ namespace Chatcheology.Desktop.Tests
                     viewModel.SelectMemoryRow(viewModel.Rows.OfType<MemoryRowViewModel>().Single(r => r.Key == new MemoryKey(beach, null)));
                     Settle(window);
                     Assert.True(viewModel.MemoryDetails!.HasLinks);
+
+                    // CH-46: the strip draws every photo, and the large view opens over the window.
+                    var strip = (ItemsControl)window.FindName("MemoryPhotoStrip");
+                    Assert.Equal(3, strip.Items.Count);
+                    Assert.All(strip.Items.Cast<object>(), item => Assert.True(Drawn(strip, item)));
+
+                    viewModel.OpenMemoryPhoto(1);
+                    Settle(window);
+                    Assert.Equal(Visibility.Visible, ((FrameworkElement)window.FindName("MemoryPhotoViewer")).Visibility);
+
+                    viewModel.MemoryPhotoViewer!.NextCommand.Execute(null);
+                    Settle(window);
+                    viewModel.MemoryPhotoViewer!.CloseCommand.Execute(null);
+                    Settle(window);
+                    Assert.Equal(Visibility.Collapsed, ((FrameworkElement)window.FindName("MemoryPhotoViewer")).Visibility);
 
                     viewModel.CloseMemoryDetailsCommand.Execute(null);
                     Settle(window);
@@ -170,6 +185,9 @@ namespace Chatcheology.Desktop.Tests
                 nameof(MemoryFilterViewModel),
                 nameof(MemoryDetailsViewModel),
                 nameof(MemoryItemViewModel),
+                nameof(MemoryStripPhotoViewModel),
+                nameof(MemoryPhotoViewerViewModel),
+
                 "MemoryLinkLine",
                 nameof(MainViewModel),
             ];

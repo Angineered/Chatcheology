@@ -203,6 +203,7 @@ namespace Chatcheology.Data.ArchiveExport
             var actualDefinitions = reader.ReadAllItemDefinitions();
 
             foreach (var sha in actualEntries.Select(e => e.ImageSha256)
+                         .Concat(reader.ReadAllEntryImages().Select(p => p.Sha256))
                          .Concat(actualDefinitions.Select(d => d.IconSha256))
                          .OfType<string>())
             {
@@ -286,7 +287,8 @@ namespace Chatcheology.Data.ArchiveExport
             {
                 if (!actualByID.TryGetValue(expected.EntryID, out var actual)
                     || !SameEntry(expected, actual)
-                    || !SamePeriods(expected.Periods, reader.ReadPeriods(expected.EntryID)))
+                    || !SamePeriods(expected.Periods, reader.ReadPeriods(expected.EntryID))
+                    || !SamePhotos(expected.Images, reader.ReadEntryImages(expected.EntryID)))
                 {
                     record.Add(ArchiveMismatchKind.EntryDiffers, null);
                 }
@@ -361,7 +363,16 @@ namespace Chatcheology.Data.ArchiveExport
             && e.Source == a.Source
             && e.DayLevel == a.DayLevel;
 
+        /// <summary>Extra photos (CH-46) in order, hash and caption; the extension follows the stored file, as for the cover.</summary>
+        private static bool SamePhotos(IReadOnlyList<ArchiveEntryImage> expected, IReadOnlyList<ArchiveEntryImage> actual) =>
+            expected.Count == actual.Count
+            && expected.Zip(actual).All(pair =>
+                pair.First.Ordinal == pair.Second.Ordinal
+                && pair.First.Sha256 == pair.Second.Sha256
+                && pair.First.Caption == pair.Second.Caption);
+
         private static bool SamePeriods(IReadOnlyList<ArchiveEntryPeriod> expected, IReadOnlyList<ArchiveEntryPeriod> actual) =>
+
             expected.Count == actual.Count
             && expected.Zip(actual).All(pair =>
                 pair.First.PeriodIndex == pair.Second.PeriodIndex

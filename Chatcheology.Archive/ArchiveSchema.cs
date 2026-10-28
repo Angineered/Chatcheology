@@ -375,6 +375,33 @@ namespace Chatcheology.Archive
                     DEFERRABLE INITIALLY DEFERRED
             );
             """,
+
+            // CH-46: a personal entry's extra photos after its cover, each a Media payload stored as
+            // media/<sha256><Extension> like the cover. Added to version 2 without a version bump: a
+            // reader treats a version 2 archive without this table as one with no extra photos.
+            """
+            CREATE TABLE EntryImage (
+                EntryID   INTEGER NOT NULL,
+                Ordinal   INTEGER NOT NULL,
+                Sha256    TEXT NOT NULL,
+                Extension TEXT NOT NULL,
+                Caption   TEXT NULL,
+
+                PRIMARY KEY (EntryID, Ordinal),
+                UNIQUE (EntryID, Sha256),
+
+                CHECK (Ordinal >= 1),
+                CHECK (length(Sha256) = 64 AND Sha256 = lower(Sha256)),
+                CHECK (substr(Extension, 1, 1) = '.' AND length(Extension) BETWEEN 2 AND 11
+                    AND Extension = lower(Extension)),
+                CHECK (Caption IS NULL OR length(trim(Caption)) > 0),
+
+                FOREIGN KEY (EntryID) REFERENCES Entry (EntryID)
+                    DEFERRABLE INITIALLY DEFERRED,
+                FOREIGN KEY (Sha256) REFERENCES Media (Sha256)
+                    DEFERRABLE INITIALLY DEFERRED
+            );
+            """,
         ];
     }
 }

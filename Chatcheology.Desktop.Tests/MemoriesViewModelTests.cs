@@ -24,9 +24,17 @@ namespace Chatcheology.Desktop.Tests
         private readonly List<string> _createAsked = [];
         private readonly List<string> _deleteAsked = [];
 
+        private readonly List<string> _deleteCollectionAsked = [];
+        private readonly List<string> _tidyAsked = [];
+
         private bool _confirmCreate = true;
         private bool _confirmDelete = true;
+        private bool _confirmTidy = true;
+        private bool _confirmCover;
+        private bool _withCoverDialog = true;
+        private readonly List<string> _coverAsked = [];
         private string? _image;
+        private IReadOnlyList<string>? _images;
 
         public void Dispose() => _workspace.Dispose();
 
@@ -243,7 +251,7 @@ namespace Chatcheology.Desktop.Tests
             _image = Chosen("notes.png", "not an image"u8.ToArray());
             await Run(form.ChooseImageCommand, form);
 
-            Assert.Equal("The chosen file is not a PNG, JPEG, GIF or WebP image.", form.ImageError);
+            Assert.Equal("notes.png: The chosen file is not a PNG, JPEG, GIF or WebP image.", form.ImageError);
             Assert.False(form.HasImage);
 
             _image = Chosen("beach.png", Png);
@@ -265,8 +273,272 @@ namespace Chatcheology.Desktop.Tests
             Assert.False(form.HasImage);
         }
 
+        // ---------------------------------------------------------------------------------------
+        // Several photos (CH-46).
+        // ---------------------------------------------------------------------------------------
+
+        [Fact]
+        public async Task AddingSeveralPhotos_AddsTheGoodOnes_AndNamesEachFailedFile()
+        {
+            var memories = await WithCollectionAsync("Holidays");
+            memories.NewEntryCommand.Execute(null);
+            var form = memories.Form!;
+
+            _images =
+            [
+                Chosen("beach.png", Png),
+                Chosen("notes.png", "not an image"u8.ToArray()),
+                Chosen("dunes.png", MemoryLayersTests.Png(3)),
+                Chosen("copy.png", Png),
+            ];
+            await Run(form.ChooseImageCommand, form);
+
+            Assert.Equal(2, form.Photos.Count);
+            Assert.True(form.Photos[0].IsCover);
+            Assert.False(form.Photos[0].CanEditCaption);
+            Assert.True(form.Photos[1].CanEditCaption);
+            Assert.True(form.HasExtraPhotos);
+            Assert.Equal(
+                "notes.png: The chosen file is not a PNG, JPEG, GIF or WebP image.\ncopy.png: that photo is already in this memory.",
+                form.ImageError);
+            Assert.StartsWith("New image: 1 KB (beach.png)", form.ImageText, StringComparison.Ordinal);
+        }
+
+        [Fact]
+        public async Task Photos_CanBeReorderedCaptionedRemovedAndMadeTheCover_AndSaveInOneGo()
+        {
+            var memories = await WithCollectionAsync("Holidays");
+            memories.NewEntryCommand.Execute(null);
+            var form = memories.Form!;
+            form.Title = "Beach week";
+            form.Source = "My own memory";
+            form.StartDate = new DateTime(2018, 1, 2);
+
+            var a = MemoryLayersTests.Png(2);
+            var b = MemoryLayersTests.Png(3);
+            var c = MemoryLayersTests.Png(4);
+            _images = [Chosen("a.png", a), Chosen("b.png", b), Chosen("c.png", c)];
+            await Run(form.ChooseImageCommand, form);
+
+            // c becomes the cover; a moves down below b; b gets a caption; then a is removed and re-added.
+            var photoA = form.Photos[0];
+            var photoB = form.Photos[1];
+            var photoC = form.Photos[2];
+
+            Assert.False(photoA.MoveUpCommand.CanExecute(null));
+            Assert.False(photoA.MakeCoverCommand.CanExecute(null));
+            photoC.MakeCoverCommand.Execute(null);
+            Assert.Equal([photoC, photoA, photoB], form.Photos);
+            Assert.True(photoC.IsCover);
+            Assert.False(photoA.IsCover);
+
+            photoA.MoveDownCommand.Execute(null);
+            Assert.Equal([photoC, photoB, photoA], form.Photos);
+            Assert.False(photoA.MoveDownCommand.CanExecute(null));
+
+            photoB.Caption = "Invented dunes";
+            photoA.Caption = "  ";
+
+            await Run(form.SaveCommand, form);
+            await memories.AfterSave;
+
+            Assert.Equal(Sha(c), Text("SELECT ImageSha256 FROM Entry;"));
+            Assert.Equal(
+                $"1|{Sha(b)}|Invented dunes;2|{Sha(a)}|-",
+                Text("SELECT group_concat(Ordinal || '|' || Sha256 || '|' || ifnull(Caption, '-'), ';') FROM (SELECT * FROM EntryImage ORDER BY Ordinal);"));
+
+            // Edit: the photos come back in order with their captions; removing the cover makes the next one the cover.
+            await Run(memories.EditEntryCommand, memories);
+            form = memories.Form!;
+
+            Assert.Equal(3, form.Photos.Count);
+            Assert.Equal(["", "Invented dunes", ""], form.Photos.Select(p => p.Caption));
+            Assert.All(form.Photos, p => Assert.Equal("Current image", p.Text));
+
+            // Removing the cover would make the captioned photo the cover: asked first; declined, nothing changes.
+            var cover = form.Photos[0];
+            cover.RemoveCommand.Execute(null);
+            Assert.Equal(3, form.Photos.Count);
+            Assert.Same(cover, form.Photos[0]);
+
+            _confirmCover = true;
+            cover.RemoveCommand.Execute(null);
+            Assert.True(form.Photos[0].IsCover);
+            Assert.Equal(string.Empty, form.Photos[0].Caption);
+            Assert.Equal(2, _coverAsked.Count);
+            Assert.Contains("\"Invented dunes\" will be removed", _coverAsked[1], StringComparison.Ordinal);
+
+            await Run(form.SaveCommand, form);
+            await memories.AfterSave;
+
+            Assert.Equal(Sha(b), Text("SELECT ImageSha256 FROM Entry;"));
+            Assert.Equal($"1|{Sha(a)}", Text("SELECT group_concat(Ordinal || '|' || Sha256, ';') FROM EntryImage;"));
+
+            // Remove all: no cover, no extra photos; the stored files stay.
+            await Run(memories.EditEntryCommand, memories);
+            form = memories.Form!;
+            form.RemoveImageCommand.Execute(null);
+            Assert.False(form.HasImage);
+            await Run(form.SaveCommand, form);
+            await memories.AfterSave;
+
+            Assert.Equal(string.Empty, Text("SELECT ImageSha256 FROM Entry;"));
+            Assert.Equal(0, Count("SELECT COUNT(*) FROM EntryImage;"));
+            Assert.Equal(3, Directory.GetFiles(MemoriesDatabase.MediaFolderFor(MemoriesPath)).Length);
+        }
+
+        [Fact]
+        public async Task MakingACaptionedPhotoTheCover_AsksFirst_AndOnlyThenDropsTheCaption()
+        {
+            var memories = await WithCollectionAsync("Holidays");
+            memories.NewEntryCommand.Execute(null);
+            var form = memories.Form!;
+
+            _images = [Chosen("a.png", MemoryLayersTests.Png(2)), Chosen("b.png", MemoryLayersTests.Png(3)), Chosen("c.png", MemoryLayersTests.Png(4))];
+            await Run(form.ChooseImageCommand, form);
+            var (a, b, c) = (form.Photos[0], form.Photos[1], form.Photos[2]);
+            b.Caption = "Invented dunes";
+
+            // Declined (make cover, move up into first place, move the cover down): nothing changes.
+            _confirmCover = false;
+            b.MakeCoverCommand.Execute(null);
+            b.MoveUpCommand.Execute(null);
+            a.MoveDownCommand.Execute(null);
+            Assert.Equal([a, b, c], form.Photos);
+            Assert.Equal("Invented dunes", b.Caption);
+            Assert.Equal(3, _coverAsked.Count);
+            Assert.Equal("The cover has no caption, so \"Invented dunes\" will be removed. Make it the cover?", _coverAsked[0]);
+
+            // A photo without a caption needs no question.
+            c.MakeCoverCommand.Execute(null);
+            Assert.Equal([c, a, b], form.Photos);
+            Assert.Equal(3, _coverAsked.Count);
+
+            // Accepted: it becomes the cover and its caption is gone, so nothing is lost silently on save.
+            _confirmCover = true;
+            b.MakeCoverCommand.Execute(null);
+
+            Assert.Equal([b, c, a], form.Photos);
+            Assert.True(b.IsCover);
+            Assert.Equal(string.Empty, b.Caption);
+            Assert.Equal(4, _coverAsked.Count);
+        }
+
+        [Fact]
+        public async Task WithNoCoverDialog_ACaptionedPhotoNeverBecomesTheCover()
+        {
+            _withCoverDialog = false;
+            var memories = await WithCollectionAsync("Holidays");
+            memories.NewEntryCommand.Execute(null);
+            var form = memories.Form!;
+
+            _images = [Chosen("a.png", MemoryLayersTests.Png(2)), Chosen("b.png", MemoryLayersTests.Png(3))];
+            await Run(form.ChooseImageCommand, form);
+            var second = form.Photos[1];
+            second.Caption = "Invented dunes";
+
+            second.MakeCoverCommand.Execute(null);
+            form.Photos[0].RemoveCommand.Execute(null);
+
+            Assert.Equal(2, form.Photos.Count);
+            Assert.Same(second, form.Photos[1]);
+            Assert.Equal("Invented dunes", second.Caption);
+        }
+
+        // ---------------------------------------------------------------------------------------
+        // Deleting a collection and tidying up images (CH-46).
+        // ---------------------------------------------------------------------------------------
+
+
+        [Fact]
+        public async Task AnEmptyCollection_IsDeletedAfterASimpleConfirmation()
+        {
+            var memories = await WithCollectionAsync("Holidays");
+
+            _confirmDelete = false;
+            await Run(memories.DeleteCollectionCommand, memories);
+
+            Assert.Equal("Delete the empty collection \"Holidays\"?", Assert.Single(_deleteCollectionAsked));
+            Assert.Equal("Nothing was deleted.", memories.StatusText);
+            Assert.Single(memories.Collections);
+
+            _confirmDelete = true;
+            await Run(memories.DeleteCollectionCommand, memories);
+
+            Assert.Empty(memories.Collections);
+            Assert.Null(memories.SelectedCollection);
+            Assert.Equal("Collection deleted.", memories.StatusText);
+            Assert.False(memories.DeleteCollectionCommand.CanExecute(null));
+        }
+
+        [Fact]
+        public async Task ACollectionWithMemories_SaysHowManyItRemoves_AndImportedOnesHaveNoDeleteAction()
+        {
+            var memories = await WithCollectionAsync("Holidays");
+            await SaveAsync(memories, "First", new DateTime(2018, 1, 2), linkTo: 3);
+            await SaveAsync(memories, "Second", new DateTime(2018, 1, 3));
+            AddImported();
+            await memories.RefreshAsync(null, null);
+
+            // Only personal collections are selectable for it; the imported one is a read-only line.
+            Assert.All(memories.Collections, c => Assert.NotEqual("Shared gaming", c.Name));
+            Assert.Single(memories.ImportedCollections);
+
+            memories.SelectedCollection = memories.Collections.Single(c => c.Name == "Holidays");
+            await Run(memories.DeleteCollectionCommand, memories);
+
+            Assert.Equal(
+                "Delete the collection \"Holidays\" and the 2 memories in it, with their links and photos? " +
+                "The image files stay in the memories folder. This cannot be undone.",
+                Assert.Single(_deleteCollectionAsked));
+            Assert.Equal("Collection deleted, with 2 memories and 1 link.", memories.StatusText);
+            Assert.Equal(0, Count("SELECT COUNT(*) FROM Entry WHERE CollectionID IN (SELECT CollectionID FROM Collection WHERE Kind = 'Personal');"));
+            Assert.Equal(1, Count("SELECT COUNT(*) FROM Collection;"));
+        }
+
+        [Fact]
+        public async Task TidyUp_ListsCountAndSize_AndDeletesOnlyAfterConfirmation()
+        {
+            var memories = await WithCollectionAsync("Holidays");
+            var media = MemoriesDatabase.MediaFolderFor(MemoriesPath);
+            Directory.CreateDirectory(media);
+            var stray = MemoryLayersTests.Png(5);
+            var strayPath = Path.Combine(media, Sha(stray) + ".png");
+            File.WriteAllBytes(strayPath, stray);
+            File.WriteAllText(Path.Combine(media, "readme.txt"), "synthetic");
+
+            _confirmTidy = false;
+            await Run(memories.TidyImagesCommand, memories);
+
+            var question = Assert.Single(_tidyAsked);
+            Assert.StartsWith("1 image (1 KB) in the memories folder is not used by any memory, game image or trophy icon. Delete it?", question, StringComparison.Ordinal);
+            Assert.Contains("1 other file or folder in the folder is not named like a stored image and is never touched.", question, StringComparison.Ordinal);
+            Assert.Equal("Nothing was deleted.", memories.StatusText);
+            Assert.True(File.Exists(strayPath));
+
+            _confirmTidy = true;
+            await Run(memories.TidyImagesCommand, memories);
+
+            Assert.Equal("Deleted 1 unused image (1 KB).", memories.StatusText);
+            Assert.False(File.Exists(strayPath));
+            Assert.True(File.Exists(Path.Combine(media, "readme.txt")));
+
+            await Run(memories.TidyImagesCommand, memories);
+            Assert.StartsWith("No unused images: 0 images are in use.", memories.StatusText, StringComparison.Ordinal);
+        }
+
+        [Fact]
+        public async Task TidyUp_NeedsAMemoriesFile()
+        {
+            var memories = await MemoriesAsync();
+
+            Assert.False(memories.FileExists);
+            Assert.False(memories.TidyImagesCommand.CanExecute(null));
+        }
+
         [Fact]
         public async Task SaveEditAndDelete_RoundTheList_AndKeepTheEntryIDAndLinks()
+
         {
             var memories = await WithCollectionAsync("Holidays");
             memories.NewEntryCommand.Execute(null);
@@ -374,6 +646,24 @@ namespace Chatcheology.Desktop.Tests
         internal MemoriesDialogs Dialogs() => new()
         {
             ChooseImage = () => _image,
+            ChooseImages = () => _images ?? (_image is { } one ? [one] : []),
+            ConfirmCoverCaption = _withCoverDialog
+                ? text =>
+                {
+                    _coverAsked.Add(text);
+                    return _confirmCover;
+                }
+                : null,
+            ConfirmDeleteCollection = text =>
+            {
+                _deleteCollectionAsked.Add(text);
+                return _confirmDelete;
+            },
+            ConfirmTidyImages = text =>
+            {
+                _tidyAsked.Add(text);
+                return _confirmTidy;
+            },
             ConfirmCreateFile = text =>
             {
                 _createAsked.Add(text);

@@ -166,7 +166,91 @@ namespace Chatcheology.Mobile.Memories
     /// <param name="ImagePath">The image file when it is there; otherwise <see langword="null"/>.</param>
     /// <param name="Links">Its links (a message by the sequence number of the conversation the rows are placed in).</param>
     public sealed record MemorySourceEntry(
-        ArchiveEntry Entry, IReadOnlyList<ArchiveEntryPeriod> Periods, string? ImagePath, IReadOnlyList<ArchiveEntryLink> Links);
+        ArchiveEntry Entry, IReadOnlyList<ArchiveEntryPeriod> Periods, string? ImagePath, IReadOnlyList<ArchiveEntryLink> Links)
+    {
+        /// <summary>
+        /// The extra photos after the cover, in order (CH-46), each with its file when it is there. A photo
+        /// whose file is not there is not shown.
+        /// </summary>
+        public IReadOnlyList<MemoryPhoto> ExtraPhotos { get; init; } = [];
+    }
+
+    /// <summary>One photo of a memory: its file, and its caption (the cover has none).</summary>
+    /// <param name="Path">The file when it is there; otherwise <see langword="null"/>.</param>
+    /// <param name="Caption">The caption, or <see langword="null"/>.</param>
+    public sealed record MemoryPhoto(string? Path, string? Caption)
+    {
+        /// <summary>The caption, or empty.</summary>
+        public string CaptionText => Caption ?? string.Empty;
+
+        /// <summary>Whether there is a caption.</summary>
+        public bool HasCaption => !string.IsNullOrEmpty(Caption);
+    }
+
+    /// <summary>
+    /// Where the full-screen viewer is among one memory's photos (CH-46): a swipe moves to the next or
+    /// previous photo of that memory only, and stops at either end.
+    /// </summary>
+    public sealed class MemoryPhotoBrowser
+    {
+        /// <summary>A browser over <paramref name="photos"/> (each with its file), at <paramref name="index"/>.</summary>
+        public MemoryPhotoBrowser(IReadOnlyList<MemoryPhoto> photos, int index)
+        {
+            ArgumentNullException.ThrowIfNull(photos);
+            ArgumentOutOfRangeException.ThrowIfNegative(index);
+            ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(index, photos.Count);
+
+            if (photos.Any(p => p.Path is null))
+            {
+                throw new ArgumentException("Every photo the viewer moves through needs its file.", nameof(photos));
+            }
+
+            Photos = photos;
+            Index = index;
+        }
+
+        /// <summary>The memory's photos, in the order a swipe moves through them.</summary>
+        public IReadOnlyList<MemoryPhoto> Photos { get; }
+
+        /// <summary>The index of the photo shown.</summary>
+        public int Index { get; private set; }
+
+        /// <summary>The photo shown.</summary>
+        public MemoryPhoto Current => Photos[Index];
+
+        /// <summary>"Photo 2 of 5", or "Photo" for a memory with one.</summary>
+        public string Title => MemoryWording.PhotoTitle(Index, Photos.Count);
+
+        /// <summary>Whether a swipe to the left has a photo to show.</summary>
+        public bool HasNext => Index < Photos.Count - 1;
+
+        /// <summary>Whether a swipe to the right has a photo to show.</summary>
+        public bool HasPrevious => Index > 0;
+
+        /// <summary>Moves to the next photo. False, and nothing changes, at the end.</summary>
+        public bool Next()
+        {
+            if (!HasNext)
+            {
+                return false;
+            }
+
+            Index++;
+            return true;
+        }
+
+        /// <summary>Moves to the previous photo. False, and nothing changes, at the start.</summary>
+        public bool Previous()
+        {
+            if (!HasPrevious)
+            {
+                return false;
+            }
+
+            Index--;
+            return true;
+        }
+    }
 
     /// <summary>
     /// What a <see cref="MemoryIndex"/> is built from, whatever holds it: an archive on the phone, or the
@@ -297,7 +381,14 @@ namespace Chatcheology.Mobile.Memories
                         entry,
                         periods,
                         reader.ImageFullPath(entry) is { } path && File.Exists(path) ? path : null,
-                        reader.ReadLinks(entry.EntryID)));
+                        reader.ReadLinks(entry.EntryID))
+                    {
+                        ExtraPhotos = reader.ReadEntryImages(entry.EntryID)
+                            .Select(photo => new MemoryPhoto(
+                                reader.EntryImageFullPath(photo) is var file && File.Exists(file) ? file : null,
+                                photo.Caption))
+                            .ToList(),
+                    });
                 }
             }
 
@@ -344,7 +435,8 @@ namespace Chatcheology.Mobile.Memories
                     source.ParticipantNames,
                     definitions,
                     source.IconPath,
-                    item.Links));
+                    item.Links,
+                    item.ExtraPhotos));
             }
 
             return new MemoryIndex(source.Collections, entries, source.MessageTimes, source.MessageSequenceNumbers);
@@ -540,12 +632,17 @@ namespace Chatcheology.Mobile.Memories
             IReadOnlyDictionary<long, string> names,
             IReadOnlyDictionary<(string, string), ArchiveItemDefinition> definitions,
             Func<ArchiveItemDefinition, string?> iconPath,
-            IReadOnlyList<ArchiveEntryLink> links)
+            IReadOnlyList<ArchiveEntryLink> links,
+            IReadOnlyList<MemoryPhoto>? extraPhotos = null)
         {
             Collection = collection;
             Entry = entry;
             Periods = periods;
             ImagePath = imagePath;
+
+            // Only photos whose file is there are shown or counted (CH-46); the cover keeps its own place.
+            ExtraPhotos = (extraPhotos ?? []).Where(p => p.Path is not null).ToList();
+            Photos = (imagePath is null ? ExtraPhotos : ExtraPhotos.Prepend(new MemoryPhoto(imagePath, null))).ToList();
             _names = names;
             _definitions = definitions;
             _iconPath = iconPath;
@@ -561,6 +658,21 @@ namespace Chatcheology.Mobile.Memories
         internal IReadOnlyList<ArchiveEntryPeriod> Periods { get; }
 
         internal string? ImagePath { get; }
+
+        /// <summary>The extra photos whose file is there, in order.</summary>
+        internal IReadOnlyList<MemoryPhoto> ExtraPhotos { get; }
+
+        /// <summary>Every photo whose file is there: the cover first, then the extra photos.</summary>
+        internal IReadOnlyList<MemoryPhoto> Photos { get; }
+
+        /// <summary>
+        /// The image the card and the single-image details draw: the first photo whose file is there (the
+        /// cover, or when its file is gone the first extra photo), so no present photo is left unshown.
+        /// </summary>
+        internal string? ShownImagePath => Photos.Count > 0 ? Photos[0].Path : null;
+
+        /// <summary>The photos after the one drawn: the "+N" of the card.</summary>
+        internal int PhotosAfterShown => Math.Max(0, Photos.Count - 1);
 
         internal string SourceText { get; }
 
@@ -666,7 +778,8 @@ namespace Chatcheology.Mobile.Memories
                         ? DateSeparatorRow.DayText(DateOnly.FromDateTime(FirstItemLocal))
                         : MemoryWording.EntryDate(Entry.DatePrecision, Entry.StartLocal, Entry.EndLocal),
                 CollectionName = Collection.Name,
-                ImagePath = ImagePath,
+                ImagePath = ShownImagePath,
+                Photos = Photos,
                 Summary = Entry.Summary ?? string.Empty,
                 SourceText = SourceText,
                 Lines = lines,
@@ -743,8 +856,21 @@ namespace Chatcheology.Mobile.Memories
         /// <summary>The layer.</summary>
         public required string CollectionName { get; init; }
 
-        /// <summary>The image when its file is there.</summary>
+        /// <summary>
+        /// The image drawn: the cover when its file is there, otherwise the first extra photo whose file is
+        /// (CH-46); always <see cref="Photos"/>' first.
+        /// </summary>
         public required string? ImagePath { get; init; }
+
+
+        /// <summary>
+        /// Every photo whose file is there, the cover first, then the extra photos with their captions
+        /// (CH-46). Tapping one opens the full-screen viewer over these only.
+        /// </summary>
+        public IReadOnlyList<MemoryPhoto> Photos { get; init; } = [];
+
+        /// <summary>Whether the details show a strip of photos (more than one) instead of the single image.</summary>
+        public bool HasPhotoStrip => Photos.Count > 1;
 
         /// <summary>A personal memory's description, or empty.</summary>
         public required string Summary { get; init; }
@@ -770,7 +896,11 @@ namespace Chatcheology.Mobile.Memories
         /// <summary>Whether there is an image.</summary>
         public bool HasImage => ImagePath is not null;
 
+        /// <summary>A viewer over <see cref="Photos"/> at <paramref name="index"/>; never over anything else.</summary>
+        public MemoryPhotoBrowser BrowsePhotos(int index) => new(Photos, index);
+
         /// <summary>The share text: none, ever. Memories are not shared (CH-42).</summary>
+
         public string? ShareText => null;
     }
 

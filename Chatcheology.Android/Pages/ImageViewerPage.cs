@@ -1,6 +1,7 @@
 using Chatcheology.Android.Controls;
 using Chatcheology.Mobile.Conversation;
 using Chatcheology.Mobile.Gallery;
+using Chatcheology.Mobile.Memories;
 using Chatcheology.Mobile.Presentation;
 
 namespace Chatcheology.Android.Pages
@@ -15,18 +16,63 @@ namespace Chatcheology.Android.Pages
     /// the archive's details of the photo in a panel at the bottom; a tap on the panel closes it.</para>
     /// <para>Opened from the gallery or the Starred list (CH-37), a swipe left or right, at 1x, moves to
     /// the next or previous photo of that list, and Show in chat opens the conversation at its message.</para>
+    /// <para>Opened from a memory's details (CH-46), it moves through that memory's photos only and shows
+    /// each one's caption. A memory photo is not an attachment: it has no Share, Star, Info, Show in chat or
+    /// Open in another app (memories are not shared), and it is not in the Photos gallery.</para>
     /// </remarks>
     internal sealed class ImageViewerPage : ContentPage
     {
-        private readonly AppState _state;
-        private readonly PhotoBrowser _browser;
-        private readonly Stars _stars;
+        private readonly AppState? _state;
+        private readonly PhotoBrowser? _browser;
+        private readonly MemoryPhotoBrowser? _memoryPhotos;
+        private readonly Stars? _stars;
         private readonly Func<AttachmentCard, Task>? _showInChat;
         private readonly ZoomImage _image = new();
         private readonly VerticalStackLayout _failed;
         private readonly Border _info;
-        private readonly CornerIcon _star;
+        private readonly CornerIcon? _star;
+        private readonly Label? _caption;
         private bool _leaving;
+
+        /// <summary>A viewer over one memory's photos (CH-46), at the browser's current one.</summary>
+        internal ImageViewerPage(MemoryPhotoBrowser photos)
+        {
+            _memoryPhotos = photos;
+
+            BackgroundColor = Colors.Black;
+
+            _failed = new VerticalStackLayout
+            {
+                IsVisible = false,
+                Spacing = 12,
+                Padding = 24,
+                VerticalOptions = LayoutOptions.Center,
+                Children = { new Label { Text = AttachmentCard.CannotPreviewHeading, TextColor = Colors.White, HorizontalTextAlignment = TextAlignment.Center } },
+            };
+
+            WireSwipes();
+
+            _caption = new Label { FontSize = 14, TextColor = Colors.White, LineBreakMode = LineBreakMode.WordWrap };
+
+            // The caption sits at the bottom, as the Info panel does; a tap hides it for a clear view.
+            _info = new Border
+            {
+                IsVisible = false,
+                BackgroundColor = Color.FromRgba(0, 0, 0, 0.7),
+                StrokeThickness = 0,
+                Padding = new Thickness(16, 12),
+                VerticalOptions = LayoutOptions.End,
+                Content = _caption,
+            };
+
+            var close = new TapGestureRecognizer();
+            close.Tapped += (_, _) => _info.IsVisible = false;
+            _info.GestureRecognizers.Add(close);
+
+            Content = new Grid { Children = { _image, _failed, _info } };
+
+            ShowCurrent();
+        }
 
         /// <summary>A viewer over <paramref name="browser"/>'s photos, at its current one.</summary>
         /// <param name="state">The app.</param>
@@ -51,21 +97,7 @@ namespace Chatcheology.Android.Pages
                 Children = { new Label { Text = AttachmentCard.CannotPreviewHeading, TextColor = Colors.White, HorizontalTextAlignment = TextAlignment.Center } },
             };
 
-            _image.Decoded += (_, ok) =>
-            {
-                _image.IsVisible = ok;
-                _failed.IsVisible = !ok;
-            };
-
-            _image.Swiped += (_, direction) => Move(direction);
-
-            // A picture that does not decode takes no touches: a swipe over the message moves on too.
-            var swipeLeft = new SwipeGestureRecognizer { Direction = SwipeDirection.Left };
-            swipeLeft.Swiped += (_, _) => Move(+1);
-            var swipeRight = new SwipeGestureRecognizer { Direction = SwipeDirection.Right };
-            swipeRight.Swiped += (_, _) => Move(-1);
-            _failed.GestureRecognizers.Add(swipeLeft);
-            _failed.GestureRecognizers.Add(swipeRight);
+            WireSwipes();
 
             if (showInChat is not null)
             {
@@ -131,17 +163,48 @@ namespace Chatcheology.Android.Pages
             }
         }
 
-        /// <summary>Shows the browser's current photo: picture, title, star and Info.</summary>
+        private void WireSwipes()
+        {
+            _image.Decoded += (_, ok) =>
+            {
+                _image.IsVisible = ok;
+                _failed.IsVisible = !ok;
+            };
+
+            _image.Swiped += (_, direction) => Move(direction);
+
+            // A picture that does not decode takes no touches: a swipe over the message moves on too.
+            var swipeLeft = new SwipeGestureRecognizer { Direction = SwipeDirection.Left };
+            swipeLeft.Swiped += (_, _) => Move(+1);
+            var swipeRight = new SwipeGestureRecognizer { Direction = SwipeDirection.Right };
+            swipeRight.Swiped += (_, _) => Move(-1);
+            _failed.GestureRecognizers.Add(swipeLeft);
+            _failed.GestureRecognizers.Add(swipeRight);
+        }
+
+        /// <summary>Shows the browser's current photo: picture, title, star and Info (or a memory photo's caption).</summary>
         private void ShowCurrent()
         {
-            var card = _browser.Current;
+            if (_memoryPhotos is { } photos)
+            {
+                Title = photos.Title;
+                _caption!.Text = photos.Current.CaptionText;
+                _info.IsVisible = photos.Current.HasCaption;
+                _failed.IsVisible = false;
+                _image.IsVisible = true;
+                _image.Path = photos.Current.Path;
+
+                return;
+            }
+
+            var card = _browser!.Current;
 
             Title = _browser.Photos.Count > 1
                 ? $"Photo {_browser.Index + 1} of {_browser.Photos.Count}"
                 : "Photo";
 
             _info.Content = InfoGrid(card.Details);
-            _star.IsOn = card.IsStarred;
+            _star!.IsOn = card.IsStarred;
             SemanticProperties.SetDescription(_star, card.IsStarred ? "Unstar" : "Star");
 
             _failed.IsVisible = false;
@@ -151,7 +214,16 @@ namespace Chatcheology.Android.Pages
 
         private void Move(int direction)
         {
-            if (_leaving || !(direction > 0 ? _browser.Next() : _browser.Previous()))
+            if (_leaving)
+            {
+                return;
+            }
+
+            var moved = _memoryPhotos is { } photos
+                ? direction > 0 ? photos.Next() : photos.Previous()
+                : direction > 0 ? _browser!.Next() : _browser!.Previous();
+
+            if (!moved)
             {
                 return;
             }
@@ -161,12 +233,12 @@ namespace Chatcheology.Android.Pages
 
         private void ToggleStar()
         {
-            var card = _browser.Current;
+            var card = _browser!.Current;
 
-            _stars.SetAttachment(card.SequenceNumber, card.AttachmentID, !card.IsStarred);
+            _stars!.SetAttachment(card.SequenceNumber, card.AttachmentID, !card.IsStarred);
             _stars.Apply(card);
 
-            _star.IsOn = card.IsStarred;
+            _star!.IsOn = card.IsStarred;
             SemanticProperties.SetDescription(_star, card.IsStarred ? "Unstar" : "Star");
         }
 
@@ -181,7 +253,7 @@ namespace Chatcheology.Android.Pages
 
             try
             {
-                await _showInChat(_browser.Current);
+                await _showInChat(_browser!.Current);
             }
             catch (Exception)
             {
@@ -196,24 +268,25 @@ namespace Chatcheology.Android.Pages
 
         private async Task OpenCurrentAsync()
         {
-            var card = _browser.Current;
+            var card = _browser!.Current;
 
             if (card.FullPath is { } path)
             {
-                await ConversationPage.OpenInAnotherAppAsync(this, _state, path, card.MimeType ?? MediaMimeTypes.Fallback);
+                await ConversationPage.OpenInAnotherAppAsync(this, _state!, path, card.MimeType ?? MediaMimeTypes.Fallback);
             }
         }
 
         private async Task ShareCurrentAsync()
         {
-            var card = _browser.Current;
+            var card = _browser!.Current;
 
             if (card.FullPath is not { } path)
             {
                 return;
             }
 
-            switch (ExternalOpener.ShareFile(path, card.MimeType ?? MediaMimeTypes.Fallback, _state.Library.ArchivesFolder))
+            switch (ExternalOpener.ShareFile(path, card.MimeType ?? MediaMimeTypes.Fallback, _state!.Library.ArchivesFolder))
+
             {
                 case OpenResult.NoApp:
                     await DisplayAlertAsync("Share", "No app on this phone can receive this file.", "OK");

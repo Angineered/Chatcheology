@@ -68,7 +68,8 @@ namespace Chatcheology.Archive
                 or ArchiveProblemKind.MemoryRowDangling
                 or ArchiveProblemKind.LinkNotFromPersonal
                 or ArchiveProblemKind.PeriodCountsDiffer
-                or ArchiveProblemKind.ItemDefinitionUnused => ArchiveCheck.LinksAndBasis,
+                or ArchiveProblemKind.ItemDefinitionUnused
+                or ArchiveProblemKind.ExtraPhotoMisplaced => ArchiveCheck.LinksAndBasis,
 
             ArchiveProblemKind.SequenceNumberInvalid
                 or ArchiveProblemKind.SequenceGap
@@ -207,6 +208,7 @@ namespace Chatcheology.Archive
                     (counted.ExportPeriods, reader.Info.ExportPeriods.Count),
                     (counted.EntryLinks, reader.ReadCount("SELECT COUNT(*) FROM EntryLink;")),
                     (counted.ItemDefinitions, reader.ReadCount("SELECT COUNT(*) FROM ItemDefinition;")),
+                    (counted.EntryImages, reader.HasEntryImages ? reader.ReadCount("SELECT COUNT(*) FROM EntryImage;") : 0),
                 };
 
                 var actual = reader.ReadCollectionCounts();
@@ -346,7 +348,9 @@ namespace Chatcheology.Archive
             record.AddCount(
                 ArchiveProblemKind.MediaRowUnused,
                 (int)reader.ReadCount(
-                    reader.HasMemories
+                    reader.HasEntryImages
+                        ? ArchiveMemoryRules.MediaUnusedWithEntryImages
+                        : reader.HasMemories
                         ? ArchiveMemoryRules.MediaUnusedVersionTwo
                         : """
                           SELECT COUNT(*) FROM Media WHERE Sha256 NOT IN (
@@ -372,6 +376,7 @@ namespace Chatcheology.Archive
                 (int)reader.ReadCount("SELECT COUNT(*) FROM Attachment;")
                 + (reader.HasMemories
                     ? (int)reader.ReadCount("SELECT COUNT(*) FROM Entry;") + (int)reader.ReadCount("SELECT COUNT(*) FROM ItemDefinition;")
+                      + (reader.HasEntryImages ? (int)reader.ReadCount("SELECT COUNT(*) FROM EntryImage;") : 0)
                     : 0));
             record.Examined(ArchiveCheck.SequenceAndSenders, messages);
 
@@ -424,14 +429,15 @@ namespace Chatcheology.Archive
         }
 
         /// <summary>
-        /// Version 2's memory rows: each entry image has its Media row and a media file with its hash
+        /// Version 2's memory rows: each entry image and extra photo has its Media row and a media file with its hash
         /// (Media check); every memory row points at rows that exist, links start at personal entries,
         /// and each period's counts equal its items (links-and-basis check). Every entry, period and
         /// item is read, so a value of the wrong kind or outside the format's vocabulary stops the
         /// checks as for messages. Each item icon is checked like an entry image, and every item
         /// definition must be used by an item.
         /// </summary>
-        /// <returns>How many entry images and item icons were examined.</returns>
+        /// <returns>How many entry images, extra photos and item icons were examined.</returns>
+
         private static int CheckMemories(
             ArchiveReader reader,
             HashSet<string> usedMediaPaths,
@@ -478,6 +484,47 @@ namespace Chatcheology.Archive
                 {
                     record.Add(ArchiveProblemKind.EntryImageFileDiffers);
                 }
+            }
+
+            // Extra photos (CH-46): each like an entry image. None in an archive without the table.
+            var photos = reader.ReadAllEntryImages();
+            var photoMedia = reader.ReadMedia(photos.Select(p => p.Sha256).Distinct(StringComparer.Ordinal).ToList());
+
+            foreach (var photo in photos)
+            {
+                images++;
+
+                if (!photoMedia.ContainsKey(photo.Sha256))
+                {
+                    record.Add(ArchiveProblemKind.EntryImageWithoutMediaRow);
+                }
+
+                var path = reader.EntryImageFullPath(photo);
+                var relative = photo.RelativePath;
+                usedMediaPaths.Add(relative);
+
+                if (!fileHashes.TryGetValue(relative, out var actual))
+                {
+                    actual = HashOrNull(path);
+                    fileHashes[relative] = actual;
+                }
+
+                if (actual is null)
+                {
+                    record.Add(ArchiveProblemKind.EntryImageFileMissing);
+                }
+                else if (actual != photo.Sha256)
+                {
+                    record.Add(ArchiveProblemKind.EntryImageFileDiffers);
+                }
+            }
+
+            if (reader.HasEntryImages)
+            {
+                record.AddCount(
+                    ArchiveProblemKind.ExtraPhotoMisplaced,
+                    (int)reader.ReadCount(ArchiveMemoryRules.EntryImagesNotPersonal)
+                    + (int)reader.ReadCount(ArchiveMemoryRules.EntryImagesRepeatCover));
             }
 
             reader.ReadAllLinks();
@@ -527,7 +574,7 @@ namespace Chatcheology.Archive
                 (int)reader.ReadCount(
                     """
                     SELECT COUNT(*) FROM pragma_foreign_key_check
-                    WHERE "table" IN ('Entry', 'EntryPeriod', 'EntryItem', 'EntryLink', 'ItemDefinition');
+                    WHERE "table" IN ('Entry', 'EntryPeriod', 'EntryItem', 'EntryLink', 'ItemDefinition', 'EntryImage');
                     """));
 
             record.AddCount(ArchiveProblemKind.LinkNotFromPersonal, (int)reader.ReadCount(ArchiveMemoryRules.LinksNotFromPersonal));
@@ -735,6 +782,12 @@ namespace Chatcheology.Archive
 
         /// <summary>Version 2: an item definition that no item of the archive uses.</summary>
         ItemDefinitionUnused,
+
+        /// <summary>
+        /// Version 2 (CH-46): an extra photo on an entry that is not in a personal collection, or one that
+        /// repeats its entry's cover.
+        /// </summary>
+        ExtraPhotoMisplaced,
     }
 
     /// <summary>

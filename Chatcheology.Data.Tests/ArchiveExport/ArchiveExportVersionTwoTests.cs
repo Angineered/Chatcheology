@@ -156,11 +156,15 @@ namespace Chatcheology.Data.Tests.ArchiveExport
         /// An imported collection with two entries sharing one image (periods and items), and a
         /// personal collection with one entry linking to an imported entry and to workspace message 2.
         /// </summary>
-        private void Memories(int linkedSequence = 2, bool formatOne = false)
+        private void Memories(int linkedSequence = 2, bool formatOne = false, bool formatTwo = false)
         {
             if (formatOne)
             {
                 MemoriesDatabase.CreateFormatVersionOne(MemoriesPath, Now);
+            }
+            else if (formatTwo)
+            {
+                MemoriesDatabase.CreateFormatVersionTwo(MemoriesPath, Now);
             }
             else
             {
@@ -230,6 +234,37 @@ namespace Chatcheology.Data.Tests.ArchiveExport
                 VALUES ('setA', '7', 'bronze', 'Invented Opening Move', 'Open the invented door.', 1, 'default', '{IconUrl}', '{IconSha}'),
                        ('setB', '7', 'bronze', NULL, NULL, NULL, NULL, NULL, NULL),
                        ('setZ', '1', 'gold', 'Never Earned Here', NULL, 0, NULL, '{IconUrl}', '{UnusedIconSha}');
+                """;
+            command.ExecuteNonQuery();
+        }
+
+        private static readonly byte[] CoverBytes = Encoding.ASCII.GetBytes("synthetic personal cover");
+
+        private static string CoverSha => Convert.ToHexStringLower(SHA256.HashData(CoverBytes));
+
+        private static readonly byte[] PhotoBytes = Encoding.ASCII.GetBytes("synthetic extra photo");
+
+        private static string PhotoSha => Convert.ToHexStringLower(SHA256.HashData(PhotoBytes));
+
+        /// <summary>
+        /// CH-46: the personal entry gets a cover and two extra photos; the second is the game image both
+        /// imported entries use, so its payload is shared.
+        /// </summary>
+        private void Photos()
+        {
+            var media = MemoriesDatabase.MediaFolderFor(MemoriesPath);
+            File.WriteAllBytes(Path.Combine(media, CoverSha + ".png"), CoverBytes);
+            File.WriteAllBytes(Path.Combine(media, PhotoSha + ".jpg"), PhotoBytes);
+
+            using var connection = MemoriesDatabase.OpenConnection(MemoriesPath);
+            using var command = connection.CreateCommand();
+            command.CommandText =
+                $"""
+                INSERT INTO MediaFile (Sha256, Extension, SizeBytes) VALUES ('{CoverSha}', 'png', {CoverBytes.Length});
+                INSERT INTO MediaFile (Sha256, Extension, SizeBytes) VALUES ('{PhotoSha}', 'jpg', {PhotoBytes.Length});
+                UPDATE Entry SET ImageSha256 = '{CoverSha}' WHERE EntryID = 20;
+                INSERT INTO EntryImage VALUES (20, 1, '{PhotoSha}', 'jpg', 'By the sea');
+                INSERT INTO EntryImage VALUES (20, 2, '{ImageSha}', 'png', NULL);
                 """;
             command.ExecuteNonQuery();
         }
@@ -589,7 +624,88 @@ namespace Chatcheology.Data.Tests.ArchiveExport
         }
 
         [Fact]
+        public void ExtraPhotos_RoundTrip_InOrder_WithCaptions_AndPayloadsStoredOnce()
+        {
+            Workspace();
+            Memories();
+            Photos();
+            var output = _fixture.Output();
+
+            var result = Export(output);
+
+            Assert.Equal(2, result.Counts.EntryImages);
+
+            var validation = ArchiveValidator.Validate(output);
+            Assert.True(validation.Passed, string.Join(", ", validation.FirstProblems));
+
+            using (var reader = ArchiveReader.Open(output))
+            {
+                var entry = reader.ReadEntriesOf(2).Single();
+                Assert.Equal(CoverSha, entry.ImageSha256);
+
+                var photos = reader.ReadEntryImages(20);
+                Assert.Equal([(1, PhotoSha, ".jpg", "By the sea"), (2, ImageSha, ".png", (string?)null)],
+                    photos.Select(p => (p.Ordinal, p.Sha256, p.Extension, p.Caption)));
+                Assert.Equal(PhotoBytes, File.ReadAllBytes(reader.EntryImageFullPath(photos[0])));
+
+                // The game image both imported entries and the photo use is one file and one Media row.
+                Assert.Single(Directory.GetFiles(Path.Combine(output, "media"), ImageSha + "*"));
+                Assert.Equal("Image", reader.ReadMediaOf(PhotoSha)!.MediaType);
+            }
+
+            var comparison = Compare(output);
+            Assert.True(comparison.Passed, string.Join(", ", comparison.FirstMismatches));
+
+            // A changed caption is an entry difference.
+            using (var connection = MemoriesDatabase.OpenConnection(MemoriesPath))
+            using (var command = connection.CreateCommand())
+            {
+                command.CommandText = "UPDATE EntryImage SET Caption = 'Renamed' WHERE Ordinal = 1;";
+                command.ExecuteNonQuery();
+            }
+
+            SqliteConnection.ClearAllPools();
+
+            Assert.Equal(1, Compare(output).MismatchCounts[ArchiveMismatchKind.EntryDiffers]);
+        }
+
+        [Fact]
+        public void AFormatTwoMemoriesFile_HasNoExtraPhotos()
+        {
+            Workspace();
+            Memories(formatTwo: true);
+            var output = _fixture.Output();
+
+            var result = Export(output);
+
+            Assert.Equal(0, result.Counts.EntryImages);
+            Assert.True(ArchiveValidator.Validate(output).Passed);
+
+            using (var reader = ArchiveReader.Open(output))
+            {
+                Assert.True(reader.HasEntryImages);
+                Assert.Empty(reader.ReadAllEntryImages());
+            }
+
+            Assert.True(Compare(output).Passed);
+        }
+
+        [Fact]
+        public void AnExtraPhotoMissingFromTheMemoriesFolder_StopsTheExport()
+        {
+            Workspace();
+            Memories();
+            Photos();
+            File.Delete(Path.Combine(MemoriesDatabase.MediaFolderFor(MemoriesPath), PhotoSha + ".jpg"));
+            var output = _fixture.Output();
+
+            Assert.Throws<ArchiveExportStoppedException>(() => Export(output));
+            Assert.Empty(_fixture.ExportsContent());
+        }
+
+        [Fact]
         public void AnEntryImageMissingFromTheMemoriesFolder_StopsTheExport()
+
         {
             Workspace();
             Memories();

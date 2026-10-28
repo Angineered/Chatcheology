@@ -29,19 +29,29 @@ namespace Chatcheology.Data.Memories
         /// <summary>The value of <c>MemoriesInfo.Purpose</c> in every memories file.</summary>
         internal const string MarkerPurpose = "Memories";
 
-        /// <summary>The memories table layout this build creates. Format 1 files are still accepted.</summary>
+        /// <summary>The memories table layout this build creates. Format 1 and 2 files are still accepted.</summary>
         /// <remarks>
-        /// Format 2 (CH-43) is additive: it adds <c>ItemDefinition</c> and nothing else changes. A
-        /// format 1 file is upgraded in one transaction by <see cref="UpgradeToCurrent"/> (the
-        /// enrichment import does this); every other path reads and writes both formats.
+        /// Format 2 (CH-43) is additive: it adds <c>ItemDefinition</c> and nothing else changes. Format 3
+        /// (CH-46) is additive too: it adds <c>EntryImage</c> (a personal memory's extra photos). An older
+        /// file is upgraded in one transaction by <see cref="UpgradeToCurrent"/> (the enrichment import and
+        /// every personal-memory write do this); every other path reads and writes all three formats.
         /// </remarks>
-        internal const int MarkerFormatVersion = 2;
+        internal const int MarkerFormatVersion = 3;
 
         /// <summary>The format this build creates and upgrades to.</summary>
         public const int CurrentFormatVersion = MarkerFormatVersion;
 
         /// <summary>The step 1 (CH-42) layout, without <c>ItemDefinition</c>.</summary>
         internal const int FormatVersionOne = 1;
+
+        /// <summary>The CH-43 layout: format 1 plus <c>ItemDefinition</c>, without <c>EntryImage</c>.</summary>
+        internal const int FormatVersionTwo = 2;
+
+        /// <summary>The first format with <c>ItemDefinition</c>; fixed, whatever the current format is.</summary>
+        public const int FirstFormatWithDefinitions = FormatVersionTwo;
+
+        /// <summary>The first format with <c>EntryImage</c>; fixed, whatever the current format is.</summary>
+        public const int FirstFormatWithEntryImages = 3;
 
         /// <summary>
         /// The SQLite <c>user_version</c> of a memories file. Distinct from every workspace schema
@@ -83,8 +93,14 @@ namespace Chatcheology.Data.Memories
         /// <summary>The table format 2 adds.</summary>
         internal const string ItemDefinitionTableName = "ItemDefinition";
 
-        /// <summary>The tables of a current (format 2) file.</summary>
-        internal static readonly string[] TableNames = [.. VersionOneTableNames, ItemDefinitionTableName];
+        /// <summary>The table format 3 adds.</summary>
+        internal const string EntryImageTableName = "EntryImage";
+
+        /// <summary>The tables of a format 2 file.</summary>
+        internal static readonly string[] VersionTwoTableNames = [.. VersionOneTableNames, ItemDefinitionTableName];
+
+        /// <summary>The tables of a current (format 3) file.</summary>
+        internal static readonly string[] TableNames = [.. VersionTwoTableNames, EntryImageTableName];
 
         // GLOB patterns that pin the stored spellings: local wall clock without zone, UTC with Z.
         private const string LocalGlob =
@@ -275,11 +291,10 @@ namespace Chatcheology.Data.Memories
         ];
 
         /// <summary>
-        /// Format 1 to 2: the marker table is rebuilt so its check names the new version (the row's
-        /// purpose and creation time are copied unchanged), and <c>ItemDefinition</c> is added. No
-        /// other table is touched.
+        /// Rebuilds the marker table so its check names <paramref name="version"/>; the row's purpose and
+        /// creation time are copied unchanged. No other table is touched.
         /// </summary>
-        private static readonly string[] UpgradeStatements =
+        private static string[] MarkerUpgradeStatements(int version) =>
         [
             $"""
             CREATE TABLE MemoriesInfoNext (
@@ -290,19 +305,28 @@ namespace Chatcheology.Data.Memories
 
                 CHECK (MemoriesInfoID = 1),
                 CHECK (Purpose = '{MarkerPurpose}'),
-                CHECK (FormatVersion = {MarkerFormatVersion}),
+                CHECK (FormatVersion = {version.ToString(CultureInfo.InvariantCulture)}),
                 CHECK (CreatedDateTimeUtc GLOB {UtcGlob})
             );
             """,
 
             $"""
             INSERT INTO MemoriesInfoNext (MemoriesInfoID, Purpose, FormatVersion, CreatedDateTimeUtc)
-            SELECT MemoriesInfoID, Purpose, {MarkerFormatVersion}, CreatedDateTimeUtc FROM MemoriesInfo;
+            SELECT MemoriesInfoID, Purpose, {version.ToString(CultureInfo.InvariantCulture)}, CreatedDateTimeUtc FROM MemoriesInfo;
             """,
 
             "DROP TABLE MemoriesInfo;",
 
             "ALTER TABLE MemoriesInfoNext RENAME TO MemoriesInfo;",
+        ];
+
+        /// <summary>
+        /// Format 1 to 2 (CH-43): the marker is rebuilt for format 2 and <c>ItemDefinition</c> is added. No
+        /// other table is touched.
+        /// </summary>
+        private static readonly string[] UpgradeToTwoStatements =
+        [
+            .. MarkerUpgradeStatements(FormatVersionTwo),
 
             // One definition per (set, item), values as the source returned them. Viewers and the
             // archive join EntryItem to it on (SetId, ItemId).
@@ -326,6 +350,64 @@ namespace Chatcheology.Data.Memories
             """,
 
             "CREATE INDEX IX_ItemDefinition_IconSourceUrl ON ItemDefinition (IconSourceUrl);",
+        ];
+
+        /// <summary>
+        /// Format 2 to 3 (CH-46): the marker is rebuilt for format 3 and <c>EntryImage</c> is added: a
+        /// personal memory's extra photos, after its cover (<c>Entry.ImageSha256</c>). No other table is
+        /// touched.
+        /// </summary>
+        private static readonly string[] UpgradeToThreeStatements =
+        [
+            .. MarkerUpgradeStatements(FirstFormatWithEntryImages),
+
+            // Ordinal 1, 2, ... is the order shown after the cover. A photo is in a memory at most once.
+            // Extension is the stored file's own (it must equal MediaFile.Extension).
+            $"""
+            CREATE TABLE EntryImage (
+                EntryID   INTEGER NOT NULL REFERENCES Entry (EntryID),
+                Ordinal   INTEGER NOT NULL,
+                Sha256    TEXT NOT NULL REFERENCES MediaFile (Sha256),
+                Extension TEXT NOT NULL,
+                Caption   TEXT NULL,
+
+                PRIMARY KEY (EntryID, Ordinal),
+                UNIQUE (EntryID, Sha256),
+
+                CHECK (Ordinal >= 1),
+                CHECK (Sha256 GLOB {Sha256Glob}),
+                CHECK (Extension IN ('jpg', 'png', 'gif', 'webp')),
+                CHECK (Caption IS NULL OR length(trim(Caption)) > 0)
+            );
+            """,
+
+            // Extra photos belong to a personal entry only and name their stored file's extension; CHECK
+            // cannot look across tables.
+            $"""
+            CREATE TRIGGER EntryImage_Rules_Insert
+            BEFORE INSERT ON EntryImage
+            BEGIN
+                SELECT RAISE(ABORT, 'Extra photos belong to a personal entry only.')
+                WHERE (SELECT c.Kind FROM Entry e JOIN Collection c ON c.CollectionID = e.CollectionID
+                       WHERE e.EntryID = NEW.EntryID) IS NOT '{KindPersonal}';
+                SELECT RAISE(ABORT, 'A photo must name its stored file''s extension.')
+                WHERE (SELECT m.Extension FROM MediaFile m WHERE m.Sha256 = NEW.Sha256) IS NOT NEW.Extension;
+            END;
+            """,
+
+            $"""
+            CREATE TRIGGER EntryImage_Rules_Update
+            BEFORE UPDATE ON EntryImage
+            BEGIN
+                SELECT RAISE(ABORT, 'Extra photos belong to a personal entry only.')
+                WHERE (SELECT c.Kind FROM Entry e JOIN Collection c ON c.CollectionID = e.CollectionID
+                       WHERE e.EntryID = NEW.EntryID) IS NOT '{KindPersonal}';
+                SELECT RAISE(ABORT, 'A photo must name its stored file''s extension.')
+                WHERE (SELECT m.Extension FROM MediaFile m WHERE m.Sha256 = NEW.Sha256) IS NOT NEW.Extension;
+            END;
+            """,
+
+            "CREATE INDEX IX_EntryImage_Sha256 ON EntryImage (Sha256);",
         ];
 
         /// <summary>The memories file path beside a main workspace.</summary>
@@ -357,13 +439,17 @@ namespace Chatcheology.Data.Memories
         /// <exception cref="ArgumentException">Wrong file name, or a timestamp that is not UTC.</exception>
         /// <exception cref="InvalidOperationException">A file already exists there. Nothing is written.</exception>
         public static void Create(string databasePath, DateTime createdDateTimeUtc) =>
-            Create(databasePath, createdDateTimeUtc, upgrade: true);
+            Create(databasePath, createdDateTimeUtc, MarkerFormatVersion);
 
         /// <summary>Creates a format 1 file exactly as step 1 did. For upgrade tests only.</summary>
         internal static void CreateFormatVersionOne(string databasePath, DateTime createdDateTimeUtc) =>
-            Create(databasePath, createdDateTimeUtc, upgrade: false);
+            Create(databasePath, createdDateTimeUtc, FormatVersionOne);
 
-        private static void Create(string databasePath, DateTime createdDateTimeUtc, bool upgrade)
+        /// <summary>Creates a format 2 file exactly as CH-43 did. For upgrade tests only.</summary>
+        internal static void CreateFormatVersionTwo(string databasePath, DateTime createdDateTimeUtc) =>
+            Create(databasePath, createdDateTimeUtc, FormatVersionTwo);
+
+        private static void Create(string databasePath, DateTime createdDateTimeUtc, int version)
         {
             RequireFixedFileName(databasePath);
 
@@ -404,10 +490,7 @@ namespace Chatcheology.Data.Memories
 
                 command.Parameters.Clear();
 
-                if (upgrade)
-                {
-                    RunUpgradeStatements(command);
-                }
+                RunUpgradeStatements(command, FormatVersionOne, version);
 
                 command.CommandText = $"PRAGMA user_version = {UserVersion.ToString(CultureInfo.InvariantCulture)};";
                 command.ExecuteNonQuery();
@@ -515,18 +598,31 @@ namespace Chatcheology.Data.Memories
                 return false;
             }
 
-            if (version != FormatVersionOne)
+            if (version is not (FormatVersionOne or FormatVersionTwo))
             {
                 throw new InvalidOperationException("The memories file's format version is not one this build upgrades. Nothing has been written.");
             }
 
-            RunUpgradeStatements(command);
+            RunUpgradeStatements(command, version, MarkerFormatVersion);
             return true;
         }
 
-        private static void RunUpgradeStatements(SqliteCommand command)
+        /// <summary>Runs the upgrade steps from format <paramref name="from"/> to <paramref name="to"/>, in order.</summary>
+        private static void RunUpgradeStatements(SqliteCommand command, int from, int to)
         {
-            foreach (var statement in UpgradeStatements)
+            var steps = new List<string>();
+
+            if (from < FormatVersionTwo && to >= FormatVersionTwo)
+            {
+                steps.AddRange(UpgradeToTwoStatements);
+            }
+
+            if (from < FirstFormatWithEntryImages && to >= FirstFormatWithEntryImages)
+            {
+                steps.AddRange(UpgradeToThreeStatements);
+            }
+
+            foreach (var statement in steps)
             {
                 command.CommandText = statement;
                 command.ExecuteNonQuery();
@@ -580,11 +676,12 @@ namespace Chatcheology.Data.Memories
                 SELECT
                     (SELECT COUNT(*) FROM MemoriesInfo),
                     (SELECT COUNT(*) FROM MemoriesInfo
-                     WHERE MemoriesInfoID = 1 AND Purpose = $purpose AND FormatVersion IN ($one, $current)),
+                     WHERE MemoriesInfoID = 1 AND Purpose = $purpose AND FormatVersion IN ($one, $two, $current)),
                     (SELECT MAX(FormatVersion) FROM MemoriesInfo);
                 """;
             command.Parameters.AddWithValue("$purpose", MarkerPurpose);
             command.Parameters.AddWithValue("$one", FormatVersionOne);
+            command.Parameters.AddWithValue("$two", FormatVersionTwo);
             command.Parameters.AddWithValue("$current", MarkerFormatVersion);
 
             long allRows, validRows;
@@ -602,13 +699,14 @@ namespace Chatcheology.Data.Memories
             {
                 throw new InvalidOperationException(
                     "The database does not carry exactly one valid memories marker row (format version " +
-                    $"{FormatVersionOne.ToString(CultureInfo.InvariantCulture)} or " +
+                    $"{FormatVersionOne.ToString(CultureInfo.InvariantCulture)} to " +
                     $"{MarkerFormatVersion.ToString(CultureInfo.InvariantCulture)}), so it is not " +
                     "treated as a memories file. Nothing has been written.");
             }
 
-            // The marker and the tables must agree: format 2 has ItemDefinition, format 1 does not.
-            if (tables.Contains(ItemDefinitionTableName) != (version == MarkerFormatVersion))
+            // The marker and the tables must agree: format 2 adds ItemDefinition, format 3 EntryImage.
+            if (tables.Contains(ItemDefinitionTableName) != (version >= FirstFormatWithDefinitions)
+                || tables.Contains(EntryImageTableName) != (version >= FirstFormatWithEntryImages))
             {
                 throw new InvalidOperationException(
                     "The memories file's format version and its tables do not agree, so it is not treated as a " +

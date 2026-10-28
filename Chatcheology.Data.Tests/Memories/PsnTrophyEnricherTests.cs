@@ -63,7 +63,7 @@ namespace Chatcheology.Data.Tests.Memories
 
             var result = PsnTrophyEnricher.Enrich(path, Definitions());
 
-            Assert.Equal(new PsnEnrichResult(2, false, 2, 4, 1, 5, 1, 0, 0, 4, 0, 0, 0), result);
+            Assert.Equal(new PsnEnrichResult(3, false, 2, 4, 1, 5, 1, 0, 0, 4, 0, 0, 0), result);
             Assert.Equal(4, result.Changes);
             Assert.Equal(4, folder.Scalar("SELECT COUNT(*) FROM ItemDefinition;"));
             Assert.Equal(
@@ -264,14 +264,14 @@ namespace Chatcheology.Data.Tests.Memories
             Assert.Equal(5, result.Changes);
             Assert.Equal(dry, result);
             Assert.Equal(rowsBefore, DumpVersionOneRows(folder));
-            Assert.Equal(2, folder.Scalar("SELECT FormatVersion FROM MemoriesInfo;"));
+            Assert.Equal(3, folder.Scalar("SELECT FormatVersion FROM MemoriesInfo;"));
             Assert.Equal(createdBefore, folder.Strings("SELECT CreatedDateTimeUtc FROM MemoriesInfo;"));
             Assert.Equal(4, folder.Scalar("SELECT COUNT(*) FROM ItemDefinition;"));
 
             var again = PsnTrophyEnricher.Enrich(path, Definitions());
 
             Assert.False(again.Upgraded);
-            Assert.Equal(2, again.FormatVersionBefore);
+            Assert.Equal(3, again.FormatVersionBefore);
             Assert.Equal(0, again.Changes);
             Assert.Equal(rowsBefore, DumpVersionOneRows(folder));
         }

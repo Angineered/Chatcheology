@@ -119,6 +119,29 @@ namespace Chatcheology.Desktop.Services
             }
         }
 
+        /// <summary>
+        /// Drops a deleted collection's switch and filters from a workspace's choices (CH-46). Nothing else
+        /// changes; a failure is ignored (the choices of a collection that is not there are never used).
+        /// </summary>
+        internal void Forget(string workspacePath, long collectionID)
+        {
+            lock (_lock)
+            {
+                var choices = Read(workspacePath);
+
+                if (!choices.Layers.ContainsKey(collectionID) && choices.FiltersOff.All(f => f.CollectionID != collectionID))
+                {
+                    return;
+                }
+
+                Write(
+                    workspacePath,
+                    new LayerChoices(
+                        choices.Layers.Where(p => p.Key != collectionID).ToDictionary(p => p.Key, p => p.Value),
+                        choices.FiltersOff.Where(f => f.CollectionID != collectionID).ToHashSet()));
+            }
+        }
+
         private Dictionary<string, StoredChoices?> ReadAll()
         {
             try

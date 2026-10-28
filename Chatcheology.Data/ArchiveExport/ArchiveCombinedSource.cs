@@ -418,6 +418,14 @@ namespace Chatcheology.Data.ArchiveExport
                 ImageExtension = row.Entry.ImageSha256 is { } sha ? imageExtension(sha, row.Entry.ImageExtension!) : null,
                 Source = row.Entry.Source,
                 DayLevel = row.Entry.DayLevel,
+                Images = row.Photos.Select(photo => new ArchiveEntryImage
+                {
+                    EntryID = photo.EntryID,
+                    Ordinal = photo.Ordinal,
+                    Sha256 = photo.Sha256,
+                    Extension = imageExtension(photo.Sha256, Memories!.Images[photo.Sha256].Extension),
+                    Caption = photo.Caption,
+                }).ToList(),
                 Periods = row.Periods.Select(period => new ArchiveEntryPeriod
                 {
                     EntryID = period.EntryID,

@@ -76,7 +76,10 @@ namespace Chatcheology.Desktop.Services
             var index = MemoryIndex.Build(new MemorySource
             {
                 Collections = file.Collections,
-                Entries = file.Entries.Select(e => new MemorySourceEntry(e.Entry, e.Periods, e.ImagePath, e.Links)).ToList(),
+                Entries = file.Entries.Select(e => new MemorySourceEntry(e.Entry, e.Periods, e.ImagePath, e.Links)
+                {
+                    ExtraPhotos = e.ExtraPhotos.Select(p => new MemoryPhoto(p.Path, p.Caption)).ToList(),
+                }).ToList(),
                 ParticipantNames = conversation.Participants.ToDictionary(p => p.ParticipantID, p => p.DisplayName),
                 Definitions = file.Definitions,
                 IconPath = file.IconPath,

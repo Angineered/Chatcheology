@@ -6,13 +6,15 @@ namespace Chatcheology.Android.Pages
     /// <summary>
     /// The details of a memory row (CH-42): what <see cref="MemoryDetails"/> says, laid out. For a PSN
     /// period: its trophies with exact local times, names and icons (or "Bronze trophy #12"), then the day
-    /// evidence and the day's other periods. For a personal memory: its description and links. Nothing to
+    /// evidence and the day's other periods. For a personal memory: its photos (a strip with captions when
+    /// there is more than one, CH-46; a tap opens the full-screen viewer over them), description and links. Nothing to
     /// share; everything was read when the archive opened.
     /// </summary>
     internal sealed class MemoryDetailsPage : ContentPage
     {
         private readonly Func<int, Task> _showMessage;
         private readonly Func<long, Task> _showEntry;
+        private readonly MemoryDetails _details;
 
         /// <param name="details">What to show.</param>
         /// <param name="showMessage">Opens the conversation at a linked message.</param>
@@ -24,11 +26,28 @@ namespace Chatcheology.Android.Pages
 
             Title = details.CollectionName;
 
+            _details = details;
+
             var body = new VerticalStackLayout { Padding = 16, Spacing = 6 };
 
-            if (details.ImagePath is { } image)
+            if (details.HasPhotoStrip)
             {
-                body.Add(new DecodedImage { WidthRequest = 320, HeightRequest = 180, FailedText = string.Empty, HorizontalOptions = LayoutOptions.Start, Path = image });
+                // Every photo, the cover first, with its caption (CH-46). A tap opens the full-screen
+                // viewer over this memory's photos only.
+                var strip = new HorizontalStackLayout { Spacing = 8 };
+
+                for (var index = 0; index < details.Photos.Count; index++)
+                {
+                    strip.Add(StripPhoto(details.Photos[index], index));
+                }
+
+                body.Add(new ScrollView { Orientation = ScrollOrientation.Horizontal, Content = strip });
+            }
+            else if (details.ImagePath is { } image)
+            {
+                var single = new DecodedImage { WidthRequest = 320, HeightRequest = 180, FailedText = string.Empty, HorizontalOptions = LayoutOptions.Start, Path = image };
+                OpenOnTap(single, 0);
+                body.Add(single);
             }
 
             body.Add(new Label { Text = details.Title, FontSize = 20, FontAttributes = FontAttributes.Bold });
@@ -86,6 +105,43 @@ namespace Chatcheology.Android.Pages
             }
 
             Content = new ScrollView { Content = body };
+        }
+
+        private View StripPhoto(MemoryPhoto photo, int index)
+        {
+            var image = new DecodedImage { WidthRequest = 140, HeightRequest = 105, FailedText = string.Empty, Path = photo.Path };
+            var column = new VerticalStackLayout { Spacing = 2, WidthRequest = 140, Children = { image } };
+
+            if (photo.HasCaption)
+            {
+                column.Add(new Label { Text = photo.CaptionText, FontSize = 12, MaxLines = 3, LineBreakMode = LineBreakMode.TailTruncation });
+            }
+
+            OpenOnTap(column, index);
+
+            return column;
+        }
+
+        /// <summary>A tap on <paramref name="view"/> opens the viewer at the memory's photo <paramref name="index"/>.</summary>
+        private void OpenOnTap(View view, int index)
+        {
+            var tap = new TapGestureRecognizer();
+            tap.Tapped += async (_, _) =>
+            {
+                try
+                {
+                    if (Navigation.NavigationStack.LastOrDefault() == this && index < _details.Photos.Count)
+                    {
+                        await Navigation.PushAsync(new ImageViewerPage(_details.BrowsePhotos(index)));
+                    }
+                }
+                catch (Exception)
+                {
+                    // A tap handler: nothing here may end the app.
+                }
+            };
+
+            view.GestureRecognizers.Add(tap);
         }
 
         private static View ItemView(MemoryItemLine item)

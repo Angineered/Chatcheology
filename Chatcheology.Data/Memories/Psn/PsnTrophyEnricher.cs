@@ -3,8 +3,8 @@ using Microsoft.Data.Sqlite;
 namespace Chatcheology.Data.Memories.Psn
 {
     /// <summary>What one enrichment run did (or, for a dry run, would do). Counts only.</summary>
-    /// <param name="FormatVersionBefore">The memories file's format before the run (1 or 2).</param>
-    /// <param name="Upgraded">The file was format 1 and is (or would be) upgraded to format 2.</param>
+    /// <param name="FormatVersionBefore">The memories file's format before the run (1, 2 or 3).</param>
+    /// <param name="Upgraded">The file was an older format and is (or would be) upgraded to the current one.</param>
     /// <param name="Sets">Trophy sets in the definitions file.</param>
     /// <param name="Definitions">Definitions in the file.</param>
     /// <param name="Hidden">Definitions in the file marked hidden.</param>
@@ -68,7 +68,7 @@ namespace Chatcheology.Data.Memories.Psn
         }
 
         /// <summary>
-        /// Upgrades a format 1 file and stores the definitions, all in one transaction.
+        /// Upgrades an older file (format 1 or 2) and stores the definitions, all in one transaction.
         /// </summary>
         public static PsnEnrichResult Enrich(string memoriesPath, PsnTrophyDefinitions definitions)
         {
@@ -84,13 +84,13 @@ namespace Chatcheology.Data.Memories.Psn
 
             transaction.Commit();
 
-            return result with { FormatVersionBefore = version, Upgraded = version != MemoriesDatabase.MarkerFormatVersion };
+            return result with { FormatVersionBefore = version, Upgraded = version != MemoriesDatabase.CurrentFormatVersion };
         }
 
         private static (PsnEnrichResult Result, List<(WriteKind Kind, PsnTrophyDefinition Definition)> Actions) Plan(
             SqliteConnection connection, SqliteTransaction? transaction, int version, PsnTrophyDefinitions definitions)
         {
-            var stored = version == MemoriesDatabase.MarkerFormatVersion
+            var stored = version >= MemoriesDatabase.FirstFormatWithDefinitions
                 ? ReadStored(connection, transaction)
                 : new Dictionary<(string, string), Stored>();
             var itemTypes = ReadItemTypes(connection, transaction);
@@ -176,7 +176,7 @@ namespace Chatcheology.Data.Memories.Psn
 
             var result = new PsnEnrichResult(
                 version,
-                version != MemoriesDatabase.MarkerFormatVersion,
+                version != MemoriesDatabase.CurrentFormatVersion,
                 definitions.SetCount,
                 definitions.Definitions.Count,
                 definitions.Definitions.Count(d => d.Hidden == true),

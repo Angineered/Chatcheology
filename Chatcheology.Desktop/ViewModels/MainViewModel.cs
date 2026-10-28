@@ -76,6 +76,7 @@ namespace Chatcheology.Desktop.ViewModels
         private bool _isLayersOpen;
         private string _layersNote = string.Empty;
         private MemoryDetailsViewModel? _memoryDetails;
+        private MemoryPhotoViewerViewModel? _memoryPhotoViewer;
         private MemoryRowViewModel? _selectedMemoryRow;
 
         /// <summary>
@@ -149,6 +150,17 @@ namespace Chatcheology.Desktop.ViewModels
 
             // A save, rename or delete in the Memories area shows in the conversation at once.
             Memories.FileChanged += (_, _) => _ = ReloadLayersAsync();
+
+            // A deleted collection's remembered layer choices are dropped, so a later collection that is
+            // given the same number does not inherit them (CH-46).
+            Memories.CollectionDeleted += (_, collectionID) =>
+            {
+                if (_session is { } session)
+                {
+                    _layerSettings.Forget(session.DatabasePath, collectionID);
+                }
+            };
+
 
             CloseMemoryDetailsCommand = new RelayCommand(CloseMemoryDetails, () => MemoryDetails is not null);
             EditMemoryCommand = new AsyncRelayCommand(
@@ -254,6 +266,8 @@ namespace Chatcheology.Desktop.ViewModels
             {
                 if (SetProperty(ref _memoryDetails, value))
                 {
+                    // The large photo view belongs to the details it was opened from.
+                    MemoryPhotoViewer = null;
                     OnPropertyChanged(nameof(IsMemoryDetailsOpen));
                     CloseMemoryDetailsCommand.RaiseCanExecuteChanged();
                     EditMemoryCommand.RaiseCanExecuteChanged();
@@ -263,6 +277,40 @@ namespace Chatcheology.Desktop.ViewModels
 
         /// <summary>Whether the memory details area is showing.</summary>
         public bool IsMemoryDetailsOpen => MemoryDetails is not null;
+
+        /// <summary>
+        /// The large view of one of the shown memory's photos (CH-46), or <see langword="null"/>. It moves
+        /// through that memory's photos only.
+        /// </summary>
+        public MemoryPhotoViewerViewModel? MemoryPhotoViewer
+        {
+            get => _memoryPhotoViewer;
+            private set
+            {
+                if (SetProperty(ref _memoryPhotoViewer, value))
+                {
+                    OnPropertyChanged(nameof(IsMemoryPhotoViewerOpen));
+                }
+            }
+        }
+
+        /// <summary>Whether the large photo view is showing.</summary>
+        public bool IsMemoryPhotoViewerOpen => MemoryPhotoViewer is not null;
+
+        /// <summary>
+        /// Opens the large photo view at the shown memory's photo <paramref name="index"/> (0 is the cover).
+        /// Nothing else changes.
+        /// </summary>
+        public void OpenMemoryPhoto(int index)
+        {
+            if (MemoryDetails?.Details is not { } details || index < 0 || index >= details.Photos.Count)
+            {
+                return;
+            }
+
+            MemoryPhotoViewer = new MemoryPhotoViewerViewModel(details.BrowsePhotos(index), () => MemoryPhotoViewer = null);
+        }
+
 
         /// <summary>Closes the memory details.</summary>
         public RelayCommand CloseMemoryDetailsCommand { get; }

@@ -15,8 +15,9 @@ namespace Chatcheology.Data.ArchiveExport
     /// (<see cref="MemoriesDatabase.FileName"/>); no file means no memories. It must prove it is a
     /// memories file (its marker) or the export is refused.</para>
     /// <para>Read: collections, entries, periods, items and links, with each entry image's hash and
-    /// extension, and from a format 2 file the item definitions (CH-43) that some item uses, with each
-    /// icon's hash and extension (a format 1 file has none). Not read at all: image and icon source
+    /// extension, from a format 2 file the item definitions (CH-43) that some item uses, with each
+    /// icon's hash and extension (a format 1 file has none), and from a format 3 file each personal
+    /// entry's extra photos with their captions (CH-46; older files have none). Not read at all: image and icon source
     /// URLs, definitions no item uses, and nothing naming a source account is in the file to read.
     /// Items carry their role; the combined source maps it onto an archive participant.</para>
     /// </remarks>
@@ -76,9 +77,11 @@ namespace Chatcheology.Data.ArchiveExport
                 }
 
                 var hasDefinitions = formatVersion >= FirstFormatWithDefinitions;
+                var hasPhotos = formatVersion >= MemoriesDatabase.FirstFormatWithEntryImages;
                 var collections = ReadCollections(connection);
-                var images = ReadImages(connection, mediaFolder, hasDefinitions);
-                var entries = ReadEntries(connection, images, cancellationToken);
+                var images = ReadImages(connection, mediaFolder, hasDefinitions, hasPhotos);
+                var photos = hasPhotos ? ReadPhotos(connection, images) : [];
+                var entries = ReadEntries(connection, images, photos, cancellationToken);
                 var links = ReadLinks(connection);
                 var definitions = hasDefinitions ? ReadDefinitions(connection, images) : [];
 
@@ -143,20 +146,22 @@ namespace Chatcheology.Data.ArchiveExport
         }
 
         /// <summary>
-        /// Every image an entry names and, from a format 2 file, every icon a used definition names, with
-        /// its recorded extension and size.
+        /// Every image an entry names, from a format 2 file every icon a used definition names, and from a
+        /// format 3 file every extra photo, with its recorded extension and size.
         /// </summary>
-        private static Dictionary<string, MemoryImage> ReadImages(SqliteConnection connection, string mediaFolder, bool hasDefinitions)
+        private static Dictionary<string, MemoryImage> ReadImages(
+            SqliteConnection connection, string mediaFolder, bool hasDefinitions, bool hasPhotos)
         {
             using var command = connection.CreateCommand();
             command.CommandText = hasDefinitions
-                ? """
+                ? $"""
                   SELECT DISTINCT m.Sha256, m.Extension, m.SizeBytes
                   FROM MediaFile AS m
                   WHERE m.Sha256 IN (SELECT ImageSha256 FROM Entry WHERE ImageSha256 IS NOT NULL)
                      OR m.Sha256 IN (SELECT d.IconSha256 FROM ItemDefinition AS d
                                      WHERE d.IconSha256 IS NOT NULL
                                        AND EXISTS (SELECT 1 FROM EntryItem AS i WHERE i.SetId = d.SetId AND i.ItemId = d.ItemId))
+                     {(hasPhotos ? "OR m.Sha256 IN (SELECT Sha256 FROM EntryImage)" : string.Empty)}
                   ORDER BY m.Sha256;
                   """
                 : """
@@ -186,8 +191,46 @@ namespace Chatcheology.Data.ArchiveExport
             return images;
         }
 
+        /// <summary>The extra photos of every entry (format 3), by entry, in ordinal order; no file name or path.</summary>
+        private static Dictionary<long, List<MemoryPhotoRow>> ReadPhotos(
+            SqliteConnection connection, IReadOnlyDictionary<string, MemoryImage> images)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = "SELECT EntryID, Ordinal, Sha256, Caption FROM EntryImage ORDER BY EntryID, Ordinal;";
+
+            var photos = new Dictionary<long, List<MemoryPhotoRow>>();
+
+            using var reader = command.ExecuteReader();
+
+            while (reader.Read())
+            {
+                var sha = reader.GetString(2);
+
+                if (!images.ContainsKey(sha))
+                {
+                    throw new ArchiveExportRefusedException(
+                        "An extra photo names an image the memories file does not record. Nothing was written.");
+                }
+
+                var entryID = reader.GetInt64(0);
+
+                if (!photos.TryGetValue(entryID, out var list))
+                {
+                    list = [];
+                    photos[entryID] = list;
+                }
+
+                list.Add(new MemoryPhotoRow(entryID, reader.GetInt32(1), sha, Nullable(reader, 3)));
+            }
+
+            return photos;
+        }
+
         private static List<MemoryEntryRow> ReadEntries(
-            SqliteConnection connection, IReadOnlyDictionary<string, MemoryImage> images, CancellationToken cancellationToken)
+            SqliteConnection connection,
+            IReadOnlyDictionary<string, MemoryImage> images,
+            IReadOnlyDictionary<long, List<MemoryPhotoRow>> photos,
+            CancellationToken cancellationToken)
         {
             var items = ReadItems(connection);
             var periods = ReadPeriods(connection, items);
@@ -235,7 +278,10 @@ namespace Chatcheology.Data.ArchiveExport
                         Source = Nullable(reader, 11),
                         DayLevel = Nullable(reader, 12),
                     },
-                    periods.GetValueOrDefault(entryID) ?? []));
+                    periods.GetValueOrDefault(entryID) ?? [])
+                {
+                    Photos = photos.GetValueOrDefault(entryID) ?? [],
+                });
             }
 
             return entries;
@@ -409,7 +455,15 @@ namespace Chatcheology.Data.ArchiveExport
     }
 
     /// <summary>One entry of the memories file with its periods.</summary>
-    internal sealed record MemoryEntryRow(ArchiveEntry Entry, IReadOnlyList<MemoryPeriodRow> Periods);
+    internal sealed record MemoryEntryRow(ArchiveEntry Entry, IReadOnlyList<MemoryPeriodRow> Periods)
+    {
+        /// <summary>Its extra photos after the cover, in ordinal order (format 3; none before).</summary>
+        internal IReadOnlyList<MemoryPhotoRow> Photos { get; init; } = [];
+    }
+
+    /// <summary>One extra photo of the memories file (CH-46): its hash and caption; the file is in <see cref="MemoriesArchiveSource.Images"/>.</summary>
+    internal sealed record MemoryPhotoRow(long EntryID, int Ordinal, string Sha256, string? Caption);
+
 
     /// <summary>One period of the memories file with its items.</summary>
     internal sealed record MemoryPeriodRow(

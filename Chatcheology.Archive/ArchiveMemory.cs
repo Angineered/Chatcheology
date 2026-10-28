@@ -53,13 +53,43 @@ namespace Chatcheology.Archive
                                          AND i.ParticipantID <> $local);
             """;
 
-        /// <summary>Media rows that no restored attachment, entry image or item icon names (version 2).</summary>
+        /// <summary>
+        /// Media rows that no restored attachment, entry image or item icon names (version 2, an archive
+        /// written before CH-46 without the <c>EntryImage</c> table).
+        /// </summary>
         internal const string MediaUnusedVersionTwo =
             """
             SELECT COUNT(*) FROM Media WHERE Sha256 NOT IN (
                 SELECT MediaSha256 FROM Attachment WHERE State = 'Restored' AND MediaSha256 IS NOT NULL)
               AND Sha256 NOT IN (SELECT ImageSha256 FROM Entry WHERE ImageSha256 IS NOT NULL)
               AND Sha256 NOT IN (SELECT IconSha256 FROM ItemDefinition WHERE IconSha256 IS NOT NULL);
+            """;
+
+        /// <summary>Media rows that no restored attachment, entry image, extra photo or item icon names (version 2 with <c>EntryImage</c>).</summary>
+        internal const string MediaUnusedWithEntryImages =
+            """
+            SELECT COUNT(*) FROM Media WHERE Sha256 NOT IN (
+                SELECT MediaSha256 FROM Attachment WHERE State = 'Restored' AND MediaSha256 IS NOT NULL)
+              AND Sha256 NOT IN (SELECT ImageSha256 FROM Entry WHERE ImageSha256 IS NOT NULL)
+              AND Sha256 NOT IN (SELECT Sha256 FROM EntryImage)
+              AND Sha256 NOT IN (SELECT IconSha256 FROM ItemDefinition WHERE IconSha256 IS NOT NULL);
+            """;
+
+        /// <summary>Extra photos whose entry is not in a personal collection (or not there at all).</summary>
+        internal const string EntryImagesNotPersonal =
+            """
+            SELECT COUNT(*) FROM EntryImage AS i
+            LEFT JOIN Entry AS e ON e.EntryID = i.EntryID
+            LEFT JOIN Collection AS c ON c.CollectionID = e.CollectionID
+            WHERE c.Kind IS NOT 'Personal';
+            """;
+
+        /// <summary>Extra photos that repeat their entry's cover.</summary>
+        internal const string EntryImagesRepeatCover =
+            """
+            SELECT COUNT(*) FROM EntryImage AS i
+            JOIN Entry AS e ON e.EntryID = i.EntryID
+            WHERE e.ImageSha256 = i.Sha256;
             """;
 
         /// <summary>Item definitions no item of the archive uses (the archive carries used definitions only).</summary>
@@ -157,11 +187,43 @@ namespace Chatcheology.Archive
         /// <summary>The periods, with their items. Empty for a personal entry.</summary>
         public IReadOnlyList<ArchiveEntryPeriod> Periods { get; init; } = [];
 
+        /// <summary>
+        /// The extra photos after the cover, by ordinal (CH-46; a personal entry's only). Written with the
+        /// entry; the reader gives them through <see cref="ArchiveReader.ReadEntryImages"/>, not here.
+        /// </summary>
+        public IReadOnlyList<ArchiveEntryImage> Images { get; init; } = [];
+
         /// <summary>The image file's path inside the archive folder (<c>/</c> separated), or <see langword="null"/>.</summary>
         public string? ImageRelativePath =>
             ImageSha256 is { } sha && ImageExtension is { } extension
                 ? ArchiveFormat.MediaFolderName + "/" + sha + extension
                 : null;
+    }
+
+    /// <summary>
+    /// One extra photo of a personal entry, after its cover (CH-46): a <c>Media</c> payload stored as
+    /// <c>media/&lt;sha256&gt;&lt;Extension&gt;</c>, like the cover. An archive written before CH-46 has no
+    /// <c>EntryImage</c> table and so no extra photos.
+    /// </summary>
+    public sealed class ArchiveEntryImage
+    {
+        /// <summary>The entry.</summary>
+        public required long EntryID { get; init; }
+
+        /// <summary>Its place after the cover, from 1.</summary>
+        public required int Ordinal { get; init; }
+
+        /// <summary>The payload's SHA-256.</summary>
+        public required string Sha256 { get; init; }
+
+        /// <summary>The file's extension in <c>media/</c> (such as <c>.jpg</c>).</summary>
+        public required string Extension { get; init; }
+
+        /// <summary>The caption, or <see langword="null"/>.</summary>
+        public required string? Caption { get; init; }
+
+        /// <summary>The file's path inside the archive folder (<c>/</c> separated).</summary>
+        public string RelativePath => ArchiveFormat.MediaFolderName + "/" + Sha256 + Extension;
     }
 
     /// <summary>One period of an entry: a run of items chained by the collection's gap.</summary>

@@ -75,6 +75,15 @@ namespace Chatcheology.Mobile.Memories
         /// <summary>The details' heading over a personal memory's links.</summary>
         public const string LinksHeading = "Linked";
 
+        /// <summary>The card's badge for a memory's extra photos after the cover: "+4" (CH-46).</summary>
+        public static string ExtraPhotosBadge(int count) => "+" + count.ToString(CultureInfo.CurrentCulture);
+
+        /// <summary>The full-screen viewer's title for one of a memory's photos: "Photo 2 of 5", or "Photo".</summary>
+        public static string PhotoTitle(int index, int count) =>
+            count > 1
+                ? "Photo " + (index + 1).ToString(CultureInfo.CurrentCulture) + " of " + count.ToString(CultureInfo.CurrentCulture)
+                : "Photo";
+
         /// <summary>
         /// The line over the day's periods: "Periods this day:" for a "different times" line (no period
         /// chosen), otherwise "Other periods this day:".

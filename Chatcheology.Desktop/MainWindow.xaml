@@ -328,8 +328,16 @@
                         MouseLeftButtonUp="MemoryRowClick"
                         Visibility="{Binding IsEntryCard, Converter={StaticResource BoolToVisibility}}">
                     <StackPanel>
-                        <Image Source="{Binding Image}" MaxHeight="170" Stretch="Uniform"
-                               Visibility="{Binding HasImage, Converter={StaticResource BoolToVisibility}}" />
+                        <Grid Visibility="{Binding HasImage, Converter={StaticResource BoolToVisibility}}">
+                            <Image Source="{Binding Image}" MaxHeight="170" Stretch="Uniform" />
+                            <!-- "+4": the memory's extra photos after the cover (CH-46). -->
+                            <Border HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="6"
+                                    Padding="6,1" CornerRadius="8" Background="#CC000000"
+                                    Visibility="{Binding HasExtraPhotos, Converter={StaticResource BoolToVisibility}}">
+                                <TextBlock Text="{Binding ExtraPhotosBadge}" FontSize="11" FontWeight="SemiBold"
+                                           Foreground="White" />
+                            </Border>
+                        </Grid>
                         <TextBlock Text="{Binding CollectionName}" FontSize="10" Foreground="#FF6A4C9C"
                                    Margin="10,6,10,0" />
                         <TextBlock Text="{Binding Title}" FontWeight="SemiBold" Margin="10,0"
@@ -371,7 +379,11 @@
         </DataTemplate>
     </Window.Resources>
 
+    <!-- The window's content, with the large view of a memory's photo over it (CH-46). The DockPanel
+         below keeps its earlier indentation so the history of its contents stays readable. -->
+    <Grid>
     <DockPanel>
+
         <!-- Toolbar. A WrapPanel, so items that do not fit the window's width move to a second
              row instead of being clipped off the right edge (CH-18: the archive buttons are last). -->
         <Border DockPanel.Dock="Top" Background="#FFE7E2D9" BorderBrush="#FFCFC8BC"
@@ -621,6 +633,12 @@
                                 </ListBox.ItemTemplate>
                             </ListBox>
 
+                            <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
+                                <Button Content="Delete collection…" Padding="8,2"
+                                        Command="{Binding DeleteCollectionCommand}"
+                                        ToolTip="Delete the selected collection; with its memories when it is not empty." />
+                            </StackPanel>
+
                             <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
                                 <Button Content="New memory…" Padding="8,2"
                                         Command="{Binding NewEntryCommand}" />
@@ -640,6 +658,11 @@
                                     </DataTemplate>
                                 </ItemsControl.ItemTemplate>
                             </ItemsControl>
+
+                            <Button Content="Tidy up images…" Padding="8,2" Margin="0,12,0,0"
+                                    HorizontalAlignment="Left"
+                                    Command="{Binding TidyImagesCommand}"
+                                    ToolTip="Lists the images in the memories folder that nothing uses, and deletes them after you confirm." />
                         </StackPanel>
                     </ScrollViewer>
 
@@ -703,16 +726,46 @@
                                          Margin="0,2,0,0" />
                                 <TextBlock Text="{Binding SourceError}" Style="{StaticResource FieldError}" />
 
-                                <TextBlock Text="Image (optional)" FontSize="11" Margin="0,8,0,0" />
-                                <Image Source="{Binding ImagePreview}" MaxHeight="200" MaxWidth="320"
-                                       HorizontalAlignment="Left" Stretch="Uniform" Margin="0,2,0,0" />
-                                <TextBlock Text="{Binding ImageText}" FontSize="11"
-                                           Foreground="#FF5A5A5A" />
+                                <TextBlock Text="Photos (optional; the first is the cover)" FontSize="11" Margin="0,8,0,0" />
+                                <ItemsControl ItemsSource="{Binding Photos}" Margin="0,2,0,0">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <Border BorderBrush="#FFDDD7CC" BorderThickness="1" Padding="6"
+                                                    Margin="0,0,0,4">
+                                                <DockPanel>
+                                                    <Image Source="{Binding Preview}" Width="96" MaxHeight="96"
+                                                           Stretch="Uniform" VerticalAlignment="Top"
+                                                           Margin="0,0,8,0" DockPanel.Dock="Left" />
+                                                    <StackPanel>
+                                                        <TextBlock Text="{Binding RoleText}" FontSize="11"
+                                                                   FontWeight="SemiBold" />
+                                                        <TextBlock Text="{Binding Text}" FontSize="11"
+                                                                   Foreground="#FF5A5A5A" TextWrapping="Wrap" />
+                                                        <TextBox Text="{Binding Caption, UpdateSourceTrigger=PropertyChanged}"
+                                                                 Margin="0,4,0,0" ToolTip="Caption (optional)"
+                                                                 Visibility="{Binding CanEditCaption,
+                                                                     Converter={StaticResource BoolToVisibility}}" />
+                                                        <WrapPanel Margin="0,4,0,0">
+                                                            <Button Content="Up" Padding="6,0" Margin="0,0,4,0"
+                                                                    Command="{Binding MoveUpCommand}" />
+                                                            <Button Content="Down" Padding="6,0" Margin="0,0,4,0"
+                                                                    Command="{Binding MoveDownCommand}" />
+                                                            <Button Content="Make cover" Padding="6,0" Margin="0,0,4,0"
+                                                                    Command="{Binding MakeCoverCommand}" />
+                                                            <Button Content="Remove" Padding="6,0"
+                                                                    Command="{Binding RemoveCommand}" />
+                                                        </WrapPanel>
+                                                    </StackPanel>
+                                                </DockPanel>
+                                            </Border>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
                                 <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
-                                    <Button Content="Choose image…" Padding="8,2"
+                                    <Button Content="Add photos…" Padding="8,2"
                                             Command="{Binding ChooseImageCommand}"
-                                            ToolTip="The file is only read; a copy goes into the memories folder on save." />
-                                    <Button Content="Remove image" Padding="8,2" Margin="6,0,0,0"
+                                            ToolTip="Choose one or more images. The files are only read; copies go into the memories folder on save." />
+                                    <Button Content="Remove all photos" Padding="8,2" Margin="6,0,0,0"
                                             Command="{Binding RemoveImageCommand}" />
                                 </StackPanel>
                                 <TextBlock Text="{Binding ImageError}" Style="{StaticResource FieldError}" />
@@ -936,8 +989,33 @@
                 <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
                     <StackPanel x:Name="MemoryDetailsBody" DataContext="{Binding MemoryDetails}">
                         <Image Source="{Binding Image}" MaxHeight="200" Stretch="Uniform"
-                               HorizontalAlignment="Left" Margin="0,0,0,6"
-                               Visibility="{Binding HasImage, Converter={StaticResource BoolToVisibility}}" />
+                               HorizontalAlignment="Left" Margin="0,0,0,6" Cursor="Hand"
+                               ToolTip="Show the photo large"
+                               MouseLeftButtonUp="MemoryPhotoClick"
+                               Visibility="{Binding ShowsSingleImage, Converter={StaticResource BoolToVisibility}}" />
+
+                        <!-- Every photo of the memory, the cover first, with captions (CH-46). A click
+                             shows it large, moving through this memory's photos only. -->
+                        <ItemsControl x:Name="MemoryPhotoStrip" ItemsSource="{Binding Photos}" Margin="0,0,0,6"
+                                      Visibility="{Binding HasPhotoStrip, Converter={StaticResource BoolToVisibility}}">
+                            <ItemsControl.ItemsPanel>
+                                <ItemsPanelTemplate>
+                                    <WrapPanel />
+                                </ItemsPanelTemplate>
+                            </ItemsControl.ItemsPanel>
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <StackPanel Width="104" Margin="0,0,6,6" Cursor="Hand"
+                                                ToolTip="Show the photo large"
+                                                MouseLeftButtonUp="MemoryPhotoClick">
+                                        <Image Source="{Binding Thumbnail}" Height="80" Stretch="Uniform" />
+                                        <TextBlock Text="{Binding Caption}" FontSize="10" TextWrapping="Wrap"
+                                                   MaxHeight="40" TextTrimming="CharacterEllipsis"
+                                                   Visibility="{Binding HasCaption, Converter={StaticResource BoolToVisibility}}" />
+                                    </StackPanel>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
                         <TextBlock Text="{Binding Title}" FontSize="15" FontWeight="SemiBold" TextWrapping="Wrap" />
                         <TextBlock Text="{Binding DateText}" FontSize="11" Foreground="#FF6A6A6A" TextWrapping="Wrap" />
                         <TextBlock Text="{Binding Summary}" Margin="0,6,0,0" TextWrapping="Wrap"
@@ -1086,4 +1164,33 @@
             </ItemsControl>
         </DockPanel>
     </DockPanel>
+
+        <!-- The large view of a memory's photo (CH-46): over the whole window, moving through that
+             memory's photos only. Memory photos are not in the Photos gallery. -->
+        <Grid x:Name="MemoryPhotoViewer" Background="#F0101010"
+              Visibility="{Binding IsMemoryPhotoViewerOpen, Converter={StaticResource BoolToVisibility}}">
+            <DockPanel DataContext="{Binding MemoryPhotoViewer}" Margin="16">
+                <DockPanel DockPanel.Dock="Top" LastChildFill="False" Margin="0,0,0,8">
+                    <TextBlock Text="{Binding Title}" Foreground="White" FontSize="14" FontWeight="SemiBold"
+                               DockPanel.Dock="Left" VerticalAlignment="Center" />
+                    <Button Content="Close" Padding="10,2" DockPanel.Dock="Right"
+                            Command="{Binding CloseCommand}" />
+                    <Button Content="Next" Padding="10,2" Margin="0,0,6,0" DockPanel.Dock="Right"
+                            Command="{Binding NextCommand}" />
+                    <Button Content="Previous" Padding="10,2" Margin="0,0,6,0" DockPanel.Dock="Right"
+                            Command="{Binding PreviousCommand}" />
+                </DockPanel>
+                <TextBlock DockPanel.Dock="Bottom" Text="{Binding Caption}" Foreground="White" FontSize="13"
+                           TextWrapping="Wrap" TextAlignment="Center" Margin="0,8,0,0"
+                           Visibility="{Binding HasCaption, Converter={StaticResource BoolToVisibility}}" />
+                <Grid>
+                    <Image Source="{Binding Image}" Stretch="Uniform" StretchDirection="DownOnly" />
+                    <TextBlock Text="This photo could not be shown." Foreground="White"
+                               HorizontalAlignment="Center" VerticalAlignment="Center"
+                               Visibility="{Binding CannotShow, Converter={StaticResource BoolToVisibility}}" />
+                </Grid>
+            </DockPanel>
+        </Grid>
+    </Grid>
 </Window>
+

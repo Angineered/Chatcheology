@@ -304,6 +304,37 @@ namespace Chatcheology.Archive
                 command.ExecuteNonQuery();
             }
 
+            foreach (var image in entry.Images)
+            {
+                if (image.EntryID != entry.EntryID)
+                {
+                    throw new InvalidOperationException("An extra photo must be written with the entry it belongs to.");
+                }
+
+                if (!ArchiveFormat.IsSha256(image.Sha256)
+                    || image.Extension is null
+                    || image.Extension.Length < 2
+                    || ArchiveFormat.SafeExtension(image.Extension) != image.Extension)
+                {
+                    throw new InvalidOperationException(
+                        "An extra photo must have a media hash of 64 lower-case hexadecimal digits and a plain " +
+                        "lower-case extension.");
+                }
+
+                using var command = Command(
+                    transaction,
+                    """
+                    INSERT INTO EntryImage (EntryID, Ordinal, Sha256, Extension, Caption)
+                    VALUES ($entry, $ordinal, $sha, $extension, $caption);
+                    """);
+                command.Parameters.AddWithValue("$entry", image.EntryID);
+                command.Parameters.AddWithValue("$ordinal", image.Ordinal);
+                command.Parameters.AddWithValue("$sha", image.Sha256);
+                command.Parameters.AddWithValue("$extension", image.Extension);
+                command.Parameters.AddWithValue("$caption", (object?)image.Caption ?? DBNull.Value);
+                command.ExecuteNonQuery();
+            }
+
             foreach (var period in entry.Periods)
             {
                 if (period.EntryID != entry.EntryID)
@@ -438,18 +469,24 @@ namespace Chatcheology.Archive
             RequireCount(
                 transaction,
                 v2
-                    ? ArchiveMemoryRules.MediaUnusedVersionTwo
+                    ? ArchiveMemoryRules.MediaUnusedWithEntryImages
                     : "SELECT COUNT(*) FROM Media WHERE Sha256 NOT IN (SELECT MediaSha256 FROM Attachment " +
                       "WHERE MediaSha256 IS NOT NULL);",
                 0,
                 v2
-                    ? "Every media payload must be named by at least one restored attachment, entry image or item icon."
+                    ? "Every media payload must be named by at least one restored attachment, entry image, extra photo or item icon."
                     : "Every media payload must be named by at least one restored attachment.");
 
             if (v2)
             {
                 RequireCount(transaction, ArchiveMemoryRules.LinksNotFromPersonal, 0,
                     "A link must start at an entry of a personal collection.");
+
+                RequireCount(transaction, ArchiveMemoryRules.EntryImagesNotPersonal, 0,
+                    "Extra photos belong to entries of a personal collection only.");
+
+                RequireCount(transaction, ArchiveMemoryRules.EntryImagesRepeatCover, 0,
+                    "An extra photo must not repeat its entry's cover.");
 
                 RequireCount(transaction, ArchiveMemoryRules.DefinitionsUnused, 0,
                     "Only item definitions that an item of the archive uses may be written.");
@@ -476,7 +513,7 @@ namespace Chatcheology.Archive
 
             RequireCount(transaction, "SELECT COUNT(*) FROM pragma_foreign_key_check;", 0,
                 v2
-                    ? "A message, attachment, basis line, entry, period, item, link or item definition refers to a row the archive " +
+                    ? "A message, attachment, basis line, entry, period, item, link, extra photo or item definition refers to a row the archive " +
                       "does not hold."
                     : "A message, attachment or basis line refers to a row the archive does not hold.");
 
@@ -492,6 +529,7 @@ namespace Chatcheology.Archive
                     ExportPeriods = _info.ExportPeriods.Count,
                     EntryLinks = (int)Count(transaction, "SELECT COUNT(*) FROM EntryLink;"),
                     ItemDefinitions = (int)Count(transaction, "SELECT COUNT(*) FROM ItemDefinition;"),
+                    EntryImages = (int)Count(transaction, "SELECT COUNT(*) FROM EntryImage;"),
                     Collections = ReadCollectionCounts(transaction),
                 };
             }
@@ -839,6 +877,12 @@ namespace Chatcheology.Archive
         /// <summary>Version 2: item definitions (those some item uses).</summary>
         public int ItemDefinitions { get; init; }
 
+        /// <summary>
+        /// Version 2 (CH-46): extra photos of personal entries. A manifest written before CH-46 has none
+        /// and reads as 0, matching an archive without the <c>EntryImage</c> table.
+        /// </summary>
+        public int EntryImages { get; init; }
+
         /// <summary>Version 2: entries, periods and items of each collection, ordered by collection.</summary>
         public IReadOnlyList<ArchiveCollectionCounts> Collections { get; init; } = [];
 
@@ -857,6 +901,7 @@ namespace Chatcheology.Archive
             && ExportPeriods == other.ExportPeriods
             && EntryLinks == other.EntryLinks
             && ItemDefinitions == other.ItemDefinitions
+            && EntryImages == other.EntryImages
             && (Collections ?? []).SequenceEqual(other.Collections ?? []);
 
         /// <inheritdoc />
@@ -867,7 +912,7 @@ namespace Chatcheology.Archive
                 ExportMessages,
                 ExportPeriods,
                 EntryLinks,
-                HashCode.Combine(ItemDefinitions, (Collections ?? []).Count));
+                HashCode.Combine(ItemDefinitions, EntryImages, (Collections ?? []).Count));
     }
 
     /// <summary>Version 2: how many rows one collection holds.</summary>

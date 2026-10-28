@@ -59,6 +59,11 @@ namespace Chatcheology.Data.Memories.Personal
         public static PersonalImageChoice FromFile(string path) => new(null, path);
     }
 
+    /// <summary>One extra photo of a memory (after its cover, CH-46): the image and an optional caption.</summary>
+    /// <param name="Image">An image already stored (by hash), or a file to copy in on save. Never <see cref="PersonalImageChoice.None"/>.</param>
+    /// <param name="Caption">Optional; trimmed, empty means none.</param>
+    public sealed record PersonalPhotoDraft(PersonalImageChoice Image, string? Caption);
+
     /// <summary>What the form hands to a save: every field of one personal memory.</summary>
     public sealed record PersonalEntryDraft
     {
@@ -83,8 +88,14 @@ namespace Chatcheology.Data.Memories.Personal
         /// <summary>Required: where the memory comes from (for example "My own memory").</summary>
         public required string Source { get; init; }
 
-        /// <summary>The image to carry after the save.</summary>
+        /// <summary>The image to carry after the save: the cover, shown on the card.</summary>
         public PersonalImageChoice Image { get; init; } = PersonalImageChoice.None;
+
+        /// <summary>
+        /// The extra photos after the cover, in the order they are shown (CH-46). Needs a cover; each
+        /// photo at most once in a memory, the cover included.
+        /// </summary>
+        public IReadOnlyList<PersonalPhotoDraft> ExtraPhotos { get; init; } = [];
 
         /// <summary>The links the memory has after the save.</summary>
         public IReadOnlyList<PersonalLinkTarget> Links { get; init; } = [];
@@ -212,7 +223,44 @@ namespace Chatcheology.Data.Memories.Personal
 
         /// <summary>The links, in the order they were made.</summary>
         public required IReadOnlyList<PersonalLinkDetails> Links { get; init; }
+
+        /// <summary>The extra photos after the cover, in order (none in a format 1 or 2 file).</summary>
+        public IReadOnlyList<PersonalPhotoDetails> ExtraPhotos { get; init; } = [];
     }
+
+    /// <summary>One stored extra photo of a memory.</summary>
+    /// <param name="Sha256">The photo's hash.</param>
+    /// <param name="Extension">Its stored file's extension (png, jpg, gif or webp).</param>
+    /// <param name="Caption">Its caption, or <see langword="null"/>.</param>
+    /// <param name="Path">The file in the memories media folder, or <see langword="null"/> when it is not there.</param>
+    public sealed record PersonalPhotoDetails(string Sha256, string Extension, string? Caption, string? Path);
+
+    /// <summary>What deleting a personal collection removed.</summary>
+    /// <param name="Entries">Its memories.</param>
+    /// <param name="Links">Links from or to those memories.</param>
+    /// <param name="Photos">Their extra-photo rows (the stored files are kept).</param>
+    public sealed record CollectionDeleteResult(int Entries, int Links, int Photos);
+
+    /// <summary>
+    /// The files of the memories media folder that nothing in the memories file uses (CH-46 tidy-up).
+    /// </summary>
+    /// <param name="UnusedFiles">The unused files' names (<c>&lt;sha256&gt;.&lt;ext&gt;</c>), sorted.</param>
+    /// <param name="UnusedBytes">Their total size.</param>
+    /// <param name="UsedFiles">Files of the pattern that something uses.</param>
+    /// <param name="OtherItems">Files or folders not named <c>&lt;sha256&gt;.&lt;ext&gt;</c>: never touched.</param>
+    public sealed record UnusedImagesSurvey(IReadOnlyList<string> UnusedFiles, long UnusedBytes, int UsedFiles, int OtherItems)
+    {
+        /// <summary>Nothing to tidy (no folder, or no file).</summary>
+        public static UnusedImagesSurvey Empty { get; } = new([], 0, 0, 0);
+    }
+
+    /// <summary>What a tidy-up deleted.</summary>
+    /// <param name="Deleted">Files deleted.</param>
+    /// <param name="DeletedBytes">Their total size.</param>
+    /// <param name="NowUsed">Listed files kept because something uses them by the time of deleting.</param>
+    /// <param name="Gone">Listed files no longer there.</param>
+    /// <param name="Failed">Listed files that could not be deleted (locked, say).</param>
+    public sealed record UnusedImagesDeleteResult(int Deleted, long DeletedBytes, int NowUsed, int Gone, int Failed);
 
     /// <summary>An entry a link can point to, as the picker shows it.</summary>
     public sealed record EntryLinkCandidate(long EntryID, string CollectionName, string Title, string DateText);
@@ -250,6 +298,9 @@ namespace Chatcheology.Data.Memories.Personal
 
         /// <summary>The longest source line kept.</summary>
         public const int MaxSourceLength = 200;
+
+        /// <summary>The longest photo caption kept.</summary>
+        public const int MaxCaptionLength = 500;
 
         /// <summary>The stored precision word for a precision.</summary>
         public static string StoredPrecision(PersonalDatePrecision precision) => precision switch
@@ -343,6 +394,21 @@ namespace Chatcheology.Data.Memories.Personal
             if ((draft.Summary?.Trim().Length ?? 0) > MaxSummaryLength)
             {
                 errors[PersonalFields.Summary] = $"Keep the description to {MaxSummaryLength.ToString(CultureInfo.CurrentCulture)} characters.";
+            }
+
+            var photos = draft.ExtraPhotos ?? [];
+
+            if (photos.Count > 0 && draft.Image == PersonalImageChoice.None)
+            {
+                errors[PersonalFields.Image] = "The first photo is the cover: a memory with photos needs one.";
+            }
+            else if (photos.Any(p => p is null || p.Image == PersonalImageChoice.None))
+            {
+                errors[PersonalFields.Image] = "Every photo needs an image.";
+            }
+            else if (photos.Any(p => (p.Caption?.Trim().Length ?? 0) > MaxCaptionLength))
+            {
+                errors[PersonalFields.Image] = $"Keep each caption to {MaxCaptionLength.ToString(CultureInfo.CurrentCulture)} characters.";
             }
 
             return errors;

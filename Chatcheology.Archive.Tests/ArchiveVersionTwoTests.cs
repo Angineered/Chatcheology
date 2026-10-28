@@ -22,6 +22,132 @@ namespace Chatcheology.Archive.Tests
 
         private static string IconSha => ArchiveHashing.Hex(SHA256.HashData(IconBytes));
 
+        private static readonly byte[] CoverBytes = Encoding.ASCII.GetBytes("synthetic cover photo");
+
+        private static string CoverSha => ArchiveHashing.Hex(SHA256.HashData(CoverBytes));
+
+        private static readonly byte[] PhotoBytes = Encoding.ASCII.GetBytes("synthetic extra photo");
+
+        private static string PhotoSha => ArchiveHashing.Hex(SHA256.HashData(PhotoBytes));
+
+        // ---------------------------------------------------------------------------------------
+        // Extra photos (CH-46).
+        // ---------------------------------------------------------------------------------------
+
+        [Fact]
+        public void ExtraPhotos_RoundTrip_WithCaptions_AndValidate()
+        {
+            var counts = WriteMemoryArchive(_folder.Path, photos: true);
+
+            Assert.Equal(2, counts.EntryImages);
+
+            var result = ArchiveValidator.Validate(_folder.Path);
+            Assert.True(result.Passed, string.Join(", ", result.FirstProblems));
+
+            using var reader = ArchiveReader.Open(_folder.Path);
+
+            Assert.True(reader.HasEntryImages);
+            var photos = reader.ReadEntryImages(20);
+            Assert.Equal([1, 2], photos.Select(p => p.Ordinal));
+            Assert.Equal([PhotoSha, ImageSha], photos.Select(p => p.Sha256));
+            Assert.Equal(["By the sea", null], photos.Select(p => p.Caption));
+            Assert.All(photos, p => Assert.True(File.Exists(reader.EntryImageFullPath(p))));
+            Assert.Empty(reader.ReadEntryImages(10));
+            Assert.Equal(2, reader.ReadAllEntryImages().Count);
+
+            // The game image is shared with the second photo: one file, one Media row.
+            Assert.Equal(4, Directory.GetFiles(Path.Combine(_folder.Path, "media")).Length);
+        }
+
+        [Fact]
+        public void AnArchiveWithoutTheEntryImageTable_ReadsAsNoExtraPhotos_AndValidates()
+        {
+            WriteMemoryArchive(_folder.Path);
+            ArchiveSample.Tamper(_folder.Path, "DROP TABLE EntryImage; VACUUM;");
+
+            // The manifest of a build before CH-46 had no entryImages count; it reads as 0.
+            var manifestPath = Path.Combine(_folder.Path, ArchiveFormat.ManifestFileName);
+            File.WriteAllText(
+                manifestPath,
+                File.ReadAllText(manifestPath).Replace("  \"entryImages\": 0,\n", string.Empty, StringComparison.Ordinal)
+                    .Replace("    \"entryImages\": 0,\n", string.Empty, StringComparison.Ordinal));
+            Assert.DoesNotContain("entryImages", File.ReadAllText(manifestPath), StringComparison.Ordinal);
+            File.WriteAllBytes(Path.Combine(_folder.Path, ArchiveContents.FileName), ArchiveContents.Build(_folder.Path));
+
+            var result = ArchiveValidator.Validate(_folder.Path);
+            Assert.True(result.Passed, string.Join(", ", result.FirstProblems));
+
+            using var reader = ArchiveReader.Open(_folder.Path);
+
+            Assert.True(reader.HasMemories);
+            Assert.False(reader.HasEntryImages);
+            Assert.Empty(reader.ReadEntryImages(20));
+            Assert.Empty(reader.ReadAllEntryImages());
+            Assert.Equal(2, reader.ReadCollections().Count);
+        }
+
+        [Fact]
+        public void AnExtraPhotoWhoseFileIsGoneOrDifferent_FailsMedia()
+        {
+            WriteMemoryArchive(_folder.Path, photos: true);
+            var photo = Path.Combine(_folder.Path, "media", PhotoSha + ".jpg");
+            File.WriteAllBytes(photo, Encoding.ASCII.GetBytes("altered"));
+
+            Assert.Equal(1, ArchiveValidator.Validate(_folder.Path).ProblemCounts[ArchiveProblemKind.EntryImageFileDiffers]);
+
+            File.Delete(photo);
+            var result = ArchiveValidator.Validate(_folder.Path);
+
+            Assert.Equal(1, result.ProblemCounts[ArchiveProblemKind.EntryImageFileMissing]);
+            Assert.False(result.Checks.Single(c => c.Check == ArchiveCheck.Media).Passed);
+        }
+
+        [Fact]
+        public void AnExtraPhotoOnAnImportedEntry_OrRepeatingTheCover_FailsLinks_AndTheWriterRefusesIt()
+        {
+            WriteMemoryArchive(_folder.Path, photos: true);
+            ArchiveSample.Tamper(_folder.Path, $"INSERT INTO EntryImage VALUES (10, 1, '{PhotoSha}', '.jpg', NULL);");
+            ArchiveSample.Tamper(_folder.Path, $"INSERT INTO EntryImage VALUES (20, 3, '{CoverSha}', '.png', NULL);");
+
+            var result = ArchiveValidator.Validate(_folder.Path);
+
+            Assert.Equal(2, result.ProblemCounts[ArchiveProblemKind.ExtraPhotoMisplaced]);
+            Assert.False(result.Checks.Single(c => c.Check == ArchiveCheck.LinksAndBasis).Passed);
+
+            var database = Path.Combine(_folder.Path, "second.db");
+
+            using var writer = Begin(database, photos: true);
+            writer.WriteEntry(new ArchiveEntry
+            {
+                EntryID = 30,
+                CollectionID = 1,
+                SourceKey = "setC|setD|2016-06-01",
+                Title = "Another Game",
+                StartLocal = new DateTime(2016, 6, 1, 20, 0, 0),
+                EndLocal = null,
+                StartUtc = null,
+                EndUtc = null,
+                DatePrecision = "Day",
+                Summary = null,
+                ImageSha256 = null,
+                ImageExtension = null,
+                Source = null,
+                DayLevel = null,
+                Images = [new ArchiveEntryImage { EntryID = 30, Ordinal = 1, Sha256 = PhotoSha, Extension = ".jpg", Caption = null }],
+            });
+
+            var refusal = Assert.Throws<InvalidOperationException>(() => writer.Complete());
+            Assert.Contains("personal collection", refusal.Message, StringComparison.Ordinal);
+        }
+
+        [Fact]
+        public void AnExtraPhotoWithoutAMediaRow_IsRefusedByTheWriter()
+        {
+            using var writer = Begin(Path.Combine(_folder.Path, ArchiveFormat.DatabaseFileName), photos: true, photoMedia: false);
+
+            Assert.Throws<InvalidOperationException>(() => writer.Complete());
+        }
+
         // ---------------------------------------------------------------------------------------
         // Version 1.
         // ---------------------------------------------------------------------------------------
@@ -368,7 +494,9 @@ namespace Chatcheology.Archive.Tests
         };
 
         /// <summary>A writer with participants, messages and both collections written, not completed.</summary>
-        private static ArchiveWriter Begin(string database, int localItems = 1)
+        /// <param name="photos">The personal entry gets a cover and two extra photos (the second is the game image).</param>
+        /// <param name="photoMedia">Whether the extra photo's Media row is written.</param>
+        private static ArchiveWriter Begin(string database, int localItems = 1, bool photos = false, bool photoMedia = true)
         {
             var info = ArchiveSample.Info();
 
@@ -398,6 +526,32 @@ namespace Chatcheology.Archive.Tests
                 Width = null,
                 Height = null,
             });
+
+            if (photos)
+            {
+                writer.WriteMedia(new ArchiveMedia
+                {
+                    Sha256 = CoverSha,
+                    MediaType = "Image",
+                    SizeBytes = CoverBytes.Length,
+                    DurationMS = null,
+                    Width = null,
+                    Height = null,
+                });
+
+                if (photoMedia)
+                {
+                    writer.WriteMedia(new ArchiveMedia
+                    {
+                        Sha256 = PhotoSha,
+                        MediaType = "Image",
+                        SizeBytes = PhotoBytes.Length,
+                        DurationMS = null,
+                        Width = null,
+                        Height = null,
+                    });
+                }
+            }
 
             writer.WriteMessage(Message(900, 1, "2015-01-01T10:00:00", ArchiveMessageSource.Export));
             writer.WriteMessage(Message(1, 2, "2017-09-06T20:39:00", ArchiveMessageSource.Workspace));
@@ -486,21 +640,28 @@ namespace Chatcheology.Archive.Tests
                 EndUtc = null,
                 DatePrecision = "Day",
                 Summary = "Invented",
-                ImageSha256 = null,
-                ImageExtension = null,
+                ImageSha256 = photos ? CoverSha : null,
+                ImageExtension = photos ? ".png" : null,
                 Source = null,
                 DayLevel = null,
+                Images = photos
+                    ?
+                    [
+                        new ArchiveEntryImage { EntryID = 20, Ordinal = 1, Sha256 = PhotoSha, Extension = ".jpg", Caption = "By the sea" },
+                        new ArchiveEntryImage { EntryID = 20, Ordinal = 2, Sha256 = ImageSha, Extension = ".png", Caption = null },
+                    ]
+                    : [],
             });
 
             return writer;
         }
 
         /// <summary>A whole version 2 archive folder with one export message, two collections and links.</summary>
-        private static ArchiveCounts WriteMemoryArchive(string folder)
+        private static ArchiveCounts WriteMemoryArchive(string folder, bool photos = false)
         {
             ArchiveCounts counts;
 
-            using (var writer = Begin(Path.Combine(folder, ArchiveFormat.DatabaseFileName)))
+            using (var writer = Begin(Path.Combine(folder, ArchiveFormat.DatabaseFileName), photos: photos))
             {
                 writer.WriteEntryLink(new ArchiveEntryLink { EntryLinkID = 1, FromEntryID = 20, ToEntryID = 10, ToMessageSequenceNumber = null });
                 writer.WriteEntryLink(new ArchiveEntryLink { EntryLinkID = 2, FromEntryID = 20, ToEntryID = null, ToMessageSequenceNumber = 3 });
@@ -548,6 +709,13 @@ namespace Chatcheology.Archive.Tests
             Directory.CreateDirectory(media);
             File.WriteAllBytes(Path.Combine(media, ImageSha + ".png"), ImageBytes);
             File.WriteAllBytes(Path.Combine(media, IconSha + ".png"), IconBytes);
+
+            if (photos)
+            {
+                File.WriteAllBytes(Path.Combine(media, CoverSha + ".png"), CoverBytes);
+                File.WriteAllBytes(Path.Combine(media, PhotoSha + ".jpg"), PhotoBytes);
+            }
+
 
             File.WriteAllBytes(
                 Path.Combine(folder, ArchiveFormat.ManifestFileName),

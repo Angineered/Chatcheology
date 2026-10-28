@@ -346,7 +346,7 @@ namespace Chatcheology.Tools.MemoryImport.Tests
             Assert.Equal(string.Empty, error);
             Assert.Equal(
                 "Dry run: nothing is written.\n" +
-                "Memories file format: 2\n" +
+                "Memories file format: 3\n" +
                 "Sets: 2\n" +
                 "Definitions: 4\n" +
                 "  hidden: 1\n" +
@@ -419,6 +419,7 @@ namespace Chatcheology.Tools.MemoryImport.Tests
                     DROP TABLE MemoriesInfo;
                     ALTER TABLE MemoriesInfoOld RENAME TO MemoriesInfo;
                     DROP TABLE ItemDefinition;
+                    DROP TABLE EntryImage;
                     """;
                 command.ExecuteNonQuery();
             }
@@ -426,15 +427,15 @@ namespace Chatcheology.Tools.MemoryImport.Tests
             SqliteConnection.ClearAllPools();
 
             var (_, dry, _) = Run("psn-enrich-dry-run", "--workspace-folder", _workspace, DefinitionsFile());
-            Assert.Contains("The memories file is format 1; psn-enrich upgrades it to 2.\n", Lines(dry), StringComparison.Ordinal);
+            Assert.Contains("The memories file is format 1; psn-enrich upgrades it to 3.\n", Lines(dry), StringComparison.Ordinal);
             Assert.Contains("Changes: 5\n", Lines(dry), StringComparison.Ordinal);
 
             var (code, output, _) = Run("psn-enrich", "--workspace-folder", _workspace, DefinitionsFile());
 
             Assert.Equal(0, code);
-            Assert.Contains("Upgraded the memories file from format 1 to 2.\n", Lines(output), StringComparison.Ordinal);
+            Assert.Contains("Upgraded the memories file from format 1 to 3.\n", Lines(output), StringComparison.Ordinal);
             Assert.Contains("Changes: 5\n", Lines(output), StringComparison.Ordinal);
-            Assert.Equal(2, Scalar("SELECT FormatVersion FROM MemoriesInfo;"));
+            Assert.Equal(3, Scalar("SELECT FormatVersion FROM MemoriesInfo;"));
         }
 
         [Fact]

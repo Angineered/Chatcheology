@@ -9,7 +9,14 @@ namespace Chatcheology.Data.Memories
     /// <param name="ImagePath">The image file in the memories media folder, when it is there.</param>
     /// <param name="Links">Its links, a message by its workspace sequence number.</param>
     public sealed record MemoryLayerEntry(
-        ArchiveEntry Entry, IReadOnlyList<ArchiveEntryPeriod> Periods, string? ImagePath, IReadOnlyList<ArchiveEntryLink> Links);
+        ArchiveEntry Entry, IReadOnlyList<ArchiveEntryPeriod> Periods, string? ImagePath, IReadOnlyList<ArchiveEntryLink> Links)
+    {
+        /// <summary>
+        /// The extra photos after the cover, in order (CH-46; none before format 3): each file in the
+        /// memories media folder when it is there, and its caption.
+        /// </summary>
+        public IReadOnlyList<(string? Path, string? Caption)> ExtraPhotos { get; init; } = [];
+    }
 
     /// <summary>
     /// The memories file beside a workspace, read for the desktop's memory layers (CH-42 step 5): the
@@ -18,7 +25,8 @@ namespace Chatcheology.Data.Memories
     /// </summary>
     /// <remarks>
     /// <para><strong>Read only.</strong> The file is opened through SQLite's own <c>Mode=ReadOnly</c>; no
-    /// file means no layers. Formats 1 and 2 are read (format 1 has no item definitions).</para>
+    /// file means no layers. Formats 1 to 3 are read (format 1 has no item definitions, formats 1 and 2
+    /// no extra photos).</para>
     /// <para><strong>Roles need two named participants.</strong> Without a local participant and exactly
     /// one other, a collection whose entries have items cannot name whose items they are, so it is listed
     /// in <see cref="Unnamed"/> and its entries are left out, never guessed. Personal collections have no
@@ -128,8 +136,16 @@ namespace Chatcheology.Data.Memories
                     e.Entry.ImageSha256 is { } sha && images.TryGetValue(sha, out var image) && File.Exists(image.FullPath)
                         ? image.FullPath
                         : null,
-                    links[e.Entry.EntryID].ToList()))
+                    links[e.Entry.EntryID].ToList())
+                {
+                    ExtraPhotos = e.Photos
+                        .Select(photo => (
+                            images.TryGetValue(photo.Sha256, out var file) && File.Exists(file.FullPath) ? file.FullPath : null,
+                            photo.Caption))
+                        .ToList(),
+                })
                 .ToList();
+
 
             return new MemoryLayersFile
             {

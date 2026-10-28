@@ -50,6 +50,7 @@ namespace Chatcheology.Desktop.ViewModels
                     SourceText = card.SourceText;
                     CollectionName = card.CollectionName;
                     Image = MemoryImages.Load(card.ImagePath, images);
+                    ExtraPhotosBadge = card.ExtraPhotosBadge;
                     break;
 
                 case DifferentTimesRow line:
@@ -115,6 +116,12 @@ namespace Chatcheology.Desktop.ViewModels
 
         /// <summary>Whether there is an image to draw.</summary>
         public bool HasImage => Image is not null;
+
+        /// <summary>A personal card's "+4" badge for its extra photos (CH-46), or empty.</summary>
+        public string ExtraPhotosBadge { get; } = string.Empty;
+
+        /// <summary>Whether the badge shows: a cover is drawn and the memory has extra photos.</summary>
+        public bool HasExtraPhotos => HasImage && ExtraPhotosBadge.Length > 0;
 
         /// <summary>Whether this row begins a new calendar day on the page.</summary>
         public bool HasDateSeparator => _dateSeparator is not null;
@@ -249,6 +256,107 @@ namespace Chatcheology.Desktop.ViewModels
         public bool HasIcon => Icon is not null;
     }
 
+    /// <summary>One photo in the memory details' strip (CH-46): its thumbnail and caption.</summary>
+    public sealed class MemoryStripPhotoViewModel
+    {
+        internal MemoryStripPhotoViewModel(int index, MemoryPhoto photo, ConcurrentDictionary<string, ImageSource?> images)
+        {
+            Index = index;
+            Thumbnail = MemoryImages.Load(photo.Path, images);
+            Caption = photo.CaptionText;
+        }
+
+        /// <summary>Its place among the memory's photos (0 is the cover).</summary>
+        public int Index { get; }
+
+        /// <summary>The decoded thumbnail, or <see langword="null"/>.</summary>
+        public ImageSource? Thumbnail { get; }
+
+        /// <summary>The caption, or empty.</summary>
+        public string Caption { get; }
+
+        /// <summary>Whether there is a caption.</summary>
+        public bool HasCaption => Caption.Length > 0;
+    }
+
+    /// <summary>
+    /// The large photo view of one memory (CH-46): the desktop's stand-in for the phone's full-screen
+    /// viewer. Previous and Next move through this memory's photos only, and stop at either end.
+    /// </summary>
+    public sealed class MemoryPhotoViewerViewModel : ObservableObject
+    {
+        private readonly MemoryPhotoBrowser _browser;
+        private readonly Func<string, ImageSource?> _load;
+        private ImageSource? _image;
+
+        /// <param name="browser">The memory's photos, at the one opened.</param>
+        /// <param name="close">Closes the view.</param>
+        /// <param name="load">Decodes a photo file for the large view.</param>
+        internal MemoryPhotoViewerViewModel(MemoryPhotoBrowser browser, Action close, Func<string, ImageSource?>? load = null)
+        {
+            _browser = browser ?? throw new ArgumentNullException(nameof(browser));
+            _load = load ?? (path => MediaPresentation.TryLoadImage(path, MediaPresentation.LargeWidth));
+
+            PreviousCommand = new RelayCommand(() => Move(_browser.Previous()), () => _browser.HasPrevious);
+            NextCommand = new RelayCommand(() => Move(_browser.Next()), () => _browser.HasNext);
+            CloseCommand = new RelayCommand(close ?? throw new ArgumentNullException(nameof(close)));
+
+            _image = _load(_browser.Current.Path!);
+        }
+
+        /// <summary>The photos it moves through.</summary>
+        internal MemoryPhotoBrowser Browser => _browser;
+
+        /// <summary>"Photo 2 of 5", or "Photo".</summary>
+        public string Title => _browser.Title;
+
+        /// <summary>The photo shown, decoded large; <see langword="null"/> when it does not decode.</summary>
+        public ImageSource? Image
+        {
+            get => _image;
+            private set => SetProperty(ref _image, value);
+        }
+
+        /// <summary>Whether the photo decoded.</summary>
+        public bool HasImage => Image is not null;
+
+        /// <summary>Whether the photo did not decode (a line says so).</summary>
+        public bool CannotShow => Image is null;
+
+        /// <summary>The photo's caption, or empty.</summary>
+        public string Caption => _browser.Current.CaptionText;
+
+        /// <summary>Whether there is a caption.</summary>
+        public bool HasCaption => Caption.Length > 0;
+
+        /// <summary>The previous photo of this memory.</summary>
+        public RelayCommand PreviousCommand { get; }
+
+        /// <summary>The next photo of this memory.</summary>
+        public RelayCommand NextCommand { get; }
+
+        /// <summary>Back to the details.</summary>
+        public RelayCommand CloseCommand { get; }
+
+        private void Move(bool moved)
+        {
+            if (!moved)
+            {
+                return;
+            }
+
+            Image = _load(_browser.Current.Path!);
+            OnPropertyChanged(nameof(HasImage));
+            OnPropertyChanged(nameof(CannotShow));
+
+            OnPropertyChanged(nameof(Title));
+            OnPropertyChanged(nameof(Caption));
+            OnPropertyChanged(nameof(HasCaption));
+            PreviousCommand.RaiseCanExecuteChanged();
+            NextCommand.RaiseCanExecuteChanged();
+        }
+    }
+
     /// <summary>
     /// What the details area shows for a selected memory row (CH-42 step 5): the phone's
     /// <see cref="MemoryDetails"/>, laid out with the phone's headings.
@@ -266,6 +374,9 @@ namespace Chatcheology.Desktop.ViewModels
             DateText = details.DateText;
             CollectionName = details.CollectionName;
             Image = MemoryImages.Load(details.ImagePath, images);
+            Photos = details.HasPhotoStrip
+                ? details.Photos.Select((photo, index) => new MemoryStripPhotoViewModel(index, photo, images)).ToList()
+                : [];
             Summary = details.Summary;
             Lines = details.Lines;
             Items = details.Items.Select(i => new MemoryItemViewModel(i, images)).ToList();
@@ -300,7 +411,20 @@ namespace Chatcheology.Desktop.ViewModels
         /// <summary>Whether there is an image.</summary>
         public bool HasImage => Image is not null;
 
+        /// <summary>
+        /// The strip of every photo (the cover first) when the memory has more than one (CH-46); empty
+        /// otherwise, when the single image shows as before.
+        /// </summary>
+        public IReadOnlyList<MemoryStripPhotoViewModel> Photos { get; }
+
+        /// <summary>Whether the strip shows.</summary>
+        public bool HasPhotoStrip => Photos.Count > 0;
+
+        /// <summary>Whether the single image shows (an image, and no strip).</summary>
+        public bool ShowsSingleImage => HasImage && !HasPhotoStrip;
+
         /// <summary>A personal memory's description, or empty.</summary>
+
         public string Summary { get; }
 
         /// <summary>Whether there is a description.</summary>

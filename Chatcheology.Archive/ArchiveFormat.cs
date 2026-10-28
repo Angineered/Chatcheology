@@ -73,7 +73,14 @@ namespace Chatcheology.Archive
             "ItemDefinition",
         ];
 
-        /// <summary>Every table of the given format version, and no others.</summary>
+        /// <summary>
+        /// The table of a personal entry's extra photos (CH-46). Written into every version 2 archive, but
+        /// not required: a version 2 archive written before CH-46 lacks it and reads as having no extra
+        /// photos, so it is not in <see cref="TableNamesOf"/>.
+        /// </summary>
+        public const string EntryImageTableName = "EntryImage";
+
+        /// <summary>The tables of the given format version a reader requires.</summary>
         /// <exception cref="ArgumentOutOfRangeException">Not a version this build knows.</exception>
         public static IReadOnlyList<string> TableNamesOf(int formatVersion) => formatVersion switch
         {

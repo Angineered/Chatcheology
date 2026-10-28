@@ -167,8 +167,16 @@
                                      Stroke="{AppThemeBinding Light={StaticResource MemoryAccentLight}, Dark={StaticResource MemoryAccentDark}}"
                                      BackgroundColor="{AppThemeBinding Light={StaticResource MemoryCardBackgroundLight}, Dark={StaticResource MemoryCardBackgroundDark}}">
                     <VerticalStackLayout Spacing="2">
-                        <controls:DecodedImage WidthRequest="280" HeightRequest="158" FailedText=""
-                                               IsVisible="{Binding HasImage}" Path="{Binding ImagePath}" />
+                        <Grid IsVisible="{Binding HasImage}">
+                            <controls:DecodedImage WidthRequest="280" HeightRequest="158" FailedText=""
+                                                   Path="{Binding ImagePath}" />
+                            <!-- "+4": the memory's extra photos after the cover (CH-46). -->
+                            <Border IsVisible="{Binding HasExtraPhotos}" HorizontalOptions="End" VerticalOptions="End"
+                                    Margin="6" Padding="7,1" StrokeThickness="0" StrokeShape="RoundRectangle 9"
+                                    BackgroundColor="#CC000000">
+                                <Label Text="{Binding ExtraPhotosBadge}" FontSize="12" FontAttributes="Bold" TextColor="White" />
+                            </Border>
+                        </Grid>
                         <Label Text="{Binding CollectionName}" FontSize="11" Margin="10,6,10,0"
                                TextColor="{AppThemeBinding Light={StaticResource MemoryAccentLight}, Dark={StaticResource MemoryAccentDark}}" />
                         <Label Text="{Binding Title}" FontSize="15" FontAttributes="Bold" Margin="10,0" />
