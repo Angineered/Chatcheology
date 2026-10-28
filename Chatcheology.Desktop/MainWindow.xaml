@@ -13,6 +13,19 @@
     <Window.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVisibility" />
 
+        <!-- A validation message next to its field (CH-42 step 4); takes no room when empty. -->
+        <Style x:Key="FieldError" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="11" />
+            <Setter Property="Foreground" Value="#FF8A2727" />
+            <Setter Property="TextWrapping" Value="Wrap" />
+            <Setter Property="Margin" Value="0,2,0,0" />
+            <Style.Triggers>
+                <Trigger Property="Text" Value="">
+                    <Setter Property="Visibility" Value="Collapsed" />
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+
         <!-- One attachment, in exactly one of its three states.
 
              Unresolved is the archive's ordinary state and is coloured as a neutral note, never as
@@ -312,6 +325,11 @@
                 <Button Content="Validate archive…" Padding="10,3" Margin="8,0,0,0"
                         DockPanel.Dock="Left" Command="{Binding ValidateArchiveCommand}"
                         ToolTip="Check an archive folder. Nothing is written." />
+
+                <!-- Personal memories (CH-42 step 4), in the memories file beside the workspace. -->
+                <Button Content="Memories…" Padding="10,3" Margin="16,0,0,0"
+                        DockPanel.Dock="Left" Command="{Binding Memories.OpenCommand}"
+                        ToolTip="Add and edit your own memories. The workspace is not changed." />
             </WrapPanel>
         </Border>
 
@@ -420,6 +438,220 @@
 
                 <TextBlock Text="{Binding StatusText}" FontSize="11" Foreground="#FF3C3C3C"
                            TextTrimming="CharacterEllipsis" />
+            </DockPanel>
+        </Border>
+
+        <!-- Memories (CH-42 step 4): personal collections and memories in the memories file beside
+             the workspace, and the form that adds and edits them. Imported collections are listed
+             read-only. Nothing here writes the workspace. -->
+        <Border DockPanel.Dock="Right" Width="560" Background="#FFF7F6F3"
+                BorderBrush="#FFCFC8BC" BorderThickness="1,0,0,0" Padding="10"
+                Visibility="{Binding Memories.IsOpen, Converter={StaticResource BoolToVisibility}}">
+            <DockPanel DataContext="{Binding Memories}">
+                <DockPanel DockPanel.Dock="Top" LastChildFill="False" Margin="0,0,0,8">
+                    <TextBlock Text="Memories" FontWeight="Bold" FontSize="13"
+                               DockPanel.Dock="Left" VerticalAlignment="Center" />
+                    <Button Content="Close" Padding="8,2" DockPanel.Dock="Right"
+                            Command="{Binding CloseCommand}" />
+                </DockPanel>
+
+                <TextBlock DockPanel.Dock="Bottom" Text="{Binding StatusText}" FontSize="11"
+                           Foreground="#FF3C3C3C" TextWrapping="Wrap" Margin="0,8,0,0" />
+
+                <Grid>
+                    <!-- The list. -->
+                    <ScrollViewer VerticalScrollBarVisibility="Auto"
+                                  HorizontalScrollBarVisibility="Disabled"
+                                  Visibility="{Binding IsListShown,
+                                      Converter={StaticResource BoolToVisibility}}">
+                        <StackPanel>
+                            <TextBlock Text="Your collections" FontWeight="SemiBold" />
+                            <ListBox ItemsSource="{Binding Collections}"
+                                     SelectedItem="{Binding SelectedCollection}"
+                                     DisplayMemberPath="DisplayText" Height="110" Margin="0,4,0,0" />
+
+                            <DockPanel Margin="0,6,0,0" LastChildFill="True">
+                                <Button Content="Rename" Padding="8,2" Margin="6,0,0,0"
+                                        DockPanel.Dock="Right"
+                                        Command="{Binding RenameCollectionCommand}"
+                                        ToolTip="Rename the selected collection to this name." />
+                                <Button Content="Add collection" Padding="8,2" Margin="6,0,0,0"
+                                        DockPanel.Dock="Right"
+                                        Command="{Binding AddCollectionCommand}" />
+                                <TextBox Text="{Binding CollectionName,
+                                             UpdateSourceTrigger=PropertyChanged}" />
+                            </DockPanel>
+                            <TextBlock Text="{Binding CollectionNameError}"
+                                       Style="{StaticResource FieldError}" />
+
+                            <TextBlock Text="Memories in this collection" FontWeight="SemiBold"
+                                       Margin="0,10,0,0" />
+                            <ListBox ItemsSource="{Binding Entries}"
+                                     SelectedItem="{Binding SelectedEntry}"
+                                     Height="220" Margin="0,4,0,0"
+                                     HorizontalContentAlignment="Stretch"
+                                     ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                                <ListBox.ItemTemplate>
+                                    <DataTemplate>
+                                        <DockPanel>
+                                            <TextBlock Text="{Binding DateText}" Width="210"
+                                                       Foreground="#FF5A5A5A"
+                                                       TextTrimming="CharacterEllipsis" />
+                                            <TextBlock Text="{Binding Title}"
+                                                       TextTrimming="CharacterEllipsis" />
+                                        </DockPanel>
+                                    </DataTemplate>
+                                </ListBox.ItemTemplate>
+                            </ListBox>
+
+                            <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                                <Button Content="New memory…" Padding="8,2"
+                                        Command="{Binding NewEntryCommand}" />
+                                <Button Content="Edit…" Padding="8,2" Margin="6,0,0,0"
+                                        Command="{Binding EditEntryCommand}" />
+                                <Button Content="Delete…" Padding="8,2" Margin="6,0,0,0"
+                                        Command="{Binding DeleteEntryCommand}" />
+                            </StackPanel>
+
+                            <TextBlock Text="Imported collections (read-only)" FontWeight="SemiBold"
+                                       Margin="0,12,0,0" />
+                            <ItemsControl ItemsSource="{Binding ImportedCollections}" Margin="0,4,0,0">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <TextBlock Text="{Binding Text}" FontSize="11"
+                                                   Foreground="#FF5A5A5A" TextWrapping="Wrap" />
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </StackPanel>
+                    </ScrollViewer>
+
+                    <!-- The form. -->
+                    <Border Visibility="{Binding IsFormOpen,
+                                Converter={StaticResource BoolToVisibility}}">
+                        <ScrollViewer DataContext="{Binding Form}"
+                                      VerticalScrollBarVisibility="Auto"
+                                      HorizontalScrollBarVisibility="Disabled">
+                            <StackPanel>
+                                <TextBlock Text="{Binding Heading}" FontWeight="SemiBold" />
+
+                                <TextBlock Text="Collection" FontSize="11" Margin="0,8,0,0" />
+                                <ComboBox ItemsSource="{Binding Collections}"
+                                          SelectedItem="{Binding SelectedCollection}"
+                                          DisplayMemberPath="Name" Margin="0,2,0,0" />
+                                <TextBlock Text="{Binding CollectionError}"
+                                           Style="{StaticResource FieldError}" />
+
+                                <TextBlock Text="Title" FontSize="11" Margin="0,6,0,0" />
+                                <TextBox Text="{Binding Title, UpdateSourceTrigger=PropertyChanged}"
+                                         Margin="0,2,0,0" />
+                                <TextBlock Text="{Binding TitleError}" Style="{StaticResource FieldError}" />
+
+                                <Grid Margin="0,6,0,0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Grid.Column="0" Margin="0,0,6,0">
+                                        <TextBlock Text="Dated by" FontSize="11" />
+                                        <ComboBox ItemsSource="{Binding Precisions}"
+                                                  SelectedItem="{Binding Precision}" Margin="0,2,0,0" />
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="1" Margin="0,0,6,0">
+                                        <TextBlock Text="Start" FontSize="11" />
+                                        <DatePicker SelectedDate="{Binding StartDate}" Margin="0,2,0,0" />
+                                        <TextBlock Text="{Binding StartError}"
+                                                   Style="{StaticResource FieldError}" />
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="2">
+                                        <TextBlock Text="End (optional)" FontSize="11" />
+                                        <DatePicker SelectedDate="{Binding EndDate}" Margin="0,2,0,0" />
+                                        <TextBlock Text="{Binding EndError}"
+                                                   Style="{StaticResource FieldError}" />
+                                    </StackPanel>
+                                </Grid>
+                                <TextBlock Text="With Month, only the month of each date is kept."
+                                           FontSize="10" Foreground="#FF7A7A7A" Margin="0,2,0,0" />
+
+                                <TextBlock Text="Description (optional)" FontSize="11" Margin="0,6,0,0" />
+                                <TextBox Text="{Binding Summary, UpdateSourceTrigger=PropertyChanged}"
+                                         AcceptsReturn="True" TextWrapping="Wrap" Height="60"
+                                         Margin="0,2,0,0" />
+                                <TextBlock Text="{Binding SummaryError}" Style="{StaticResource FieldError}" />
+
+                                <TextBlock Text="Source (where this memory comes from)" FontSize="11"
+                                           Margin="0,6,0,0" />
+                                <TextBox Text="{Binding Source, UpdateSourceTrigger=PropertyChanged}"
+                                         Margin="0,2,0,0" />
+                                <TextBlock Text="{Binding SourceError}" Style="{StaticResource FieldError}" />
+
+                                <TextBlock Text="Image (optional)" FontSize="11" Margin="0,8,0,0" />
+                                <Image Source="{Binding ImagePreview}" MaxHeight="200" MaxWidth="320"
+                                       HorizontalAlignment="Left" Stretch="Uniform" Margin="0,2,0,0" />
+                                <TextBlock Text="{Binding ImageText}" FontSize="11"
+                                           Foreground="#FF5A5A5A" />
+                                <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
+                                    <Button Content="Choose image…" Padding="8,2"
+                                            Command="{Binding ChooseImageCommand}"
+                                            ToolTip="The file is only read; a copy goes into the memories folder on save." />
+                                    <Button Content="Remove image" Padding="8,2" Margin="6,0,0,0"
+                                            Command="{Binding RemoveImageCommand}" />
+                                </StackPanel>
+                                <TextBlock Text="{Binding ImageError}" Style="{StaticResource FieldError}" />
+
+                                <TextBlock Text="Links" FontWeight="SemiBold" Margin="0,10,0,0" />
+                                <ItemsControl ItemsSource="{Binding Links}" Margin="0,2,0,0">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <DockPanel Margin="0,2,0,0">
+                                                <Button Content="Remove" Padding="6,0" Margin="6,0,0,0"
+                                                        DockPanel.Dock="Right"
+                                                        Command="{Binding RemoveCommand}" />
+                                                <TextBlock Text="{Binding Text}" FontSize="11"
+                                                           TextWrapping="Wrap" />
+                                            </DockPanel>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                                <TextBlock Text="{Binding LinksError}" Style="{StaticResource FieldError}" />
+
+                                <TextBlock Text="Add a link: pick a day" FontSize="11" Margin="0,6,0,0" />
+                                <DatePicker SelectedDate="{Binding PickerDate}" Width="160"
+                                            HorizontalAlignment="Left" Margin="0,2,0,0" />
+                                <TextBlock Text="{Binding PickerText}" FontSize="11"
+                                           Foreground="#FF5A5A5A" Margin="0,2,0,0" />
+
+                                <TextBlock Text="Messages of that day" FontSize="11" Margin="0,4,0,0" />
+                                <ListBox ItemsSource="{Binding PickerMessages}"
+                                         SelectedItem="{Binding SelectedPickerMessage}"
+                                         DisplayMemberPath="Text" Height="120" Margin="0,2,0,0"
+                                         ScrollViewer.HorizontalScrollBarVisibility="Disabled" />
+                                <Button Content="Link this message" Padding="8,2" Margin="0,4,0,0"
+                                        HorizontalAlignment="Left"
+                                        Command="{Binding AddMessageLinkCommand}" />
+
+                                <TextBlock Text="Memories of that day" FontSize="11" Margin="0,6,0,0" />
+                                <ListBox ItemsSource="{Binding PickerEntries}"
+                                         SelectedItem="{Binding SelectedPickerEntry}"
+                                         DisplayMemberPath="Text" Height="80" Margin="0,2,0,0"
+                                         ScrollViewer.HorizontalScrollBarVisibility="Disabled" />
+                                <Button Content="Link this memory" Padding="8,2" Margin="0,4,0,0"
+                                        HorizontalAlignment="Left"
+                                        Command="{Binding AddEntryLinkCommand}" />
+
+                                <TextBlock Text="{Binding FormError}" Style="{StaticResource FieldError}"
+                                           Margin="0,10,0,0" />
+                                <StackPanel Orientation="Horizontal" Margin="0,10,0,4">
+                                    <Button Content="Save" Padding="12,3"
+                                            Command="{Binding SaveCommand}" />
+                                    <Button Content="Cancel" Padding="12,3" Margin="8,0,0,0"
+                                            Command="{Binding CancelCommand}" />
+                                </StackPanel>
+                            </StackPanel>
+                        </ScrollViewer>
+                    </Border>
+                </Grid>
             </DockPanel>
         </Border>
 

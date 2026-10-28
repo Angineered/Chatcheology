@@ -1,0 +1,658 @@
+using System.Collections.ObjectModel;
+using System.Globalization;
+using System.Windows.Media;
+using Chatcheology.Data.Memories.Personal;
+using Chatcheology.Desktop.Services;
+
+namespace Chatcheology.Desktop.ViewModels
+{
+    /// <summary>One link in the form: what it points to, in words, and how to drop it.</summary>
+    public sealed class MemoryLinkViewModel
+    {
+        internal MemoryLinkViewModel(PersonalLinkTarget target, string text, Action<MemoryLinkViewModel> remove)
+        {
+            Target = target;
+            Text = text;
+            RemoveCommand = new RelayCommand(() => remove(this));
+        }
+
+        /// <summary>The message or entry.</summary>
+        public PersonalLinkTarget Target { get; }
+
+        /// <summary>"Message 12: 5 April 2019, 09:00, Ada: …" or "Beach week, 2 January 2018 (Holidays)".</summary>
+        public string Text { get; }
+
+        /// <summary>Drops the link from the form (nothing is written until Save).</summary>
+        public RelayCommand RemoveCommand { get; }
+    }
+
+    /// <summary>A message in the picker.</summary>
+    public sealed record MessagePickRow(MessageLinkCandidate Message)
+    {
+        /// <summary>"09:00 Ada: preview".</summary>
+        public string Text => MemoryEntryFormViewModel.MessageLine(Message);
+    }
+
+    /// <summary>An entry in the picker.</summary>
+    public sealed record EntryPickRow(EntryLinkCandidate Entry)
+    {
+        /// <summary>"Beach week, 2 January 2018 (Holidays)".</summary>
+        public string Text => Entry.Title + ", " + Entry.DateText + " (" + Entry.CollectionName + ")";
+    }
+
+    /// <summary>
+    /// The form for one personal memory: title, dates and precision, description, source, one optional
+    /// image, and links to messages and entries (CH-42 step 4).
+    /// </summary>
+    /// <remarks>
+    /// Nothing is written until Save, and Save is one transaction in the memories file. Each field's
+    /// problem is shown next to it. The chosen image file is only read (for the preview and on save).
+    /// </remarks>
+    public sealed class MemoryEntryFormViewModel : ObservableObject
+    {
+        private readonly MemoriesBackend _backend;
+        private readonly MemoriesDialogs _dialogs;
+        private readonly Func<bool> _blocked;
+        private readonly Action<long?, long?> _closed;
+        private readonly long? _entryID;
+
+        private PersonalCollectionViewModel? _collection;
+        private string _title = string.Empty;
+        private string _source = string.Empty;
+        private string _summary = string.Empty;
+        private DateTime? _startDate;
+        private DateTime? _endDate;
+        private PersonalDatePrecision _precision = PersonalDatePrecision.Day;
+        private PersonalImageChoice _image = PersonalImageChoice.None;
+        private ImageSource? _imagePreview;
+        private string _imageText = string.Empty;
+        private DateTime? _pickerDate;
+        private MessagePickRow? _selectedMessage;
+        private EntryPickRow? _selectedEntry;
+        private string _pickerText = "Pick a day to see its messages and memories.";
+        private bool _isSaving;
+        private bool _isChoosingImage;
+
+        private string _collectionError = string.Empty;
+        private string _titleError = string.Empty;
+        private string _startError = string.Empty;
+        private string _endError = string.Empty;
+        private string _sourceError = string.Empty;
+        private string _summaryError = string.Empty;
+        private string _imageError = string.Empty;
+        private string _linksError = string.Empty;
+        private string _formError = string.Empty;
+
+        internal MemoryEntryFormViewModel(
+            MemoriesBackend backend,
+            MemoriesDialogs dialogs,
+            IReadOnlyList<PersonalCollectionViewModel> collections,
+            long collectionID,
+            PersonalEntryDetails? existing,
+            IReadOnlyDictionary<int, MessageLinkCandidate?>? messages,
+            Func<bool> blocked,
+            Action<long?, long?> closed)
+        {
+            _backend = backend ?? throw new ArgumentNullException(nameof(backend));
+            _dialogs = dialogs ?? throw new ArgumentNullException(nameof(dialogs));
+            _blocked = blocked ?? throw new ArgumentNullException(nameof(blocked));
+            _closed = closed ?? throw new ArgumentNullException(nameof(closed));
+
+            Collections = collections;
+            _collection = collections.FirstOrDefault(c => c.CollectionID == collectionID);
+
+            SaveCommand = new AsyncRelayCommand(SaveAsync, () => !IsSaving && !_isChoosingImage && !_blocked());
+            CancelCommand = new RelayCommand(() => _closed(null, null), () => !IsSaving);
+            ChooseImageCommand = new AsyncRelayCommand(ChooseImageAsync, () => !IsSaving);
+            RemoveImageCommand = new RelayCommand(RemoveImage, () => !IsSaving && HasImage);
+            AddMessageLinkCommand = new RelayCommand(AddMessageLink, () => !IsSaving && SelectedPickerMessage is not null);
+            AddEntryLinkCommand = new RelayCommand(AddEntryLink, () => !IsSaving && SelectedPickerEntry is not null);
+
+            if (existing is null)
+            {
+                return;
+            }
+
+            _entryID = existing.EntryID;
+            _title = existing.Title;
+            _source = existing.Source;
+            _summary = existing.Summary ?? string.Empty;
+            _precision = existing.Precision;
+            _startDate = existing.Start.ToDateTime(TimeOnly.MinValue);
+            _endDate = existing.End?.ToDateTime(TimeOnly.MinValue);
+
+            if (existing.ImageSha256 is { } sha)
+            {
+                _image = PersonalImageChoice.Existing(sha);
+                _imagePreview = existing.ImagePath is { } path ? MediaPresentation.TryLoadThumbnail(path) : null;
+                _imageText = existing.ImagePath is null ? "The memory's image file is not in the memories folder." : "Current image";
+            }
+
+            foreach (var link in existing.Links)
+            {
+                Links.Add(new MemoryLinkViewModel(
+                    link.Target,
+                    link.Target.MessageSequenceNumber is { } sequence
+                        ? MessageLinkText(sequence, messages?.GetValueOrDefault(sequence))
+                        : link.EntryDescription ?? "A memory",
+                    RemoveLink));
+            }
+        }
+
+        // -----------------------------------------------------------------------------------
+        // Commands.
+        // -----------------------------------------------------------------------------------
+
+        /// <summary>Checks and saves (one transaction), then closes the form.</summary>
+        public AsyncRelayCommand SaveCommand { get; }
+
+        /// <summary>Closes the form; nothing is written.</summary>
+        public RelayCommand CancelCommand { get; }
+
+        /// <summary>Asks for an image file and shows it (the file is only read).</summary>
+        public AsyncRelayCommand ChooseImageCommand { get; }
+
+        /// <summary>Drops the image from this memory (stored files stay).</summary>
+        public RelayCommand RemoveImageCommand { get; }
+
+        /// <summary>Adds a link to the picked message.</summary>
+        public RelayCommand AddMessageLinkCommand { get; }
+
+        /// <summary>Adds a link to the picked memory.</summary>
+        public RelayCommand AddEntryLinkCommand { get; }
+
+        // -----------------------------------------------------------------------------------
+        // Fields.
+        // -----------------------------------------------------------------------------------
+
+        /// <summary>True for a new memory, false when editing.</summary>
+        public bool IsNew => _entryID is null;
+
+        /// <summary>"New memory" or "Edit memory".</summary>
+        public string Heading => IsNew ? "New memory" : "Edit memory";
+
+        /// <summary>The personal collections a memory can be in.</summary>
+        public IReadOnlyList<PersonalCollectionViewModel> Collections { get; }
+
+        /// <summary>The memory's collection.</summary>
+        public PersonalCollectionViewModel? SelectedCollection
+        {
+            get => _collection;
+            set
+            {
+                if (SetProperty(ref _collection, value))
+                {
+                    CollectionError = string.Empty;
+                }
+            }
+        }
+
+        /// <summary>Required.</summary>
+        public string Title
+        {
+            get => _title;
+            set
+            {
+                if (SetProperty(ref _title, value ?? string.Empty))
+                {
+                    TitleError = string.Empty;
+                }
+            }
+        }
+
+        /// <summary>Required: where the memory comes from.</summary>
+        public string Source
+        {
+            get => _source;
+            set
+            {
+                if (SetProperty(ref _source, value ?? string.Empty))
+                {
+                    SourceError = string.Empty;
+                }
+            }
+        }
+
+        /// <summary>Optional description.</summary>
+        public string Summary
+        {
+            get => _summary;
+            set
+            {
+                if (SetProperty(ref _summary, value ?? string.Empty))
+                {
+                    SummaryError = string.Empty;
+                }
+            }
+        }
+
+        /// <summary>Required start date (with Month precision only its month counts).</summary>
+        public DateTime? StartDate
+        {
+            get => _startDate;
+            set
+            {
+                if (SetProperty(ref _startDate, value?.Date))
+                {
+                    StartError = string.Empty;
+                    EndError = string.Empty;
+                }
+            }
+        }
+
+        /// <summary>Optional end date, not before the start.</summary>
+        public DateTime? EndDate
+        {
+            get => _endDate;
+            set
+            {
+                if (SetProperty(ref _endDate, value?.Date))
+                {
+                    EndError = string.Empty;
+                }
+            }
+        }
+
+        /// <summary>Day or Month.</summary>
+        public IReadOnlyList<PersonalDatePrecision> Precisions { get; } = [PersonalDatePrecision.Day, PersonalDatePrecision.Month];
+
+        /// <summary>The chosen precision.</summary>
+        public PersonalDatePrecision Precision
+        {
+            get => _precision;
+            set
+            {
+                if (SetProperty(ref _precision, value))
+                {
+                    EndError = string.Empty;
+                }
+            }
+        }
+
+        /// <summary>The image preview, or null.</summary>
+        public ImageSource? ImagePreview
+        {
+            get => _imagePreview;
+            private set => SetProperty(ref _imagePreview, value);
+        }
+
+        /// <summary>A line about the image: "Current image", "New image: 120 KB", or empty.</summary>
+        public string ImageText
+        {
+            get => _imageText;
+            private set => SetProperty(ref _imageText, value);
+        }
+
+        /// <summary>Whether the memory will carry an image.</summary>
+        public bool HasImage => _image != PersonalImageChoice.None;
+
+        /// <summary>The image the save will carry.</summary>
+        internal PersonalImageChoice Image => _image;
+
+        /// <summary>The memory's links.</summary>
+        public ObservableCollection<MemoryLinkViewModel> Links { get; } = [];
+
+        // -----------------------------------------------------------------------------------
+        // Pickers.
+        // -----------------------------------------------------------------------------------
+
+        /// <summary>The day whose messages and memories the pickers list.</summary>
+        public DateTime? PickerDate
+        {
+            get => _pickerDate;
+            set
+            {
+                if (SetProperty(ref _pickerDate, value?.Date))
+                {
+                    PickerLoad = LoadPickerAsync(_pickerDate);
+                }
+            }
+        }
+
+        /// <summary>The picked day's messages of the open conversation.</summary>
+        public ObservableCollection<MessagePickRow> PickerMessages { get; } = [];
+
+        /// <summary>The memories (any collection) starting on the picked day.</summary>
+        public ObservableCollection<EntryPickRow> PickerEntries { get; } = [];
+
+        /// <summary>The message to link.</summary>
+        public MessagePickRow? SelectedPickerMessage
+        {
+            get => _selectedMessage;
+            set
+            {
+                if (SetProperty(ref _selectedMessage, value))
+                {
+                    AddMessageLinkCommand.RaiseCanExecuteChanged();
+                }
+            }
+        }
+
+        /// <summary>The memory to link.</summary>
+        public EntryPickRow? SelectedPickerEntry
+        {
+            get => _selectedEntry;
+            set
+            {
+                if (SetProperty(ref _selectedEntry, value))
+                {
+                    AddEntryLinkCommand.RaiseCanExecuteChanged();
+                }
+            }
+        }
+
+        /// <summary>What the pickers found: counts, or why nothing is listed.</summary>
+        public string PickerText
+        {
+            get => _pickerText;
+            private set => SetProperty(ref _pickerText, value);
+        }
+
+        /// <summary>The pickers' last load (for tests to wait on).</summary>
+        internal Task PickerLoad { get; private set; } = Task.CompletedTask;
+
+        // -----------------------------------------------------------------------------------
+        // Validation messages, next to their fields. Empty = none.
+        // -----------------------------------------------------------------------------------
+
+        /// <summary>The collection's problem.</summary>
+        public string CollectionError { get => _collectionError; private set => SetProperty(ref _collectionError, value); }
+
+        /// <summary>The title's problem.</summary>
+        public string TitleError { get => _titleError; private set => SetProperty(ref _titleError, value); }
+
+        /// <summary>The start's problem.</summary>
+        public string StartError { get => _startError; private set => SetProperty(ref _startError, value); }
+
+        /// <summary>The end's problem.</summary>
+        public string EndError { get => _endError; private set => SetProperty(ref _endError, value); }
+
+        /// <summary>The source's problem.</summary>
+        public string SourceError { get => _sourceError; private set => SetProperty(ref _sourceError, value); }
+
+        /// <summary>The description's problem.</summary>
+        public string SummaryError { get => _summaryError; private set => SetProperty(ref _summaryError, value); }
+
+        /// <summary>The image's problem.</summary>
+        public string ImageError { get => _imageError; private set => SetProperty(ref _imageError, value); }
+
+        /// <summary>The links' problem.</summary>
+        public string LinksError { get => _linksError; private set => SetProperty(ref _linksError, value); }
+
+        /// <summary>A problem with the memory as a whole, or with saving it.</summary>
+        public string FormError { get => _formError; private set => SetProperty(ref _formError, value); }
+
+        /// <summary>Whether a save is running.</summary>
+        public bool IsSaving
+        {
+            get => _isSaving;
+            private set
+            {
+                if (SetProperty(ref _isSaving, value))
+                {
+                    RaiseCommandStates();
+                }
+            }
+        }
+
+        /// <summary>Asks every command again.</summary>
+        public void RaiseCommandStates()
+        {
+            SaveCommand.RaiseCanExecuteChanged();
+            CancelCommand.RaiseCanExecuteChanged();
+            ChooseImageCommand.RaiseCanExecuteChanged();
+            RemoveImageCommand.RaiseCanExecuteChanged();
+            AddMessageLinkCommand.RaiseCanExecuteChanged();
+            AddEntryLinkCommand.RaiseCanExecuteChanged();
+        }
+
+        // -----------------------------------------------------------------------------------
+        // Actions.
+        // -----------------------------------------------------------------------------------
+
+        /// <summary>The draft as the fields stand.</summary>
+        internal PersonalEntryDraft Draft() => new()
+        {
+            CollectionID = SelectedCollection?.CollectionID ?? 0,
+            Title = Title,
+            Start = StartDate is { } start ? DateOnly.FromDateTime(start) : null,
+            End = EndDate is { } end ? DateOnly.FromDateTime(end) : null,
+            Precision = Precision,
+            Summary = Summary,
+            Source = Source,
+            Image = _image,
+            Links = Links.Select(l => l.Target).ToList(),
+        };
+
+        private async Task SaveAsync()
+        {
+            ClearErrors();
+
+            var draft = Draft();
+            var errors = new Dictionary<string, string>(PersonalMemoryRules.Validate(draft));
+
+            if (SelectedCollection is null)
+            {
+                errors[PersonalFields.Collection] = "Choose one of your own collections.";
+            }
+
+            if (errors.Count > 0)
+            {
+                ShowErrors(errors);
+                return;
+            }
+
+            IsSaving = true;
+
+            try
+            {
+                var store = _backend.Store;
+                var id = _entryID is { } existing
+                    ? await Task.Run(() =>
+                    {
+                        store.UpdateEntry(existing, draft);
+                        return existing;
+                    }).ConfigureAwait(true)
+                    : await Task.Run(() => store.AddEntry(draft)).ConfigureAwait(true);
+
+                IsSaving = false;
+                _closed(id, draft.CollectionID);
+            }
+            catch (PersonalMemoryValidationException exception)
+            {
+                ShowErrors(exception.Errors);
+            }
+            catch (Exception exception) when (MemoriesViewModel.IsExpected(exception))
+            {
+                FormError = MemoriesViewModel.Describe(exception, "The memory could not be saved. Nothing was written.");
+            }
+            finally
+            {
+                IsSaving = false;
+            }
+        }
+
+        private async Task ChooseImageAsync()
+        {
+            if (_dialogs.ChooseImage() is not { } path)
+            {
+                return;
+            }
+
+            _isChoosingImage = true;
+            RaiseCommandStates();
+            ImageError = string.Empty;
+
+            try
+            {
+                var max = _backend.Store.MaxImageBytes;
+                var (file, error, preview) = await Task.Run(() =>
+                {
+                    var read = PersonalImageFile.Read(path, max, out var problem);
+                    return (read, problem, read is null ? null : MediaPresentation.TryLoadThumbnail(path));
+                }).ConfigureAwait(true);
+
+                if (file is null)
+                {
+                    ImageError = error ?? "The chosen file could not be used.";
+                    return;
+                }
+
+                _image = PersonalImageChoice.FromFile(path);
+                ImagePreview = preview;
+                ImageText = "New image: " + Size(file.SizeBytes) + (preview is null ? " (no preview)" : string.Empty);
+                OnPropertyChanged(nameof(HasImage));
+            }
+            finally
+            {
+                _isChoosingImage = false;
+                RaiseCommandStates();
+            }
+        }
+
+        private void RemoveImage()
+        {
+            _image = PersonalImageChoice.None;
+            ImagePreview = null;
+            ImageText = string.Empty;
+            ImageError = string.Empty;
+            OnPropertyChanged(nameof(HasImage));
+            RemoveImageCommand.RaiseCanExecuteChanged();
+        }
+
+        private async Task LoadPickerAsync(DateTime? date)
+        {
+            PickerMessages.Clear();
+            PickerEntries.Clear();
+            SelectedPickerMessage = null;
+            SelectedPickerEntry = null;
+
+            if (date is not { } picked)
+            {
+                PickerText = "Pick a day to see its messages and memories.";
+                return;
+            }
+
+            var day = DateOnly.FromDateTime(picked);
+            PickerText = "Reading…";
+
+            try
+            {
+                var (messages, entries) = await Task.Run(() =>
+                    (_backend.Messages.ReadDay(day), _backend.Store.ReadEntriesOn(day))).ConfigureAwait(true);
+
+                // A newer day was picked meanwhile: its own load fills the lists.
+                if (PickerDate != date)
+                {
+                    return;
+                }
+
+                foreach (var message in messages)
+                {
+                    PickerMessages.Add(new MessagePickRow(message));
+                }
+
+                foreach (var entry in entries.Where(e => e.EntryID != _entryID))
+                {
+                    PickerEntries.Add(new EntryPickRow(entry));
+                }
+
+                PickerText = Count(PickerMessages.Count, "message") + " and " + Count(PickerEntries.Count, "memory", "memories") + " on this day.";
+            }
+            catch (Exception exception) when (MemoriesViewModel.IsExpected(exception))
+            {
+                if (PickerDate == date)
+                {
+                    PickerText = MemoriesViewModel.Describe(exception, "That day could not be read.");
+                }
+            }
+        }
+
+        private void AddMessageLink()
+        {
+            if (SelectedPickerMessage is not { } row)
+            {
+                return;
+            }
+
+            AddLink(PersonalLinkTarget.ToMessage(row.Message.SequenceNumber), MessageLinkText(row.Message.SequenceNumber, row.Message));
+        }
+
+        private void AddEntryLink()
+        {
+            if (SelectedPickerEntry is not { } row)
+            {
+                return;
+            }
+
+            AddLink(PersonalLinkTarget.ToEntry(row.Entry.EntryID), row.Text);
+        }
+
+        private void AddLink(PersonalLinkTarget target, string text)
+        {
+            LinksError = string.Empty;
+
+            if (Links.Any(l => l.Target == target))
+            {
+                LinksError = "That link is already there.";
+                return;
+            }
+
+            Links.Add(new MemoryLinkViewModel(target, text, RemoveLink));
+        }
+
+        private void RemoveLink(MemoryLinkViewModel link)
+        {
+            if (!IsSaving)
+            {
+                Links.Remove(link);
+                LinksError = string.Empty;
+            }
+        }
+
+        private void ClearErrors()
+        {
+            CollectionError = TitleError = StartError = EndError = SourceError = SummaryError = ImageError = LinksError = FormError = string.Empty;
+        }
+
+        private void ShowErrors(IReadOnlyDictionary<string, string> errors)
+        {
+            foreach (var (field, message) in errors)
+            {
+                switch (field)
+                {
+                    case PersonalFields.Collection: CollectionError = message; break;
+                    case PersonalFields.Title: TitleError = message; break;
+                    case PersonalFields.Start: StartError = message; break;
+                    case PersonalFields.End: EndError = message; break;
+                    case PersonalFields.Source: SourceError = message; break;
+                    case PersonalFields.Summary: SummaryError = message; break;
+                    case PersonalFields.Image: ImageError = message; break;
+                    case PersonalFields.Links: LinksError = message; break;
+                    default: FormError = string.IsNullOrEmpty(FormError) ? message : FormError + " " + message; break;
+                }
+            }
+        }
+
+        /// <summary>A message as a link line shows it.</summary>
+        internal static string MessageLinkText(int sequence, MessageLinkCandidate? message) =>
+            "Message " + sequence.ToString(CultureInfo.CurrentCulture) + ": " +
+            (message is null
+                ? "not in the open conversation"
+                : message.TimeLocal.ToString("d MMMM yyyy, HH:mm", CultureInfo.CurrentCulture) + ", " +
+                  (message.SenderName ?? "System") + ": " + message.Preview);
+
+        /// <summary>"09:00 Ada: preview".</summary>
+        internal static string MessageLine(MessageLinkCandidate message) =>
+            message.TimeLocal.ToString("HH:mm", CultureInfo.CurrentCulture) + " " +
+            (message.SenderName ?? "System") + ": " + message.Preview;
+
+        private static string Count(int value, string noun, string? plural = null) =>
+            value == 1 ? "1 " + noun : value.ToString(CultureInfo.CurrentCulture) + " " + (plural ?? noun + "s");
+
+        private static string Size(long bytes) =>
+            bytes >= 1024 * 1024
+                ? (bytes / (1024.0 * 1024.0)).ToString("0.0", CultureInfo.CurrentCulture) + " MB"
+                : Math.Max(1, bytes / 1024).ToString(CultureInfo.CurrentCulture) + " KB";
+    }
+}

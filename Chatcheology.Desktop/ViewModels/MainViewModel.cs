@@ -58,7 +58,7 @@ namespace Chatcheology.Desktop.ViewModels
         /// window, because a file dialog is a window's business rather than a view-model's.
         /// </param>
         public MainViewModel(Func<string?> chooseWorkspace)
-            : this(chooseWorkspace, ArchiveDialogs.None, new ArchiveOperations())
+            : this(chooseWorkspace, ArchiveDialogs.None, new ArchiveOperations(), MemoriesDialogs.None)
         {
         }
 
@@ -68,10 +68,14 @@ namespace Chatcheology.Desktop.ViewModels
         /// <param name="chooseWorkspace">As for the public constructor.</param>
         /// <param name="archiveDialogs">The window's confirmation, folder and open-folder dialogs.</param>
         /// <param name="archiveOperations">Counting, exporting and checking; a seam for tests.</param>
+        /// <param name="memoriesDialogs">The Memories area's dialogs (CH-42 step 4).</param>
+        /// <param name="memoriesBackend">The memories file and messages for a context; a seam for tests.</param>
         internal MainViewModel(
             Func<string?> chooseWorkspace,
             ArchiveDialogs archiveDialogs,
-            IArchiveOperations archiveOperations)
+            IArchiveOperations archiveOperations,
+            MemoriesDialogs? memoriesDialogs = null,
+            Func<MemoriesContext, MemoriesBackend>? memoriesBackend = null)
         {
             _chooseWorkspace = chooseWorkspace
                 ?? throw new ArgumentNullException(nameof(chooseWorkspace));
@@ -85,7 +89,23 @@ namespace Chatcheology.Desktop.ViewModels
                 archiveDialogs,
                 ArchiveContext,
                 message => StatusText = message,
-                () => IsBusy || Review.IsBusy);
+                () => IsBusy || Review.IsBusy || Memories?.IsWriting == true);
+
+            // The Memories area writes only the memories file, and never while an export or a check
+            // reads it, or while a decision is in flight.
+            Memories = new MemoriesViewModel(
+                memoriesDialogs ?? MemoriesDialogs.None,
+                MemoriesContext,
+                () => Archive.IsRunning || Review.IsBusy,
+                memoriesBackend);
+
+            Memories.PropertyChanged += (_, e) =>
+            {
+                if (e.PropertyName == nameof(MemoriesViewModel.IsWriting))
+                {
+                    Archive.RaiseCommandStates();
+                }
+            };
 
             // A decision in flight holds the archive commands off, and they are told when it ends.
             Review.PropertyChanged += (_, e) =>
@@ -93,6 +113,7 @@ namespace Chatcheology.Desktop.ViewModels
                 if (e.PropertyName == nameof(AttachmentReviewViewModel.IsBusy))
                 {
                     Archive.RaiseCommandStates();
+                    Memories.RaiseCommandStates();
                 }
             };
 
@@ -102,6 +123,7 @@ namespace Chatcheology.Desktop.ViewModels
             {
                 Review.AreDecisionsSuspended = Archive.IsRunning;
                 OpenWorkspaceCommand?.RaiseCanExecuteChanged();
+                Memories.RaiseCommandStates();
             };
 
             OpenWorkspaceCommand = new AsyncRelayCommand(OpenWorkspaceAsync, () => !Archive.IsRunning);
@@ -137,6 +159,9 @@ namespace Chatcheology.Desktop.ViewModels
 
         /// <summary>The archive export and check panel (CH-18).</summary>
         public ArchiveViewModel Archive { get; }
+
+        /// <summary>Personal memories beside the open workspace (CH-42 step 4).</summary>
+        public MemoriesViewModel Memories { get; }
 
         /// <summary>Exports the selected conversation to a new portable archive folder.</summary>
         public AsyncRelayCommand ExportArchiveCommand => Archive.ExportCommand;
@@ -182,6 +207,9 @@ namespace Chatcheology.Desktop.ViewModels
                 }
 
                 ConversationTitle = value?.Title ?? string.Empty;
+
+                // Message links name this conversation's messages, so the Memories area starts again.
+                Memories.Close();
 
                 Participants.Clear();
 
@@ -413,6 +441,7 @@ namespace Chatcheology.Desktop.ViewModels
             _session = null;
 
             Review.Close();
+            Memories.Close();
 
             Messages.Clear();
             Participants.Clear();
@@ -885,7 +914,14 @@ namespace Chatcheology.Desktop.ViewModels
             NextCommand.RaiseCanExecuteChanged();
             JumpToDateCommand.RaiseCanExecuteChanged();
             Archive.RaiseCommandStates();
+            Memories.RaiseCommandStates();
         }
+
+        /// <summary>What the Memories area works on: the open workspace and conversation, or nothing.</summary>
+        private MemoriesContext? MemoriesContext() =>
+            _session is { } session && SelectedConversation is { } conversation
+                ? new MemoriesContext(session.DatabasePath, conversation.ConversationID)
+                : null;
 
         /// <summary>What an export would take from: the open workspace and conversation, or nothing.</summary>
         private ArchiveWorkspaceContext? ArchiveContext() =>

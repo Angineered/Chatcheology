@@ -32,6 +32,9 @@ namespace Chatcheology.Desktop.ViewModels
         /// <inheritdoc />
         public event EventHandler? CanExecuteChanged;
 
+        /// <summary>Whether the action is running now.</summary>
+        internal bool IsRunning => _running;
+
         /// <inheritdoc />
         public bool CanExecute(object? parameter) =>
             !_running && (_canExecute is null || _canExecute());
