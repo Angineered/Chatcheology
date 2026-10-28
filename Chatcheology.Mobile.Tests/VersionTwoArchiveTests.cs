@@ -8,8 +8,8 @@ namespace Chatcheology.Mobile.Tests
 {
     /// <summary>
     /// A format version 2 archive (older-export messages before the workspace's, and memory tables)
-    /// installs, validates and opens; the timeline shows the combined messages as messages and nothing
-    /// else (memory display is a later step).
+    /// installs, validates and opens; the timeline shows the combined messages as messages, and the
+    /// shown-by-default personal memory as a memory card.
     /// </summary>
     public sealed class VersionTwoArchiveTests : IDisposable
     {
@@ -96,7 +96,7 @@ namespace Chatcheology.Mobile.Tests
         }
 
         [Fact]
-        public void A_version_two_archive_installs_opens_and_shows_the_combined_messages_only()
+        public void A_version_two_archive_installs_opens_and_shows_the_combined_messages_and_its_memory_card()
         {
             var library = new ArchiveLibrary(Path.Combine(_root.Path, "library"));
             var settings = new ArchiveSettings(new MemorySettings());
@@ -118,7 +118,13 @@ namespace Chatcheology.Mobile.Tests
             var rows = TestArchives.Describe(opened.Timeline.Rows);
 
             Assert.Equal(["M 1", "M 2", "M 3", "M 4"], rows.Where(r => r.StartsWith('M')).ToList());
-            Assert.All(rows, r => Assert.True(r.StartsWith("M ", StringComparison.Ordinal) || r.StartsWith("D ", StringComparison.Ordinal)));
+
+            // The personal collection is shown by default (CH-42 step 3): its one entry is a memory card,
+            // never a message, and the messages keep their numbers.
+            var memory = Assert.Single(opened.Timeline.Rows.OfType<MemoryRow>());
+            Assert.IsType<EntryCardRow>(memory);
+            Assert.Equal(new DateOnly(2016, 1, 2), memory.Day);
+            Assert.Equal([1, 2, 3, 4], opened.Timeline.Rows.OfType<MessageRow>().Select(m => m.SequenceNumber));
         }
     }
 }

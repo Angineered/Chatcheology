@@ -28,7 +28,11 @@ namespace Chatcheology.Mobile.Conversation
     /// The date picker's calendar: only days that have messages can be picked, and only months that
     /// have messages are shown (design "Date picker: only days that have messages").
     /// </summary>
-    /// <remarks>Built from <c>ArchiveReader.ReadDays</c>. Days only: nothing about the messages themselves.</remarks>
+    /// <remarks>
+    /// Built from <c>ArchiveSession.ReadCalendarDays</c>: the days with messages and, with a memory layer
+    /// on, the days with a visible memory row (CH-42), which count as days to pick. Days only: nothing
+    /// about the messages or memories themselves.
+    /// </remarks>
     public sealed class DayCalendar
     {
         private readonly HashSet<DateOnly> _days;

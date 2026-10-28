@@ -15,12 +15,16 @@ namespace Chatcheology.Data.ArchiveExport
     /// (<see cref="MemoriesDatabase.FileName"/>); no file means no memories. It must prove it is a
     /// memories file (its marker) or the export is refused.</para>
     /// <para>Read: collections, entries, periods, items and links, with each entry image's hash and
-    /// extension. Not read at all: image source URLs, item names and icons (CH-43 adds those as
-    /// definitions later), and nothing naming a source account is in the file to read. Items carry
-    /// their role; the combined source maps it onto an archive participant.</para>
+    /// extension, and from a format 2 file the item definitions (CH-43) that some item uses, with each
+    /// icon's hash and extension (a format 1 file has none). Not read at all: image and icon source
+    /// URLs, definitions no item uses, and nothing naming a source account is in the file to read.
+    /// Items carry their role; the combined source maps it onto an archive participant.</para>
     /// </remarks>
     internal sealed class MemoriesArchiveSource
     {
+        /// <summary>The first memories file format with <c>ItemDefinition</c> (CH-43); fixed, whatever the current format is.</summary>
+        private const int FirstFormatWithDefinitions = 2;
+
         internal required IReadOnlyList<ArchiveCollection> Collections { get; init; }
 
         /// <summary>Every entry with its periods and their items; each item carries its role.</summary>
@@ -29,7 +33,10 @@ namespace Chatcheology.Data.ArchiveExport
         /// <summary>Every link, as the memories file records it (a message by its workspace sequence number).</summary>
         internal required IReadOnlyList<ArchiveEntryLink> Links { get; init; }
 
-        /// <summary>Each entry image's file in the memories media folder, by hash.</summary>
+        /// <summary>The item definitions some item uses, ordered by set and item; each icon's extension is the memories file's own.</summary>
+        internal required IReadOnlyList<ArchiveItemDefinition> Definitions { get; init; }
+
+        /// <summary>Each entry image's and used item icon's file in the memories media folder, by hash.</summary>
         internal required IReadOnlyDictionary<string, MemoryImage> Images { get; init; }
 
         /// <summary>The memories media folder: the output may not sit inside it.</summary>
@@ -55,9 +62,11 @@ namespace Chatcheology.Data.ArchiveExport
             {
                 using var connection = WorkspaceDatabase.OpenReadOnlyConnection(path);
 
+                int formatVersion;
+
                 try
                 {
-                    MemoriesDatabase.RequireMemoriesFile(connection);
+                    formatVersion = MemoriesDatabase.RequireMemoriesFile(connection);
                 }
                 catch (InvalidOperationException exception)
                 {
@@ -66,16 +75,19 @@ namespace Chatcheology.Data.ArchiveExport
                         exception);
                 }
 
+                var hasDefinitions = formatVersion >= FirstFormatWithDefinitions;
                 var collections = ReadCollections(connection);
-                var images = ReadImages(connection, mediaFolder);
+                var images = ReadImages(connection, mediaFolder, hasDefinitions);
                 var entries = ReadEntries(connection, images, cancellationToken);
                 var links = ReadLinks(connection);
+                var definitions = hasDefinitions ? ReadDefinitions(connection, images) : [];
 
                 return new MemoriesArchiveSource
                 {
                     Collections = collections,
                     Entries = entries,
                     Links = links,
+                    Definitions = definitions,
                     Images = images,
                     MediaFolder = mediaFolder,
                 };
@@ -130,16 +142,28 @@ namespace Chatcheology.Data.ArchiveExport
             return collections;
         }
 
-        /// <summary>Every image an entry names, with its recorded extension and size.</summary>
-        private static Dictionary<string, MemoryImage> ReadImages(SqliteConnection connection, string mediaFolder)
+        /// <summary>
+        /// Every image an entry names and, from a format 2 file, every icon a used definition names, with
+        /// its recorded extension and size.
+        /// </summary>
+        private static Dictionary<string, MemoryImage> ReadImages(SqliteConnection connection, string mediaFolder, bool hasDefinitions)
         {
             using var command = connection.CreateCommand();
-            command.CommandText =
-                """
-                SELECT DISTINCT m.Sha256, m.Extension, m.SizeBytes
-                FROM Entry AS e JOIN MediaFile AS m ON m.Sha256 = e.ImageSha256
-                ORDER BY m.Sha256;
-                """;
+            command.CommandText = hasDefinitions
+                ? """
+                  SELECT DISTINCT m.Sha256, m.Extension, m.SizeBytes
+                  FROM MediaFile AS m
+                  WHERE m.Sha256 IN (SELECT ImageSha256 FROM Entry WHERE ImageSha256 IS NOT NULL)
+                     OR m.Sha256 IN (SELECT d.IconSha256 FROM ItemDefinition AS d
+                                     WHERE d.IconSha256 IS NOT NULL
+                                       AND EXISTS (SELECT 1 FROM EntryItem AS i WHERE i.SetId = d.SetId AND i.ItemId = d.ItemId))
+                  ORDER BY m.Sha256;
+                  """
+                : """
+                  SELECT DISTINCT m.Sha256, m.Extension, m.SizeBytes
+                  FROM Entry AS e JOIN MediaFile AS m ON m.Sha256 = e.ImageSha256
+                  ORDER BY m.Sha256;
+                  """;
 
             var images = new Dictionary<string, MemoryImage>(StringComparer.Ordinal);
 
@@ -153,7 +177,7 @@ namespace Chatcheology.Data.ArchiveExport
                 if (!ArchiveFormat.IsSha256(sha) || ArchiveFormat.SafeExtension(extension) != extension)
                 {
                     throw new ArchiveExportRefusedException(
-                        "An entry image's recorded hash or extension is not in its stored form. Nothing was written.");
+                        "An entry image's or item icon's recorded hash or extension is not in its stored form. Nothing was written.");
                 }
 
                 images[sha] = new MemoryImage(sha, extension, reader.GetInt64(2), Path.Combine(mediaFolder, sha + extension));
@@ -300,6 +324,50 @@ namespace Chatcheology.Data.ArchiveExport
             return items;
         }
 
+        /// <summary>The definitions some item uses, ordered by set and item. No icon source URL is read.</summary>
+        private static List<ArchiveItemDefinition> ReadDefinitions(
+            SqliteConnection connection, IReadOnlyDictionary<string, MemoryImage> images)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText =
+                """
+                SELECT d.SetId, d.ItemId, d.ItemType, d.Name, d.Detail, d.Hidden, d.GroupId, d.IconSha256
+                FROM ItemDefinition AS d
+                WHERE EXISTS (SELECT 1 FROM EntryItem AS i WHERE i.SetId = d.SetId AND i.ItemId = d.ItemId)
+                ORDER BY d.SetId, d.ItemId;
+                """;
+
+            var definitions = new List<ArchiveItemDefinition>();
+
+            using var reader = command.ExecuteReader();
+
+            while (reader.Read())
+            {
+                var sha = Nullable(reader, 7);
+
+                if (sha is not null && !images.ContainsKey(sha))
+                {
+                    throw new ArchiveExportRefusedException(
+                        "An item definition names an icon the memories file does not record. Nothing was written.");
+                }
+
+                definitions.Add(new ArchiveItemDefinition
+                {
+                    SetId = reader.GetString(0),
+                    ItemId = reader.GetString(1),
+                    ItemType = reader.GetString(2),
+                    Name = Nullable(reader, 3),
+                    Detail = Nullable(reader, 4),
+                    Hidden = reader.IsDBNull(5) ? null : reader.GetInt64(5) == 1,
+                    GroupId = Nullable(reader, 6),
+                    IconSha256 = sha,
+                    IconExtension = sha is null ? null : images[sha].Extension,
+                });
+            }
+
+            return definitions;
+        }
+
         private static List<ArchiveEntryLink> ReadLinks(SqliteConnection connection)
         {
             using var command = connection.CreateCommand();
@@ -368,6 +436,6 @@ namespace Chatcheology.Data.ArchiveExport
         DateTime TimeUtc,
         DateTime TimeLocal);
 
-    /// <summary>One entry image in the memories media folder.</summary>
+    /// <summary>One entry image or item icon in the memories media folder.</summary>
     internal sealed record MemoryImage(string Sha256, string Extension, long SizeBytes, string FullPath);
 }

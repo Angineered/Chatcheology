@@ -1,4 +1,5 @@
 using Chatcheology.Archive;
+using Chatcheology.Mobile.Memories;
 
 namespace Chatcheology.Mobile.Conversation
 {
@@ -22,6 +23,12 @@ namespace Chatcheology.Mobile.Conversation
     /// so a list that holds its first visible row in place holds the message too, even when that
     /// separator was the top row on screen (CH-26 trial).</para>
     /// <para>Page size is presentation only; it never changes what the archive holds.</para>
+    /// <para><strong>Memory rows (CH-42).</strong> With a memory layer on, a page also carries the memory
+    /// rows placed after its messages (and, for the page that starts the chat, those before the first
+    /// message), each at its local time. They get day separators like messages, so days that have only
+    /// memory rows (before, between or after the messages) appear too. They never change a message's
+    /// sequence number, and paging still counts messages only. With every layer off the rows are exactly
+    /// what they were without memories.</para>
     /// </remarks>
     public sealed class ConversationTimeline
     {
@@ -33,6 +40,7 @@ namespace Chatcheology.Mobile.Conversation
         private readonly IReadOnlyDictionary<long, string> _names;
         private readonly LowQualityIndex _lowQuality;
         private readonly Stars? _stars;
+        private readonly MemoryLayout _memories;
 
         private int? _firstSequenceNumber;
         private int? _lastSequenceNumber;
@@ -45,7 +53,9 @@ namespace Chatcheology.Mobile.Conversation
         /// whole conversation once; pass the one an <see cref="ArchiveSession"/> holds to avoid that.
         /// </param>
         /// <param name="stars">The archive's stars, so rows are built with their star flags; none when not given.</param>
-        public ConversationTimeline(ArchiveReader reader, long localParticipantID, LowQualityIndex? lowQuality = null, Stars? stars = null)
+        /// <param name="memories">The visible memory rows (CH-42); none when not given.</param>
+        public ConversationTimeline(
+            ArchiveReader reader, long localParticipantID, LowQualityIndex? lowQuality = null, Stars? stars = null, MemoryLayout? memories = null)
         {
             ArgumentNullException.ThrowIfNull(reader);
 
@@ -54,6 +64,7 @@ namespace Chatcheology.Mobile.Conversation
             _names = reader.ReadParticipants().ToDictionary(p => p.ParticipantID, p => p.DisplayName);
             _lowQuality = lowQuality ?? LowQualityIndex.Build(reader);
             _stars = stars;
+            _memories = memories ?? MemoryLayout.Empty;
         }
 
         /// <summary>Whose messages go on the right.</summary>
@@ -103,8 +114,88 @@ namespace Chatcheology.Mobile.Conversation
         /// date picker's jump). Returns that message's row, or -1 when no message is that late, in which
         /// case nothing is loaded.
         /// </summary>
-        public int OpenAtDay(DateOnly day) =>
-            _reader.FindFirstSequenceNumberOnOrAfter(day) is { } sequenceNumber ? OpenAt(sequenceNumber) : -1;
+        /// <remarks>
+        /// With memory rows, a day that has only memory rows can be picked too (the calendar includes it):
+        /// the conversation opens around the first row on or after the day, message or memory, and that
+        /// row's index is returned.
+        /// </remarks>
+        public int OpenAtDay(DateOnly day)
+        {
+            var sequence = _reader.FindFirstSequenceNumberOnOrAfter(day);
+
+            if (_memories.IsEmpty)
+            {
+                return sequence is { } found ? OpenAt(found) : -1;
+            }
+
+            var memory = _memories.Placements
+                .Where(p => DateOnly.FromDateTime(p.TimeLocal) >= day)
+                .Select(p => (int?)p.After)
+                .Min();
+
+            int target;
+
+            if (memory is { } after && (sequence is null || after < sequence))
+            {
+                target = Math.Max(1, after);
+            }
+            else if (sequence is { } found)
+            {
+                target = found;
+            }
+            else
+            {
+                return -1;
+            }
+
+            Reset();
+
+            var before = _reader.ReadPageBefore(target, PageSize);
+            var from = _reader.ReadPageFrom(target, PageSize);
+
+            Append(before, first: true);
+            Append(from, first: before.Messages.Count == 0);
+
+            for (var i = 0; i < Rows.Count; i++)
+            {
+                if (Rows[i] is not DateSeparatorRow && Rows[i].Day >= day)
+                {
+                    return i;
+                }
+            }
+
+            return -1;
+        }
+
+        /// <summary>
+        /// Loads the conversation around a memory row (a search hit or a link) and returns its row, or -1
+        /// when the row is not visible (its layer or filter is off), in which case nothing is loaded.
+        /// </summary>
+        public int OpenAtMemory(MemoryKey key)
+        {
+            if (_memories.Find(key) is not { } placement)
+            {
+                return -1;
+            }
+
+            OpenAt(Math.Max(1, placement.After));
+
+            return IndexOfMemory(key);
+        }
+
+        /// <summary>The index of a memory row, or -1.</summary>
+        public int IndexOfMemory(MemoryKey key)
+        {
+            for (var i = 0; i < Rows.Count; i++)
+            {
+                if (Rows[i] is MemoryRow memory && memory.Key == key)
+                {
+                    return i;
+                }
+            }
+
+            return -1;
+        }
 
         /// <summary>The page before the loaded rows, or <see langword="null"/> when there is none.</summary>
         public ArchivePage? ReadEarlier() =>
@@ -136,7 +227,16 @@ namespace Chatcheology.Mobile.Conversation
         {
             ArgumentNullException.ThrowIfNull(page);
 
-            return new PreparedPage(page, BuildRows(page.Messages, page.Media, previousDay: null));
+            if (_memories.IsEmpty || page.Messages.Count == 0)
+            {
+                return new PreparedPage(page, BuildRows(page.Messages, page.Media, previousDay: null));
+            }
+
+            // The rows after this page's messages, and before the first message for the page that starts the chat.
+            var first = page.FirstSequenceNumber!.Value;
+            var placements = _memories.Between(first == 1 ? 0 : first, page.LastSequenceNumber!.Value).ToList();
+
+            return new PreparedPage(page, BuildRows(page.Messages, page.Media, previousDay: null, placements));
         }
 
         /// <summary>
@@ -244,28 +344,60 @@ namespace Chatcheology.Mobile.Conversation
         public List<ConversationRow> BuildRows(
             IReadOnlyList<ArchiveMessage> messages,
             IReadOnlyDictionary<string, ArchiveMedia> media,
-            DateOnly? previousDay)
+            DateOnly? previousDay) => BuildRows(messages, media, previousDay, []);
+
+        /// <summary>
+        /// <see cref="BuildRows(IReadOnlyList{ArchiveMessage}, IReadOnlyDictionary{string, ArchiveMedia}, DateOnly?)"/>
+        /// with memory rows: each placement goes after the message it follows (placements before the first
+        /// message, <see cref="MemoryPlacement.After"/> below it, go first), with a separator when its day
+        /// differs from the row before.
+        /// </summary>
+        private List<ConversationRow> BuildRows(
+            IReadOnlyList<ArchiveMessage> messages,
+            IReadOnlyDictionary<string, ArchiveMedia> media,
+            DateOnly? previousDay,
+            IReadOnlyList<MemoryPlacement> placements)
         {
             ArgumentNullException.ThrowIfNull(messages);
             ArgumentNullException.ThrowIfNull(media);
 
-            var rows = new List<ConversationRow>(messages.Count + 4);
+            var rows = new List<ConversationRow>(messages.Count + placements.Count + 4);
             var day = previousDay;
+            var next = 0;
 
-            foreach (var message in messages)
+            void Add(ConversationRow row, bool shown)
             {
-                var row = BuildMessage(message, media);
-
                 if (day != row.Day)
                 {
                     rows.Add(new DateSeparatorRow(row.Day));
                     day = row.Day;
                 }
 
-                if (row.IsShown)
+                if (shown)
                 {
                     rows.Add(row);
                 }
+            }
+
+            void AddMemoriesUpTo(int sequenceNumber)
+            {
+                while (next < placements.Count && placements[next].After <= sequenceNumber)
+                {
+                    Add(placements[next].CreateRow(), shown: true);
+                    next++;
+                }
+            }
+
+            if (messages.Count > 0)
+            {
+                AddMemoriesUpTo(messages[0].SequenceNumber - 1);
+            }
+
+            foreach (var message in messages)
+            {
+                var row = BuildMessage(message, media);
+                Add(row, row.IsShown);
+                AddMemoriesUpTo(message.SequenceNumber);
             }
 
             return rows;

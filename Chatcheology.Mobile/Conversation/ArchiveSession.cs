@@ -1,5 +1,6 @@
 using Chatcheology.Archive;
 using Chatcheology.Mobile.Library;
+using Chatcheology.Mobile.Memories;
 using Chatcheology.Mobile.Search;
 using Chatcheology.Mobile.Settings;
 
@@ -35,6 +36,10 @@ namespace Chatcheology.Mobile.Conversation
     /// <para><strong>Threads.</strong> <see cref="Open"/> reads the whole conversation once (the
     /// low-quality links), so it runs off the UI thread. The reader is used by one thread at a time; the
     /// search index has a reader of its own, so it can be built while pages load.</para>
+    /// <para><strong>Memories (CH-42).</strong> An archive with memory collections has them read once at
+    /// open (<see cref="Memories"/>), so placing rows, details and memory search read nothing more. Each
+    /// collection is a layer, on or off per archive (default: the collection's own), with filters for an
+    /// imported one. Gallery, Starred and On this day stay message-only.</para>
     /// </remarks>
     public sealed class ArchiveSession : IDisposable
     {
@@ -57,7 +62,46 @@ namespace Chatcheology.Mobile.Conversation
             MessageCount = reader.ReadMessageCount();
             LowQuality = LowQualityIndex.Build(reader, _closing.Token);
             Stars = new Stars(settings, identity);
+            Memories = MemoryIndex.Build(reader, _closing.Token);
         }
+
+        /// <summary>The archive's memories (CH-42), read at open; empty for an archive without any.</summary>
+        public MemoryIndex Memories { get; }
+
+        /// <summary>Which memory rows are visible now, from the layer switches and filters in Settings.</summary>
+        public MemoryView MemoryView => new(
+            Memories.Collections
+                .Where(c => _settings.GetLayerShown(_identity, c.CollectionID, c.ShownByDefault))
+                .Select(c => c.CollectionID),
+            Memories.Collections
+                .Where(MemoryIndex.HasFilters)
+                .SelectMany(c => MemoryFilters.All.Select(f => (c.CollectionID, f)))
+                .Where(pair => !_settings.GetMemoryFilter(_identity, pair.CollectionID, pair.f))
+                .Select(pair => (pair.CollectionID, pair.f)));
+
+        /// <summary>Every layer with its switch and filters, for Settings, in collection order.</summary>
+        public IReadOnlyList<MemoryLayerChoice> MemoryLayers => Memories.Collections
+            .Select(c => new MemoryLayerChoice(
+                c.CollectionID,
+                c.Name,
+                _settings.GetLayerShown(_identity, c.CollectionID, c.ShownByDefault),
+                MemoryIndex.HasFilters(c)
+                    ? MemoryFilters.All.Select(f => (f, _settings.GetMemoryFilter(_identity, c.CollectionID, f))).ToList()
+                    : []))
+            .ToList();
+
+        /// <summary>Switches a layer on or off. The conversation is rebuilt by the caller (a new timeline).</summary>
+        public void SetLayerShown(long collectionID, bool shown) => _settings.SetLayerShown(_identity, collectionID, shown);
+
+        /// <summary>Turns a filter of an imported layer on or off.</summary>
+        public void SetMemoryFilter(long collectionID, string filter, bool on) =>
+            _settings.SetMemoryFilter(_identity, collectionID, filter, on);
+
+        /// <summary>The memories whose titles match <paramref name="query"/>, among the visible ones only.</summary>
+        public IReadOnlyList<MemorySearchHit> FindMemories(string query) => Memories.Find(query, MemoryView);
+
+        /// <summary>The details of a memory row, or <see langword="null"/>.</summary>
+        public MemoryDetails? MemoryDetails(MemoryKey key) => Memories.Details(key);
 
         /// <summary>The archive's starred messages and photos (CH-38), kept in the app's settings.</summary>
         public Stars Stars { get; }
@@ -186,7 +230,7 @@ namespace Chatcheology.Mobile.Conversation
         public string ValidationText => ArchiveSettings.DescribeValidation(_settings.GetValidation(_identity));
 
         /// <summary>A timeline with the current "me". After "me" changes, a new one is made and opened.</summary>
-        public ConversationTimeline CreateTimeline() => new(Reader, Me, LowQuality, Stars);
+        public ConversationTimeline CreateTimeline() => new(Reader, Me, LowQuality, Stars, Memories.Layout(MemoryView));
 
         /// <summary>
         /// Opens <paramref name="timeline"/> where the reader last was, or at the newest messages the
@@ -215,8 +259,20 @@ namespace Chatcheology.Mobile.Conversation
         /// <summary>Stores the sequence number at the top of the screen.</summary>
         public void SavePosition(int sequenceNumber) => _settings.SetPosition(_identity, sequenceNumber);
 
-        /// <summary>The days that have messages, for the date picker.</summary>
+        /// <summary>The days that have messages, for On this day (which stays message-only).</summary>
         public IReadOnlyList<DateOnly> ReadDays() => Reader.ReadDays();
+
+        /// <summary>
+        /// The days the date picker offers: days with messages and, with a memory layer on, days with a
+        /// visible memory row (before, between or after the messages).
+        /// </summary>
+        public IReadOnlyList<DateOnly> ReadCalendarDays()
+        {
+            var days = Reader.ReadDays();
+            var layout = Memories.Layout(MemoryView);
+
+            return layout.IsEmpty ? days : days.Concat(layout.Days).Distinct().Order().ToList();
+        }
 
         /// <summary>
         /// The search index, built in the background the first time it is asked for, with a reader of its

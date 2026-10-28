@@ -28,6 +28,16 @@ namespace Chatcheology.Data.Tests.ArchiveExport
 
         private static string ImageSha => Convert.ToHexStringLower(SHA256.HashData(ImageBytes));
 
+        private const string IconUrl = "https://image.api.playstation.com/synthetic/trophy-icon.png";
+
+        private static readonly byte[] IconBytes = Encoding.ASCII.GetBytes("synthetic trophy icon bytes");
+
+        private static string IconSha => Convert.ToHexStringLower(SHA256.HashData(IconBytes));
+
+        private static readonly byte[] UnusedIconBytes = Encoding.ASCII.GetBytes("synthetic icon nobody uses");
+
+        private static string UnusedIconSha => Convert.ToHexStringLower(SHA256.HashData(UnusedIconBytes));
+
         private readonly ArchiveExportFixture _fixture = new();
         private readonly string _exports;
 
@@ -146,9 +156,16 @@ namespace Chatcheology.Data.Tests.ArchiveExport
         /// An imported collection with two entries sharing one image (periods and items), and a
         /// personal collection with one entry linking to an imported entry and to workspace message 2.
         /// </summary>
-        private void Memories(int linkedSequence = 2)
+        private void Memories(int linkedSequence = 2, bool formatOne = false)
         {
-            MemoriesDatabase.Create(MemoriesPath, Now);
+            if (formatOne)
+            {
+                MemoriesDatabase.CreateFormatVersionOne(MemoriesPath, Now);
+            }
+            else
+            {
+                MemoriesDatabase.Create(MemoriesPath, Now);
+            }
 
             var media = MemoriesDatabase.MediaFolderFor(MemoriesPath);
             Directory.CreateDirectory(media);
@@ -188,6 +205,31 @@ namespace Chatcheology.Data.Tests.ArchiveExport
                         'Invented', NULL, NULL, NULL, NULL);
                 INSERT INTO EntryLink VALUES (1, 20, 10, NULL);
                 INSERT INTO EntryLink VALUES (2, 20, NULL, {linkedSequence});
+                """;
+            command.ExecuteNonQuery();
+        }
+
+        /// <summary>
+        /// Trophy definitions (CH-43) in the format 2 memories file: item (setA, 7) named, hidden and with
+        /// an icon; item (setB, 7) without a name or icon; and (setZ, 1), which no item uses, with an icon
+        /// of its own.
+        /// </summary>
+        private void Definitions()
+        {
+            var media = MemoriesDatabase.MediaFolderFor(MemoriesPath);
+            File.WriteAllBytes(Path.Combine(media, IconSha + ".png"), IconBytes);
+            File.WriteAllBytes(Path.Combine(media, UnusedIconSha + ".jpg"), UnusedIconBytes);
+
+            using var connection = MemoriesDatabase.OpenConnection(MemoriesPath);
+            using var command = connection.CreateCommand();
+            command.CommandText =
+                $"""
+                INSERT INTO MediaFile (Sha256, Extension, SizeBytes) VALUES ('{IconSha}', 'png', {IconBytes.Length});
+                INSERT INTO MediaFile (Sha256, Extension, SizeBytes) VALUES ('{UnusedIconSha}', 'jpg', {UnusedIconBytes.Length});
+                INSERT INTO ItemDefinition (SetId, ItemId, ItemType, Name, Detail, Hidden, GroupId, IconSourceUrl, IconSha256)
+                VALUES ('setA', '7', 'bronze', 'Invented Opening Move', 'Open the invented door.', 1, 'default', '{IconUrl}', '{IconSha}'),
+                       ('setB', '7', 'bronze', NULL, NULL, NULL, NULL, NULL, NULL),
+                       ('setZ', '1', 'gold', 'Never Earned Here', NULL, 0, NULL, '{IconUrl}', '{UnusedIconSha}');
                 """;
             command.ExecuteNonQuery();
         }
@@ -409,17 +451,124 @@ namespace Chatcheology.Data.Tests.ArchiveExport
         }
 
         [Fact]
+        public void UsedItemDefinitions_RoundTrip_WithTheirIcons_AndUnusedOnesAreLeftOut()
+        {
+            Workspace();
+            Memories();
+            Definitions();
+            var output = _fixture.Output();
+
+            var result = Export(output);
+
+            Assert.Equal(2, result.Counts.ItemDefinitions);
+
+            var validation = ArchiveValidator.Validate(output);
+            Assert.True(validation.Passed, string.Join(", ", validation.FirstProblems));
+
+            using (var reader = ArchiveReader.Open(output))
+            {
+                var definitions = reader.ReadItemDefinitions(10);
+                Assert.Equal([("setA", "7"), ("setB", "7")], definitions.Select(d => (d.SetId, d.ItemId)));
+                Assert.Equal("Invented Opening Move", definitions[0].Name);
+                Assert.Equal("Open the invented door.", definitions[0].Detail);
+                Assert.True(definitions[0].Hidden);
+                Assert.Equal("default", definitions[0].GroupId);
+                Assert.Equal(IconSha, definitions[0].IconSha256);
+                Assert.Equal(".png", definitions[0].IconExtension);
+                Assert.Equal(IconBytes, File.ReadAllBytes(reader.IconFullPath(definitions[0])!));
+                Assert.Null(definitions[1].Name);
+                Assert.Null(definitions[1].IconSha256);
+
+                // Entry 11's item (setB, 8) has no definition.
+                Assert.Empty(reader.ReadItemDefinitions(11));
+                Assert.Equal(2, reader.ReadAllItemDefinitions().Count);
+
+                // The unused definition's icon is not copied and has no Media row.
+                Assert.Null(reader.ReadMediaOf(UnusedIconSha));
+                Assert.Empty(Directory.GetFiles(Path.Combine(output, "media"), UnusedIconSha + "*"));
+            }
+
+            var comparison = Compare(output);
+            Assert.True(comparison.Passed, string.Join(", ", comparison.FirstMismatches));
+            Assert.Equal(2, comparison.ItemDefinitions);
+        }
+
+        [Fact]
+        public void AFormatOneMemoriesFile_HasNoDefinitions()
+        {
+            Workspace();
+            Memories(formatOne: true);
+            var output = _fixture.Output();
+
+            var result = Export(output);
+
+            Assert.Equal(0, result.Counts.ItemDefinitions);
+            Assert.True(ArchiveValidator.Validate(output).Passed);
+
+            using (var reader = ArchiveReader.Open(output))
+            {
+                Assert.Empty(reader.ReadAllItemDefinitions());
+            }
+
+            var comparison = Compare(output);
+            Assert.True(comparison.Passed, string.Join(", ", comparison.FirstMismatches));
+            Assert.Equal(0, comparison.ItemDefinitions);
+        }
+
+        [Fact]
+        public void AnItemIconMissingFromTheMemoriesFolder_StopsTheExport()
+        {
+            Workspace();
+            Memories();
+            Definitions();
+            File.Delete(Path.Combine(MemoriesDatabase.MediaFolderFor(MemoriesPath), IconSha + ".png"));
+            var output = _fixture.Output();
+
+            var stop = Assert.Throws<ArchiveExportStoppedException>(() => Export(output));
+
+            Assert.Contains("item icons", stop.Message, StringComparison.Ordinal);
+            Assert.Empty(_fixture.ExportsContent());
+        }
+
+        [Fact]
+        public void TheComparer_FindsAChangedDefinition_AndANewlyUsedOne()
+        {
+            Workspace();
+            Memories();
+            Definitions();
+            var output = _fixture.Output();
+            Export(output);
+
+            using (var connection = MemoriesDatabase.OpenConnection(MemoriesPath))
+            using (var command = connection.CreateCommand())
+            {
+                command.CommandText =
+                    """
+                    UPDATE ItemDefinition SET Name = 'Renamed' WHERE SetId = 'setA' AND ItemId = '7';
+                    INSERT INTO ItemDefinition (SetId, ItemId, ItemType) VALUES ('setB', '8', 'silver');
+                    """;
+                command.ExecuteNonQuery();
+            }
+
+            var comparison = Compare(output);
+
+            Assert.Equal(2, comparison.MismatchCounts[ArchiveMismatchKind.ItemDefinitionDiffers]);
+            Assert.Equal(0, comparison.MismatchCounts[ArchiveMismatchKind.EntryDiffers]);
+        }
+
+        [Fact]
         public void TheArchive_CarriesNoImageSourceUrl()
         {
             Workspace();
             Memories();
+            Definitions();
             var output = _fixture.Output();
             Export(output);
 
             SqliteConnection.ClearAllPools();
             var bytes = File.ReadAllBytes(Path.Combine(output, ArchiveFormat.DatabaseFileName));
 
-            foreach (var forbidden in new[] { ImageUrl, "playstation", "https://", "ImageSourceUrl", "IconSha256" })
+            foreach (var forbidden in new[] { ImageUrl, IconUrl, "playstation", "https://", "ImageSourceUrl", "IconSourceUrl", "Never Earned Here" })
             {
                 Assert.Equal(-1, IndexOf(bytes, Encoding.UTF8.GetBytes(forbidden)));
                 Assert.Equal(-1, IndexOf(bytes, Encoding.Unicode.GetBytes(forbidden)));

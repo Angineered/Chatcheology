@@ -70,6 +70,7 @@ namespace Chatcheology.Archive
             "EntryPeriod",
             "EntryItem",
             "EntryLink",
+            "ItemDefinition",
         ];
 
         /// <summary>Every table of the given format version, and no others.</summary>

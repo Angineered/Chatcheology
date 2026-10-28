@@ -56,7 +56,10 @@ namespace Chatcheology.Archive
                 or ArchiveProblemKind.MediaFileUnused
                 or ArchiveProblemKind.EntryImageWithoutMediaRow
                 or ArchiveProblemKind.EntryImageFileMissing
-                or ArchiveProblemKind.EntryImageFileDiffers => ArchiveCheck.Media,
+                or ArchiveProblemKind.EntryImageFileDiffers
+                or ArchiveProblemKind.ItemIconWithoutMediaRow
+                or ArchiveProblemKind.ItemIconFileMissing
+                or ArchiveProblemKind.ItemIconFileDiffers => ArchiveCheck.Media,
 
             ArchiveProblemKind.LowQualityLinkDangling
                 or ArchiveProblemKind.AttachmentWithoutMessage
@@ -64,7 +67,8 @@ namespace Chatcheology.Archive
                 or ArchiveProblemKind.BasisOnUnrestored
                 or ArchiveProblemKind.MemoryRowDangling
                 or ArchiveProblemKind.LinkNotFromPersonal
-                or ArchiveProblemKind.PeriodCountsDiffer => ArchiveCheck.LinksAndBasis,
+                or ArchiveProblemKind.PeriodCountsDiffer
+                or ArchiveProblemKind.ItemDefinitionUnused => ArchiveCheck.LinksAndBasis,
 
             ArchiveProblemKind.SequenceNumberInvalid
                 or ArchiveProblemKind.SequenceGap
@@ -202,6 +206,7 @@ namespace Chatcheology.Archive
                     (counted.ExportMessages, reader.ReadCount("SELECT COUNT(*) FROM Message WHERE Source = 'Export';")),
                     (counted.ExportPeriods, reader.Info.ExportPeriods.Count),
                     (counted.EntryLinks, reader.ReadCount("SELECT COUNT(*) FROM EntryLink;")),
+                    (counted.ItemDefinitions, reader.ReadCount("SELECT COUNT(*) FROM ItemDefinition;")),
                 };
 
                 var actual = reader.ReadCollectionCounts();
@@ -334,7 +339,7 @@ namespace Chatcheology.Archive
                 record.Add(ArchiveProblemKind.BasisOnUnrestored, attachmentID: extra);
             }
 
-            var entryImages = reader.HasMemories
+            var memoryImages = reader.HasMemories
                 ? CheckMemories(reader, usedMediaPaths, fileHashes, record)
                 : 0;
 
@@ -342,11 +347,7 @@ namespace Chatcheology.Archive
                 ArchiveProblemKind.MediaRowUnused,
                 (int)reader.ReadCount(
                     reader.HasMemories
-                        ? """
-                          SELECT COUNT(*) FROM Media WHERE Sha256 NOT IN (
-                              SELECT MediaSha256 FROM Attachment WHERE State = 'Restored' AND MediaSha256 IS NOT NULL)
-                            AND Sha256 NOT IN (SELECT ImageSha256 FROM Entry WHERE ImageSha256 IS NOT NULL);
-                          """
+                        ? ArchiveMemoryRules.MediaUnusedVersionTwo
                         : """
                           SELECT COUNT(*) FROM Media WHERE Sha256 NOT IN (
                               SELECT MediaSha256 FROM Attachment WHERE State = 'Restored' AND MediaSha256 IS NOT NULL);
@@ -365,11 +366,13 @@ namespace Chatcheology.Archive
                 record.Add(ArchiveProblemKind.LocalParticipantWrong);
             }
 
-            record.Examined(ArchiveCheck.Media, restored + entryImages + mediaFiles.Count);
+            record.Examined(ArchiveCheck.Media, restored + memoryImages + mediaFiles.Count);
             record.Examined(
                 ArchiveCheck.LinksAndBasis,
                 (int)reader.ReadCount("SELECT COUNT(*) FROM Attachment;")
-                + (reader.HasMemories ? (int)reader.ReadCount("SELECT COUNT(*) FROM Entry;") : 0));
+                + (reader.HasMemories
+                    ? (int)reader.ReadCount("SELECT COUNT(*) FROM Entry;") + (int)reader.ReadCount("SELECT COUNT(*) FROM ItemDefinition;")
+                    : 0));
             record.Examined(ArchiveCheck.SequenceAndSenders, messages);
 
             record.Ran(ArchiveCheck.Media);
@@ -425,9 +428,10 @@ namespace Chatcheology.Archive
         /// (Media check); every memory row points at rows that exist, links start at personal entries,
         /// and each period's counts equal its items (links-and-basis check). Every entry, period and
         /// item is read, so a value of the wrong kind or outside the format's vocabulary stops the
-        /// checks as for messages.
+        /// checks as for messages. Each item icon is checked like an entry image, and every item
+        /// definition must be used by an item.
         /// </summary>
-        /// <returns>How many entry images were examined.</returns>
+        /// <returns>How many entry images and item icons were examined.</returns>
         private static int CheckMemories(
             ArchiveReader reader,
             HashSet<string> usedMediaPaths,
@@ -478,12 +482,52 @@ namespace Chatcheology.Archive
 
             reader.ReadAllLinks();
 
+            var definitions = reader.ReadAllItemDefinitions();
+            var icons = reader.ReadMedia(
+                definitions.Select(d => d.IconSha256).OfType<string>().Distinct(StringComparer.Ordinal).ToList());
+
+            foreach (var definition in definitions)
+            {
+                if (definition.IconSha256 is not { } sha)
+                {
+                    continue;
+                }
+
+                images++;
+
+                if (!icons.ContainsKey(sha))
+                {
+                    record.Add(ArchiveProblemKind.ItemIconWithoutMediaRow);
+                }
+
+                var path = reader.IconFullPath(definition)!;
+                var relative = definition.IconRelativePath!;
+                usedMediaPaths.Add(relative);
+
+                if (!fileHashes.TryGetValue(relative, out var actual))
+                {
+                    actual = HashOrNull(path);
+                    fileHashes[relative] = actual;
+                }
+
+                if (actual is null)
+                {
+                    record.Add(ArchiveProblemKind.ItemIconFileMissing);
+                }
+                else if (actual != sha)
+                {
+                    record.Add(ArchiveProblemKind.ItemIconFileDiffers);
+                }
+            }
+
+            record.AddCount(ArchiveProblemKind.ItemDefinitionUnused, (int)reader.ReadCount(ArchiveMemoryRules.DefinitionsUnused));
+
             record.AddCount(
                 ArchiveProblemKind.MemoryRowDangling,
                 (int)reader.ReadCount(
                     """
                     SELECT COUNT(*) FROM pragma_foreign_key_check
-                    WHERE "table" IN ('Entry', 'EntryPeriod', 'EntryItem', 'EntryLink');
+                    WHERE "table" IN ('Entry', 'EntryPeriod', 'EntryItem', 'EntryLink', 'ItemDefinition');
                     """));
 
             record.AddCount(ArchiveProblemKind.LinkNotFromPersonal, (int)reader.ReadCount(ArchiveMemoryRules.LinksNotFromPersonal));
@@ -669,8 +713,8 @@ namespace Chatcheology.Archive
         EntryImageFileDiffers,
 
         /// <summary>
-        /// Version 2: an entry, period, item or link points at a collection, entry, period, participant
-        /// or message the archive does not hold.
+        /// Version 2: an entry, period, item, link or item definition points at a collection, entry,
+        /// period, participant, message or media payload the archive does not hold.
         /// </summary>
         MemoryRowDangling,
 
@@ -679,6 +723,18 @@ namespace Chatcheology.Archive
 
         /// <summary>Version 2: a period's local or other item count differs from its items.</summary>
         PeriodCountsDiffer,
+
+        /// <summary>Version 2: an item definition's icon names a hash with no Media row.</summary>
+        ItemIconWithoutMediaRow,
+
+        /// <summary>Version 2: an item definition's icon file is not there or cannot be read.</summary>
+        ItemIconFileMissing,
+
+        /// <summary>Version 2: an item definition's icon file does not hash to its recorded hash.</summary>
+        ItemIconFileDiffers,
+
+        /// <summary>Version 2: an item definition that no item of the archive uses.</summary>
+        ItemDefinitionUnused,
     }
 
     /// <summary>

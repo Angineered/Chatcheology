@@ -54,7 +54,8 @@ namespace Chatcheology.Mobile.Search
     /// <remarks>
     /// <para>Built once from <see cref="ArchiveReader.ReadAllPages"/>; nothing is written anywhere. Every
     /// message with text is in it, system messages included; a message that is only the export's media
-    /// placeholder is not. File names, sender names alone and media are not searched.</para>
+    /// placeholder is not, and an older export's <c>(file attached)</c> line is not either (only its caption
+    /// lines, as the bubble shows them). File names, sender names alone and media are not searched.</para>
     /// <para>Matching is a plain substring with <see cref="CompareInfo.IndexOf(ReadOnlySpan{char}, ReadOnlySpan{char}, CompareOptions, out int)"/>
     /// and <see cref="CompareOptions.IgnoreCase"/> | <see cref="CompareOptions.IgnoreNonSpace"/>, which
     /// also gives each match's length in the text, so highlights stay right where folding changes
@@ -102,9 +103,12 @@ namespace Chatcheology.Mobile.Search
 
                 foreach (var message in page.Messages)
                 {
-                    if (message.Text.Length > 0 && !MessageRow.IsPlaceholder(message.Text))
+                    // The text the bubble shows: no placeholder, no older export's "(file attached)" line.
+                    var text = MessageRow.PresentedText(message);
+
+                    if (text.Length > 0)
                     {
-                        entries.Add(new Entry(message.SequenceNumber, message.DateTimeLocal, message.SenderParticipantID, message.Text));
+                        entries.Add(new Entry(message.SequenceNumber, message.DateTimeLocal, message.SenderParticipantID, text));
                     }
                 }
             }

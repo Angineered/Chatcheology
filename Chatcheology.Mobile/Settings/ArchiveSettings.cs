@@ -25,8 +25,10 @@ namespace Chatcheology.Mobile.Settings
     /// the top of the screen), <c>.lastOpenedUtc</c>, <c>.validatedUtc</c>, <c>.validation</c> (checks
     /// passed, of checks run), <c>.starredMessages</c> (sequence numbers), <c>.starredAttachments</c>
     /// (attachment ids, each with its message's sequence number so it can be read without the whole
-    /// conversation), <c>.onThisDay</c> ("off" when turned off) and <c>.onThisDayShown</c> (the last
-    /// day the card was shown).</para>
+    /// conversation), <c>.onThisDay</c> ("off" when turned off), <c>.onThisDayShown</c> (the last
+    /// day the card was shown), <c>.layers</c> (collection ids switched away from their default, each
+    /// <c>id:on</c> or <c>id:off</c>) and <c>.memoryFilters</c> (filters turned off, each
+    /// <c>id:filter</c>; CH-42).</para>
     /// <para>Stars (CH-38) are private to the phone and never written into the archive. They are the one
     /// thing removing the archive keeps (Angie, 2026-10-22): the same archive (same hash) imported again
     /// has its stars back. A re-exported archive has a new hash and starts with none.</para>
@@ -39,6 +41,7 @@ namespace Chatcheology.Mobile.Settings
         private static readonly string[] Names =
         [
             "me", "position", "lastOpenedUtc", "validatedUtc", "validation", "onThisDay", "onThisDayShown",
+            "layers", "memoryFilters",
         ];
 
         private readonly ISettingsStore _store;
@@ -183,6 +186,89 @@ namespace Chatcheology.Mobile.Settings
         /// <summary>Stores the day the On this day card was shown.</summary>
         public void SetOnThisDayShown(string contentsSha256, DateOnly day) =>
             Set(contentsSha256, "onThisDayShown", day.ToString("yyyy'-'MM'-'dd", CultureInfo.InvariantCulture));
+
+        /// <summary>
+        /// Whether the memory layer of collection <paramref name="collectionID"/> is shown (CH-42): the
+        /// stored switch, or <paramref name="shownByDefault"/> (the collection's own default) when none is stored.
+        /// </summary>
+        public bool GetLayerShown(string contentsSha256, long collectionID, bool shownByDefault) =>
+            Pairs(Get(contentsSha256, "layers")).TryGetValue(collectionID, out var value) ? value == "on" : shownByDefault;
+
+        /// <summary>Switches the memory layer of a collection on or off.</summary>
+        public void SetLayerShown(string contentsSha256, long collectionID, bool shown)
+        {
+            var pairs = Pairs(Get(contentsSha256, "layers"));
+            pairs[collectionID] = shown ? "on" : "off";
+            Set(contentsSha256, "layers", Join(pairs.Select(pair => (pair.Key, pair.Value))));
+        }
+
+        /// <summary>
+        /// Whether filter <paramref name="filter"/> (a fixed word such as <c>strong</c>) of collection
+        /// <paramref name="collectionID"/> is on. Every filter is on until turned off.
+        /// </summary>
+        public bool GetMemoryFilter(string contentsSha256, long collectionID, string filter) =>
+            !OffFilters(contentsSha256).Contains((collectionID, filter));
+
+        /// <summary>Turns a filter of a collection on or off.</summary>
+        public void SetMemoryFilter(string contentsSha256, long collectionID, string filter, bool on)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(filter);
+
+            if (filter.Contains(',', StringComparison.Ordinal) || filter.Contains(':', StringComparison.Ordinal))
+            {
+                throw new ArgumentException("A filter is one plain word.", nameof(filter));
+            }
+
+            var off = OffFilters(contentsSha256);
+
+            if (on)
+            {
+                off.Remove((collectionID, filter));
+            }
+            else
+            {
+                off.Add((collectionID, filter));
+            }
+
+            Set(contentsSha256, "memoryFilters", Join(off.Order().Select(pair => (pair.Item1, pair.Item2))));
+        }
+
+        private HashSet<(long, string)> OffFilters(string contentsSha256)
+        {
+            var off = new HashSet<(long, string)>();
+
+            foreach (var part in (Get(contentsSha256, "memoryFilters") ?? string.Empty).Split(',', StringSplitOptions.RemoveEmptyEntries))
+            {
+                if (part.Split(':') is [var id, var name] && Long(id) is { } collection && name.Length > 0)
+                {
+                    off.Add((collection, name));
+                }
+            }
+
+            return off;
+        }
+
+        private static SortedDictionary<long, string> Pairs(string? text)
+        {
+            var pairs = new SortedDictionary<long, string>();
+
+            foreach (var part in (text ?? string.Empty).Split(',', StringSplitOptions.RemoveEmptyEntries))
+            {
+                if (part.Split(':') is [var id, var value] && Long(id) is { } collection && value is "on" or "off")
+                {
+                    pairs[collection] = value;
+                }
+            }
+
+            return pairs;
+        }
+
+        private static string? Join(IEnumerable<(long Id, string Value)> pairs)
+        {
+            var text = string.Join(',', pairs.Select(pair => pair.Id.ToString(CultureInfo.InvariantCulture) + ":" + pair.Value));
+
+            return text.Length == 0 ? null : text;
+        }
 
         /// <summary>
         /// Forgets what is stored for the archive when it is removed: everything except its stars, which an

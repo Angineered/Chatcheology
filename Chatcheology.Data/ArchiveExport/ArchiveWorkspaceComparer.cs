@@ -200,11 +200,15 @@ namespace Chatcheology.Data.ArchiveExport
 
             var actualEntries = reader.ReadAllEntries();
 
-            foreach (var entry in actualEntries.Where(e => e.ImageSha256 is not null))
+            var actualDefinitions = reader.ReadAllItemDefinitions();
+
+            foreach (var sha in actualEntries.Select(e => e.ImageSha256)
+                         .Concat(actualDefinitions.Select(d => d.IconSha256))
+                         .OfType<string>())
             {
-                if (!actualMedia.ContainsKey(entry.ImageSha256!) && reader.ReadMediaOf(entry.ImageSha256!) is { } media)
+                if (!actualMedia.ContainsKey(sha) && reader.ReadMediaOf(sha) is { } media)
                 {
-                    actualMedia[entry.ImageSha256!] = media;
+                    actualMedia[sha] = media;
                 }
             }
 
@@ -212,6 +216,7 @@ namespace Chatcheology.Data.ArchiveExport
 
             var expectedCollections = combined.CollectionCounts();
             CompareMemories(combined, reader, actualEntries, record);
+            CompareDefinitions(combined, actualDefinitions, record);
 
             var attachments = expectedAttachments.Values.ToList();
 
@@ -227,7 +232,8 @@ namespace Chatcheology.Data.ArchiveExport
                 exports: combined.Older?.Exports
                     .Select(e => new ArchiveComparisonExportCounts(e.Position, e.Shown, e.MessageCount, e.ShownMessages.Count, e.HiddenCount))
                     .ToList() ?? [],
-                collections: expectedCollections);
+                collections: expectedCollections,
+                definitions: combined.Memories?.Definitions.Count ?? 0);
         }
 
         // -------------------------------------------------------------------------------------
@@ -316,6 +322,29 @@ namespace Chatcheology.Data.ArchiveExport
             {
                 record.Add(ArchiveMismatchKind.CollectionCountsDiffer, null);
             }
+        }
+
+        /// <summary>
+        /// Version 2's item definitions (CH-43): the ones some item of the memories file uses, field by
+        /// field, each on one side only counted. An icon's extension is not compared, as for entry images.
+        /// </summary>
+        private static void CompareDefinitions(
+            ArchiveCombinedSource combined, IReadOnlyList<ArchiveItemDefinition> actual, Recorder record)
+        {
+            var expected = combined.ToArchiveItemDefinitions((_, own) => own).ToDictionary(d => (d.SetId, d.ItemId));
+            var actualByKey = actual.ToDictionary(d => (d.SetId, d.ItemId));
+
+            record.AddCount(
+                ArchiveMismatchKind.ItemDefinitionDiffers,
+                expected.Values.Count(e =>
+                    !actualByKey.TryGetValue((e.SetId, e.ItemId), out var a)
+                    || a.ItemType != e.ItemType
+                    || a.Name != e.Name
+                    || a.Detail != e.Detail
+                    || a.Hidden != e.Hidden
+                    || a.GroupId != e.GroupId
+                    || a.IconSha256 != e.IconSha256)
+                + actualByKey.Keys.Count(key => !expected.ContainsKey(key)));
         }
 
         private static bool SameEntry(ArchiveEntry e, ArchiveEntry a) =>
@@ -535,7 +564,8 @@ namespace Chatcheology.Data.ArchiveExport
                 int workspaceMessages,
                 int exportMessages,
                 IReadOnlyList<ArchiveComparisonExportCounts> exports,
-                IReadOnlyList<ArchiveCollectionCounts> collections) => new()
+                IReadOnlyList<ArchiveCollectionCounts> collections,
+                int definitions) => new()
             {
                 ParticipantsCompared = participants,
                 MessagesCompared = messages,
@@ -549,6 +579,7 @@ namespace Chatcheology.Data.ArchiveExport
                 ExportMessages = exportMessages,
                 Exports = exports,
                 Collections = collections,
+                ItemDefinitions = definitions,
             };
         }
     }
@@ -649,6 +680,9 @@ namespace Chatcheology.Data.ArchiveExport
 
         /// <summary>Version 2: the entries, periods or items per collection differ from the memories file's.</summary>
         CollectionCountsDiffer,
+
+        /// <summary>Version 2: a used item definition is on one side only, or differs.</summary>
+        ItemDefinitionDiffers,
     }
 
     /// <summary>One older export's messages as the older-exports file holds them. Counts only.</summary>
@@ -710,6 +744,9 @@ namespace Chatcheology.Data.ArchiveExport
 
         /// <summary>Version 2: entries, periods and items per collection in the memories file. Empty with no memories file.</summary>
         public IReadOnlyList<ArchiveCollectionCounts> Collections { get; init; } = [];
+
+        /// <summary>Version 2: item definitions some item of the memories file uses. 0 with no memories file or a format 1 one.</summary>
+        public int ItemDefinitions { get; init; }
 
         /// <summary>The archive says exactly what the workspace says.</summary>
         public bool Passed => MismatchCounts.Values.All(count => count == 0);

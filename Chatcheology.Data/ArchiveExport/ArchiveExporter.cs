@@ -397,6 +397,11 @@ namespace Chatcheology.Data.ArchiveExport
                 writer.WriteEntryLink(link);
             }
 
+            foreach (var definition in combined.ToArchiveItemDefinitions((sha, _) => imageExtensions[sha]))
+            {
+                writer.WriteItemDefinition(definition);
+            }
+
             return (writer.Complete(), linksOutside);
         }
 
@@ -472,7 +477,7 @@ namespace Chatcheology.Data.ArchiveExport
         }
 
         /// <summary>
-        /// Copies each entry image into <c>media/</c> once, checking its bytes against its hash. An image
+        /// Copies each entry image and item icon into <c>media/</c> once, checking its bytes against its hash. An image
         /// whose payload is already stored for an attachment keeps that file and its extension, so one
         /// payload is one file. A missing or different image stops the export.
         /// </summary>
@@ -526,7 +531,7 @@ namespace Chatcheology.Data.ArchiveExport
             if (failed > 0)
             {
                 throw new ArchiveExportStoppedException(
-                    $"{Count(failed)} of {Count(memories.Images.Count)} entry images are not in the memories media " +
+                    $"{Count(failed)} of {Count(memories.Images.Count)} entry images and item icons are not in the memories media " +
                     $"folder with the bytes their hash names ({Count(different)} with different bytes). No archive " +
                     "folder was written.");
             }

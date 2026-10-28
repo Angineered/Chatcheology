@@ -75,8 +75,9 @@ namespace Chatcheology.Mobile.Conversation
             TimeText = TimeTextOf(message.DateTimeLocal);
 
             // The export's marker for an omitted item, not something the sender wrote: the media card
-            // stands in its place, exactly as the desktop does it (exact match only).
-            Text = IsPlaceholder(message.Text) ? string.Empty : message.Text;
+            // stands in its place, exactly as the desktop does it (exact match only). An older export's
+            // "NAME (file attached)" first line is hidden the same way (CH-33); its caption lines stay.
+            Text = PresentedText(message);
             TextSpans = LinkScanner.Scan(Text);
 
             Attachments = attachments;
@@ -200,6 +201,61 @@ namespace Chatcheology.Mobile.Conversation
         /// hidden low-quality copy has nothing left to show; its day's separator stays.
         /// </summary>
         public bool IsShown => HasText || Attachments.Count == 0 || Attachments.Any(card => card.IsShown);
+
+        /// <summary>
+        /// The ending of an older export's attachment line, <c>NAME (file attached)</c>; the same text as
+        /// <c>ParsedMessage.FileAttachedSuffix</c> in Core, which this library does not reference.
+        /// </summary>
+        public const string FileAttachedSuffix = " (file attached)";
+
+        /// <summary>
+        /// The text a bubble shows (and search finds): empty for the media placeholder; for a user message
+        /// with attachments whose first line is an older export's <c>NAME (file attached)</c> line naming one
+        /// of them, the lines after it (the caption), or empty when there are none (CH-33). Otherwise the
+        /// text as stored.
+        /// </summary>
+        public static string PresentedText(ArchiveMessage message)
+        {
+            ArgumentNullException.ThrowIfNull(message);
+
+            var text = message.Text;
+
+            if (IsPlaceholder(text))
+            {
+                return string.Empty;
+            }
+
+            if (message.Attachments.Count == 0 || message.Kind != ArchiveMessageKind.User)
+            {
+                return text;
+            }
+
+            var newline = text.IndexOf('\n');
+            var firstLine = (newline < 0 ? text : text[..newline]).TrimEnd('\r');
+
+            if (!firstLine.EndsWith(FileAttachedSuffix, StringComparison.Ordinal))
+            {
+                return text;
+            }
+
+            // Hidden only when the line names the attachment: the name equals an attachment's
+            // OriginalFileName or, when no attachment has a name (none restored), it meets Core's rule for
+            // ParsedMessage.AttachedFileName exactly (not blank, no path separator). Anything else is the
+            // sender's own text and stays visible, searchable and shareable.
+            var name = firstLine[..^FileAttachedSuffix.Length];
+            var names = message.Attachments.Select(a => a.OriginalFileName).OfType<string>().ToList();
+
+            var namesAttachment = names.Count > 0
+                ? names.Contains(name, StringComparer.Ordinal)
+                : !string.IsNullOrWhiteSpace(name) && name.AsSpan().IndexOfAny('/', '\\') < 0;
+
+            if (!namesAttachment)
+            {
+                return text;
+            }
+
+            return newline < 0 ? string.Empty : text[(newline + 1)..];
+        }
 
         /// <summary>Whether <paramref name="text"/> is exactly the export's media placeholder.</summary>
         public static bool IsPlaceholder(string? text) =>

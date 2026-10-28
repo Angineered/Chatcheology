@@ -53,6 +53,22 @@ namespace Chatcheology.Archive
                                          AND i.ParticipantID <> $local);
             """;
 
+        /// <summary>Media rows that no restored attachment, entry image or item icon names (version 2).</summary>
+        internal const string MediaUnusedVersionTwo =
+            """
+            SELECT COUNT(*) FROM Media WHERE Sha256 NOT IN (
+                SELECT MediaSha256 FROM Attachment WHERE State = 'Restored' AND MediaSha256 IS NOT NULL)
+              AND Sha256 NOT IN (SELECT ImageSha256 FROM Entry WHERE ImageSha256 IS NOT NULL)
+              AND Sha256 NOT IN (SELECT IconSha256 FROM ItemDefinition WHERE IconSha256 IS NOT NULL);
+            """;
+
+        /// <summary>Item definitions no item of the archive uses (the archive carries used definitions only).</summary>
+        internal const string DefinitionsUnused =
+            """
+            SELECT COUNT(*) FROM ItemDefinition AS d
+            WHERE NOT EXISTS (SELECT 1 FROM EntryItem AS i WHERE i.SetId = d.SetId AND i.ItemId = d.ItemId);
+            """;
+
         /// <summary>Entries, periods and items per collection, ordered by collection.</summary>
         internal const string CollectionCounts =
             """
@@ -227,5 +243,50 @@ namespace Chatcheology.Archive
 
         /// <summary>The archive sequence number of the message it points to, or <see langword="null"/>.</summary>
         public required int? ToMessageSequenceNumber { get; init; }
+    }
+
+    /// <summary>
+    /// What an item is (for PSN: one trophy's name, detail, grade and icon), joined to items on
+    /// (<see cref="SetId"/>, <see cref="ItemId"/>). Only definitions some archived item uses are carried.
+    /// </summary>
+    /// <remarks>
+    /// Copied from the memories file's definitions (CH-43). The icon is a <c>Media</c> payload stored as
+    /// <c>media/&lt;sha256&gt;&lt;IconExtension&gt;</c>, like an entry image; its source address is not
+    /// carried. A hidden trophy keeps its name: the definitions carry it.
+    /// </remarks>
+    public sealed class ArchiveItemDefinition
+    {
+        /// <summary>The source's set identifier (for PSN, the trophy set).</summary>
+        public required string SetId { get; init; }
+
+        /// <summary>The source's item identifier within the set.</summary>
+        public required string ItemId { get; init; }
+
+        /// <summary>The item's type (for PSN, the trophy grade).</summary>
+        public required string ItemType { get; init; }
+
+        /// <summary>The item's name, or <see langword="null"/> when the source gave none.</summary>
+        public required string? Name { get; init; }
+
+        /// <summary>The item's detail (for PSN, the trophy's description), or <see langword="null"/>.</summary>
+        public required string? Detail { get; init; }
+
+        /// <summary>Whether the source marks the item hidden, or <see langword="null"/> when not known.</summary>
+        public required bool? Hidden { get; init; }
+
+        /// <summary>The source's group within the set, or <see langword="null"/>.</summary>
+        public required string? GroupId { get; init; }
+
+        /// <summary>The icon payload's SHA-256, or <see langword="null"/>.</summary>
+        public required string? IconSha256 { get; init; }
+
+        /// <summary>The icon file's extension in <c>media/</c> (such as <c>.png</c>), or <see langword="null"/>.</summary>
+        public required string? IconExtension { get; init; }
+
+        /// <summary>The icon file's path inside the archive folder (<c>/</c> separated), or <see langword="null"/>.</summary>
+        public string? IconRelativePath =>
+            IconSha256 is { } sha && IconExtension is { } extension
+                ? ArchiveFormat.MediaFolderName + "/" + sha + extension
+                : null;
     }
 }

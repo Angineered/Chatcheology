@@ -16,7 +16,7 @@ namespace Chatcheology.Archive
     /// <c>UNIQUE (MessageID, Ordinal)</c> serves lookups by message, so neither needs a second one.
     /// Day jumps get their own index on <c>DateTimeLocal</c>.</para>
     /// <para>Version 2 differs from version 1 in two ways only: <c>Message</c> gains <c>Source</c>,
-    /// and the five memory tables are added. Every version 1 table and meaning is otherwise the
+    /// and the six memory tables are added. Every version 1 table and meaning is otherwise the
     /// same.</para>
     /// </remarks>
     internal static class ArchiveSchema
@@ -196,9 +196,9 @@ namespace Chatcheology.Archive
         ];
 
         /// <summary>
-        /// The memory tables of version 2 (CH-42): the memories file's tables with the same meanings and
-        /// checks, less what the archive does not carry (image source URLs, item names and icons,
-        /// anything naming a source account). An item names the archive participant instead of a role.
+        /// The memory tables of version 2 (CH-42, CH-43): the memories file's tables with the same meanings
+        /// and checks, less what the archive does not carry (image and icon source URLs, definitions no
+        /// item uses, anything naming a source account). An item names the archive participant instead of a role.
         /// An entry image is a <c>Media</c> payload, stored as <c>media/&lt;sha256&gt;&lt;ImageExtension&gt;</c>.
         /// </summary>
         private static readonly string[] MemoryStatements =
@@ -345,6 +345,35 @@ namespace Chatcheology.Archive
 
             """
             CREATE INDEX IX_EntryLink_From ON EntryLink (FromEntryID);
+            """,
+
+            // The memories file's definitions (CH-43) that some item uses, joined to items on
+            // (SetId, ItemId). The icon is a Media payload like an entry image; no icon source address.
+            """
+            CREATE TABLE ItemDefinition (
+                SetId         TEXT NOT NULL,
+                ItemId        TEXT NOT NULL,
+                ItemType      TEXT NOT NULL,
+                Name          TEXT NULL,
+                Detail        TEXT NULL,
+                Hidden        INTEGER NULL,
+                GroupId       TEXT NULL,
+                IconSha256    TEXT NULL,
+                IconExtension TEXT NULL,
+
+                PRIMARY KEY (SetId, ItemId),
+
+                CHECK (length(SetId) > 0 AND length(ItemId) > 0 AND length(ItemType) > 0),
+                CHECK (Hidden IS NULL OR Hidden IN (0, 1)),
+                CHECK ((IconSha256 IS NULL) = (IconExtension IS NULL)),
+                CHECK (IconSha256 IS NULL OR (length(IconSha256) = 64 AND IconSha256 = lower(IconSha256))),
+                CHECK (IconExtension IS NULL
+                    OR (substr(IconExtension, 1, 1) = '.' AND length(IconExtension) BETWEEN 2 AND 11
+                        AND IconExtension = lower(IconExtension))),
+
+                FOREIGN KEY (IconSha256) REFERENCES Media (Sha256)
+                    DEFERRABLE INITIALLY DEFERRED
+            );
             """,
         ];
     }
