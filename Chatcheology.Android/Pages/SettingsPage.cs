@@ -16,6 +16,8 @@ namespace Chatcheology.Android.Pages
         private readonly Func<Task> _remove;
         private readonly Picker _me = new() { Title = "Me" };
         private readonly IReadOnlyList<MeChoice> _choices;
+        private readonly VerticalStackLayout _noted = new();
+        private readonly Action _notedDatesChanged;
         private bool _loading;
 
         internal SettingsPage(ArchiveSession session, Func<Task> meChanged, Func<Task> removeArchive, Action onThisDayChanged, Func<Task> layersChanged)
@@ -50,6 +52,10 @@ namespace Chatcheology.Android.Pages
             onThisDayRow.Add(new Label { Text = "Show earlier years' messages from today's date when the conversation opens.", FontSize = 13, VerticalOptions = LayoutOptions.Center }.TextIn("MutedText"), 0);
             onThisDayRow.Add(onThisDay, 1);
 
+            _notedDatesChanged = onThisDayChanged;
+            _noted.Spacing = 8;
+            RebuildNotedDates();
+
             var memories = MemoriesSection(session, layersChanged);
 
             var remove = new Button { Text = "Remove archive…", TextColor = Colors.White, BackgroundColor = Color.FromArgb("#B3261E") };
@@ -71,6 +77,7 @@ namespace Chatcheology.Android.Pages
 
                         Heading("On this day"),
                         onThisDayRow,
+                        _noted,
 
                         memories,
 
@@ -86,6 +93,105 @@ namespace Chatcheology.Android.Pages
                 },
             };
         }
+
+        /// <summary>
+        /// "Noted dates" (CH-47): the archive's gifted dates, each with a Notify switch (a gifted date cannot be
+        /// edited or deleted here), then the phone's own, each with Edit and Delete (after a confirmation), and Add.
+        /// </summary>
+        private void RebuildNotedDates()
+        {
+            _noted.Children.Clear();
+            _noted.Add(new Label { Text = "Noted dates", FontSize = 15, FontAttributes = FontAttributes.Bold, Margin = new Thickness(0, 6, 0, 0) });
+            _noted.Add(new Label { Text = "Days that matter to you, shown here every year. Notify is used for reminders.", FontSize = 13 }.TextIn("MutedText"));
+
+            var listings = _session.NotedDateListings;
+            var gifted = listings.Where(date => date.IsGifted).ToList();
+            var own = listings.Where(date => !date.IsGifted).ToList();
+
+            if (gifted.Count > 0)
+            {
+                _noted.Add(new Label { Text = "From the archive", FontSize = 13, FontAttributes = FontAttributes.Bold }.TextIn("MutedText"));
+            }
+
+            foreach (var date in gifted)
+            {
+                var toggle = new Switch { IsToggled = date.Notify, VerticalOptions = LayoutOptions.Center }.Themed(Switch.OnColorProperty, "Primary");
+                SemanticProperties.SetDescription(toggle, "Notify for " + date.Title);
+                toggle.Toggled += (_, e) =>
+                {
+                    _session.SetNotedDateMuted(long.Parse(date.Id, CultureInfo.InvariantCulture), !e.Value);
+                    _notedDatesChanged();
+                };
+
+                var row = new Grid
+                {
+                    ColumnDefinitions = { new ColumnDefinition(GridLength.Star), new ColumnDefinition(GridLength.Auto), new ColumnDefinition(GridLength.Auto) },
+                    ColumnSpacing = 8,
+                };
+
+                row.Add(DateLabel(date), 0);
+                row.Add(new Label { Text = "Notify", FontSize = 13, VerticalOptions = LayoutOptions.Center }.TextIn("MutedText"), 1);
+                row.Add(toggle, 2);
+                _noted.Add(row);
+            }
+
+            if (own.Count > 0)
+            {
+                _noted.Add(new Label { Text = "Added on this phone", FontSize = 13, FontAttributes = FontAttributes.Bold }.TextIn("MutedText"));
+            }
+
+            foreach (var date in own)
+            {
+                var edit = new Button { Text = "Edit", Padding = new Thickness(10, 0), HeightRequest = 36 };
+                var delete = new Button { Text = "Delete", Padding = new Thickness(10, 0), HeightRequest = 36 };
+                SemanticProperties.SetDescription(edit, "Edit " + date.Title);
+                SemanticProperties.SetDescription(delete, "Delete " + date.Title);
+                edit.Clicked += async (_, _) => await Navigation.PushAsync(new NotedDatePage(_session, date, () =>
+                {
+                    RebuildNotedDates();
+                    _notedDatesChanged();
+                }));
+                delete.Clicked += async (_, _) =>
+                {
+                    if (await DisplayAlertAsync("Delete noted date", $"Delete \"{date.Title}\"?", "Delete", "Cancel"))
+                    {
+                        _session.DeleteOwnNotedDate(date.Id);
+                        RebuildNotedDates();
+                        _notedDatesChanged();
+                    }
+                };
+
+                var row = new Grid
+                {
+                    ColumnDefinitions = { new ColumnDefinition(GridLength.Star), new ColumnDefinition(GridLength.Auto), new ColumnDefinition(GridLength.Auto) },
+                    ColumnSpacing = 6,
+                };
+
+                row.Add(DateLabel(date), 0);
+                row.Add(edit, 1);
+                row.Add(delete, 2);
+                _noted.Add(row);
+            }
+
+            var add = new Button { Text = "Add a noted date" };
+            add.Clicked += async (_, _) => await Navigation.PushAsync(new NotedDatePage(_session, null, () =>
+            {
+                RebuildNotedDates();
+                _notedDatesChanged();
+            }));
+            _noted.Add(add);
+        }
+
+        private static View DateLabel(NotedDateListing date) => new VerticalStackLayout
+        {
+            Spacing = 0,
+            VerticalOptions = LayoutOptions.Center,
+            Children =
+            {
+                new Label { Text = date.Title, FontSize = 15 },
+                new Label { Text = date.DateText, FontSize = 13 }.TextIn("MutedText"),
+            },
+        };
 
         private int IndexOf(long participantID)
         {
