@@ -70,6 +70,16 @@ namespace Chatcheology.Data.Tests.Memories
         }
 
         [Fact]
+        public void AFormatThreeMarkerWithoutTheEntryImageTable_IsRefused()
+        {
+            _folder.CreateMemories();
+            Execute("DROP TABLE EntryImage;");
+
+            Assert.Throws<InvalidOperationException>(() => MemoriesDatabase.OpenConnection(_folder.MemoriesPath));
+            Assert.Throws<InvalidOperationException>(() => MemoriesDatabase.OpenReadOnlyConnection(_folder.MemoriesPath));
+        }
+
+        [Fact]
         public void AFailedFirstWrite_LeavesAnOlderFileAtItsFormat()
         {
             CreateOlder(2);
