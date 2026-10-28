@@ -194,7 +194,7 @@ namespace Chatcheology.Data.Memories
         /// Writes the image as <c>&lt;sha&gt;.&lt;ext&gt;</c>. An existing file is kept only when its
         /// own hash matches; otherwise it is replaced.
         /// </summary>
-        private static void Store(string mediaFolder, string sha, string extension, byte[] body)
+        internal static void Store(string mediaFolder, string sha, string extension, byte[] body)
         {
             Directory.CreateDirectory(mediaFolder);
             var target = Path.Combine(mediaFolder, $"{sha}.{extension}");

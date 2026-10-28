@@ -13,6 +13,19 @@
     <Window.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVisibility" />
 
+        <!-- A validation message next to its field (CH-42 step 4); takes no room when empty. -->
+        <Style x:Key="FieldError" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="11" />
+            <Setter Property="Foreground" Value="#FF8A2727" />
+            <Setter Property="TextWrapping" Value="Wrap" />
+            <Setter Property="Margin" Value="0,2,0,0" />
+            <Style.Triggers>
+                <Trigger Property="Text" Value="">
+                    <Setter Property="Visibility" Value="Collapsed" />
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+
         <!-- One attachment, in exactly one of its three states.
 
              Unresolved is the archive's ordinary state and is coloured as a neutral note, never as
@@ -240,6 +253,122 @@
                 </Border>
             </StackPanel>
         </DataTemplate>
+
+        <!-- A memory row (CH-42 step 5): never a message. Centred, lilac and framed, unlike bubbles
+             and the date separator; the content and wording are the phone's own rows. A click opens
+             the memory's details; it selects no message and leaves the review panel alone. -->
+        <Style x:Key="MemoryCardFrame" TargetType="Border">
+            <Setter Property="BorderBrush" Value="#FF6A4C9C" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Background" Value="#FFF1ECFA" />
+            <Setter Property="CornerRadius" Value="10" />
+            <Setter Property="HorizontalAlignment" Value="Center" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="ToolTip" Value="Show this memory's details" />
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding IsSelected}" Value="True">
+                    <Setter Property="BorderThickness" Value="2.5" />
+                    <Setter Property="Background" Value="#FFE4DAF5" />
+                </DataTrigger>
+            </Style.Triggers>
+        </Style>
+
+        <!-- The muted "different times" line keeps its plain look; selected, it is tinted. -->
+        <Style x:Key="MemoryLineFrame" TargetType="Border">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="CornerRadius" Value="6" />
+            <Setter Property="HorizontalAlignment" Value="Center" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="ToolTip" Value="Show this memory's details" />
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding IsSelected}" Value="True">
+                    <Setter Property="Background" Value="#FFE4DAF5" />
+                </DataTrigger>
+            </Style.Triggers>
+        </Style>
+
+        <DataTemplate DataType="{x:Type vm:MemoryRowViewModel}">
+            <StackPanel>
+                <Border Margin="0,12,0,8" Padding="10,3" CornerRadius="9"
+                        Background="#FFDDD7CC" HorizontalAlignment="Center"
+                        Visibility="{Binding HasDateSeparator,
+                            Converter={StaticResource BoolToVisibility}}">
+                    <TextBlock Text="{Binding DateSeparatorText}" FontSize="11"
+                               Foreground="#FF3C3C3C" />
+                </Border>
+
+                <!-- A PSN period card. -->
+                <Border Style="{StaticResource MemoryCardFrame}" MaxWidth="420" Margin="40,6" Padding="10,8"
+                        MouseLeftButtonUp="MemoryRowClick"
+                        Visibility="{Binding IsPeriodCard, Converter={StaticResource BoolToVisibility}}">
+                    <DockPanel>
+                        <Image Source="{Binding Image}" Width="56" Height="56" Margin="0,0,10,0"
+                               VerticalAlignment="Top" Stretch="Uniform" DockPanel.Dock="Left"
+                               Visibility="{Binding HasImage, Converter={StaticResource BoolToVisibility}}" />
+                        <StackPanel>
+                            <TextBlock Text="{Binding Title}" FontWeight="SemiBold" TextWrapping="Wrap" />
+                            <TextBlock Text="{Binding DateText}" FontSize="11" Foreground="#FF6A6A6A" />
+                            <ItemsControl ItemsSource="{Binding Lines}" Margin="0,2,0,0">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <TextBlock Text="{Binding}" FontSize="12" TextWrapping="Wrap" />
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                            <TextBlock Text="{Binding LabelText}" FontSize="11" Foreground="#FF6A4C9C"
+                                       Margin="0,2,0,0" />
+                            <TextBlock Text="{Binding SourceText}" FontSize="10" Foreground="#FF6A6A6A"
+                                       Visibility="{Binding HasSource, Converter={StaticResource BoolToVisibility}}" />
+                        </StackPanel>
+                    </DockPanel>
+                </Border>
+
+                <!-- A personal memory at its start (a range shows one card). -->
+                <Border Style="{StaticResource MemoryCardFrame}" Width="300" Margin="40,6" Padding="0,0,0,8"
+                        MouseLeftButtonUp="MemoryRowClick"
+                        Visibility="{Binding IsEntryCard, Converter={StaticResource BoolToVisibility}}">
+                    <StackPanel>
+                        <Image Source="{Binding Image}" MaxHeight="170" Stretch="Uniform"
+                               Visibility="{Binding HasImage, Converter={StaticResource BoolToVisibility}}" />
+                        <TextBlock Text="{Binding CollectionName}" FontSize="10" Foreground="#FF6A4C9C"
+                                   Margin="10,6,10,0" />
+                        <TextBlock Text="{Binding Title}" FontWeight="SemiBold" Margin="10,0"
+                                   TextWrapping="Wrap" />
+                        <TextBlock Text="{Binding DateText}" FontSize="11" Foreground="#FF6A6A6A"
+                                   Margin="10,0" TextWrapping="Wrap" />
+                        <TextBlock Text="{Binding Summary}" FontSize="12" Margin="10,2,10,0"
+                                   TextWrapping="Wrap" MaxHeight="72" TextTrimming="CharacterEllipsis"
+                                   Visibility="{Binding HasSummary, Converter={StaticResource BoolToVisibility}}" />
+                        <TextBlock Text="{Binding SourceText}" FontSize="10" Foreground="#FF6A6A6A"
+                                   Margin="10,2,10,0"
+                                   Visibility="{Binding HasSource, Converter={StaticResource BoolToVisibility}}" />
+                    </StackPanel>
+                </Border>
+
+                <!-- The muted "different times" line: not a claim of simultaneous play. -->
+                <Border Style="{StaticResource MemoryLineFrame}" MaxWidth="460" Margin="40,2" Padding="8,2"
+                        MouseLeftButtonUp="MemoryRowClick"
+                        Visibility="{Binding IsDifferentTimes, Converter={StaticResource BoolToVisibility}}">
+                    <TextBlock Text="{Binding Text}" FontSize="11" FontStyle="Italic" Foreground="#FF6A6A6A"
+                               TextWrapping="Wrap" TextAlignment="Center" />
+                </Border>
+            </StackPanel>
+        </DataTemplate>
+
+        <!-- One trophy in the memory details: icon, name (or "Bronze trophy #12"), time and whose. -->
+        <DataTemplate x:Key="MemoryItemTemplate" DataType="{x:Type vm:MemoryItemViewModel}">
+            <DockPanel Margin="0,3">
+                <Image Source="{Binding Icon}" Width="36" Height="36" Margin="0,0,8,0"
+                       VerticalAlignment="Top" DockPanel.Dock="Left"
+                       Visibility="{Binding HasIcon, Converter={StaticResource BoolToVisibility}}" />
+                <StackPanel>
+                    <TextBlock Text="{Binding Name}" FontWeight="SemiBold" TextWrapping="Wrap" />
+                    <TextBlock Text="{Binding Meta}" FontSize="11" Foreground="#FF6A6A6A" TextWrapping="Wrap" />
+                    <TextBlock Text="{Binding Detail}" FontSize="11" TextWrapping="Wrap"
+                               Visibility="{Binding HasDetail, Converter={StaticResource BoolToVisibility}}" />
+                </StackPanel>
+            </DockPanel>
+        </DataTemplate>
     </Window.Resources>
 
     <DockPanel>
@@ -260,6 +389,7 @@
                 <ComboBox Width="200" Margin="0,0,16,0" DockPanel.Dock="Left"
                           ItemsSource="{Binding Conversations}"
                           SelectedItem="{Binding SelectedConversation}"
+                          IsEnabled="{Binding CanChangeConversation}"
                           DisplayMemberPath="Title" />
 
                 <TextBlock Text="Show as" VerticalAlignment="Center" Margin="0,0,6,0"
@@ -312,6 +442,11 @@
                 <Button Content="Validate archive…" Padding="10,3" Margin="8,0,0,0"
                         DockPanel.Dock="Left" Command="{Binding ValidateArchiveCommand}"
                         ToolTip="Check an archive folder. Nothing is written." />
+
+                <!-- Personal memories (CH-42 step 4), in the memories file beside the workspace. -->
+                <Button Content="Memories…" Padding="10,3" Margin="16,0,0,0"
+                        DockPanel.Dock="Left" Command="{Binding Memories.OpenCommand}"
+                        ToolTip="Add and edit your own memories. The workspace is not changed." />
             </WrapPanel>
         </Border>
 
@@ -420,6 +555,220 @@
 
                 <TextBlock Text="{Binding StatusText}" FontSize="11" Foreground="#FF3C3C3C"
                            TextTrimming="CharacterEllipsis" />
+            </DockPanel>
+        </Border>
+
+        <!-- Memories (CH-42 step 4): personal collections and memories in the memories file beside
+             the workspace, and the form that adds and edits them. Imported collections are listed
+             read-only. Nothing here writes the workspace. -->
+        <Border DockPanel.Dock="Right" Width="560" Background="#FFF7F6F3"
+                BorderBrush="#FFCFC8BC" BorderThickness="1,0,0,0" Padding="10"
+                Visibility="{Binding Memories.IsOpen, Converter={StaticResource BoolToVisibility}}">
+            <DockPanel DataContext="{Binding Memories}">
+                <DockPanel DockPanel.Dock="Top" LastChildFill="False" Margin="0,0,0,8">
+                    <TextBlock Text="Memories" FontWeight="Bold" FontSize="13"
+                               DockPanel.Dock="Left" VerticalAlignment="Center" />
+                    <Button Content="Close" Padding="8,2" DockPanel.Dock="Right"
+                            Command="{Binding CloseCommand}" />
+                </DockPanel>
+
+                <TextBlock DockPanel.Dock="Bottom" Text="{Binding StatusText}" FontSize="11"
+                           Foreground="#FF3C3C3C" TextWrapping="Wrap" Margin="0,8,0,0" />
+
+                <Grid>
+                    <!-- The list. -->
+                    <ScrollViewer VerticalScrollBarVisibility="Auto"
+                                  HorizontalScrollBarVisibility="Disabled"
+                                  Visibility="{Binding IsListShown,
+                                      Converter={StaticResource BoolToVisibility}}">
+                        <StackPanel>
+                            <TextBlock Text="Your collections" FontWeight="SemiBold" />
+                            <ListBox ItemsSource="{Binding Collections}"
+                                     SelectedItem="{Binding SelectedCollection}"
+                                     DisplayMemberPath="DisplayText" Height="110" Margin="0,4,0,0" />
+
+                            <DockPanel Margin="0,6,0,0" LastChildFill="True">
+                                <Button Content="Rename" Padding="8,2" Margin="6,0,0,0"
+                                        DockPanel.Dock="Right"
+                                        Command="{Binding RenameCollectionCommand}"
+                                        ToolTip="Rename the selected collection to this name." />
+                                <Button Content="Add collection" Padding="8,2" Margin="6,0,0,0"
+                                        DockPanel.Dock="Right"
+                                        Command="{Binding AddCollectionCommand}" />
+                                <TextBox Text="{Binding CollectionName,
+                                             UpdateSourceTrigger=PropertyChanged}" />
+                            </DockPanel>
+                            <TextBlock Text="{Binding CollectionNameError}"
+                                       Style="{StaticResource FieldError}" />
+
+                            <TextBlock Text="Memories in this collection" FontWeight="SemiBold"
+                                       Margin="0,10,0,0" />
+                            <ListBox ItemsSource="{Binding Entries}"
+                                     SelectedItem="{Binding SelectedEntry}"
+                                     Height="220" Margin="0,4,0,0"
+                                     HorizontalContentAlignment="Stretch"
+                                     ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                                <ListBox.ItemTemplate>
+                                    <DataTemplate>
+                                        <DockPanel>
+                                            <TextBlock Text="{Binding DateText}" Width="210"
+                                                       Foreground="#FF5A5A5A"
+                                                       TextTrimming="CharacterEllipsis" />
+                                            <TextBlock Text="{Binding Title}"
+                                                       TextTrimming="CharacterEllipsis" />
+                                        </DockPanel>
+                                    </DataTemplate>
+                                </ListBox.ItemTemplate>
+                            </ListBox>
+
+                            <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                                <Button Content="New memory…" Padding="8,2"
+                                        Command="{Binding NewEntryCommand}" />
+                                <Button Content="Edit…" Padding="8,2" Margin="6,0,0,0"
+                                        Command="{Binding EditEntryCommand}" />
+                                <Button Content="Delete…" Padding="8,2" Margin="6,0,0,0"
+                                        Command="{Binding DeleteEntryCommand}" />
+                            </StackPanel>
+
+                            <TextBlock Text="Imported collections (read-only)" FontWeight="SemiBold"
+                                       Margin="0,12,0,0" />
+                            <ItemsControl ItemsSource="{Binding ImportedCollections}" Margin="0,4,0,0">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <TextBlock Text="{Binding Text}" FontSize="11"
+                                                   Foreground="#FF5A5A5A" TextWrapping="Wrap" />
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </StackPanel>
+                    </ScrollViewer>
+
+                    <!-- The form. -->
+                    <Border Visibility="{Binding IsFormOpen,
+                                Converter={StaticResource BoolToVisibility}}">
+                        <ScrollViewer DataContext="{Binding Form}"
+                                      VerticalScrollBarVisibility="Auto"
+                                      HorizontalScrollBarVisibility="Disabled">
+                            <StackPanel>
+                                <TextBlock Text="{Binding Heading}" FontWeight="SemiBold" />
+
+                                <TextBlock Text="Collection" FontSize="11" Margin="0,8,0,0" />
+                                <ComboBox ItemsSource="{Binding Collections}"
+                                          SelectedItem="{Binding SelectedCollection}"
+                                          DisplayMemberPath="Name" Margin="0,2,0,0" />
+                                <TextBlock Text="{Binding CollectionError}"
+                                           Style="{StaticResource FieldError}" />
+
+                                <TextBlock Text="Title" FontSize="11" Margin="0,6,0,0" />
+                                <TextBox Text="{Binding Title, UpdateSourceTrigger=PropertyChanged}"
+                                         Margin="0,2,0,0" />
+                                <TextBlock Text="{Binding TitleError}" Style="{StaticResource FieldError}" />
+
+                                <Grid Margin="0,6,0,0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Grid.Column="0" Margin="0,0,6,0">
+                                        <TextBlock Text="Dated by" FontSize="11" />
+                                        <ComboBox ItemsSource="{Binding Precisions}"
+                                                  SelectedItem="{Binding Precision}" Margin="0,2,0,0" />
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="1" Margin="0,0,6,0">
+                                        <TextBlock Text="Start" FontSize="11" />
+                                        <DatePicker SelectedDate="{Binding StartDate}" Margin="0,2,0,0" />
+                                        <TextBlock Text="{Binding StartError}"
+                                                   Style="{StaticResource FieldError}" />
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="2">
+                                        <TextBlock Text="End (optional)" FontSize="11" />
+                                        <DatePicker SelectedDate="{Binding EndDate}" Margin="0,2,0,0" />
+                                        <TextBlock Text="{Binding EndError}"
+                                                   Style="{StaticResource FieldError}" />
+                                    </StackPanel>
+                                </Grid>
+                                <TextBlock Text="With Month, only the month of each date is kept."
+                                           FontSize="10" Foreground="#FF7A7A7A" Margin="0,2,0,0" />
+
+                                <TextBlock Text="Description (optional)" FontSize="11" Margin="0,6,0,0" />
+                                <TextBox Text="{Binding Summary, UpdateSourceTrigger=PropertyChanged}"
+                                         AcceptsReturn="True" TextWrapping="Wrap" Height="60"
+                                         Margin="0,2,0,0" />
+                                <TextBlock Text="{Binding SummaryError}" Style="{StaticResource FieldError}" />
+
+                                <TextBlock Text="Source (where this memory comes from)" FontSize="11"
+                                           Margin="0,6,0,0" />
+                                <TextBox Text="{Binding Source, UpdateSourceTrigger=PropertyChanged}"
+                                         Margin="0,2,0,0" />
+                                <TextBlock Text="{Binding SourceError}" Style="{StaticResource FieldError}" />
+
+                                <TextBlock Text="Image (optional)" FontSize="11" Margin="0,8,0,0" />
+                                <Image Source="{Binding ImagePreview}" MaxHeight="200" MaxWidth="320"
+                                       HorizontalAlignment="Left" Stretch="Uniform" Margin="0,2,0,0" />
+                                <TextBlock Text="{Binding ImageText}" FontSize="11"
+                                           Foreground="#FF5A5A5A" />
+                                <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
+                                    <Button Content="Choose image…" Padding="8,2"
+                                            Command="{Binding ChooseImageCommand}"
+                                            ToolTip="The file is only read; a copy goes into the memories folder on save." />
+                                    <Button Content="Remove image" Padding="8,2" Margin="6,0,0,0"
+                                            Command="{Binding RemoveImageCommand}" />
+                                </StackPanel>
+                                <TextBlock Text="{Binding ImageError}" Style="{StaticResource FieldError}" />
+
+                                <TextBlock Text="Links" FontWeight="SemiBold" Margin="0,10,0,0" />
+                                <ItemsControl ItemsSource="{Binding Links}" Margin="0,2,0,0">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <DockPanel Margin="0,2,0,0">
+                                                <Button Content="Remove" Padding="6,0" Margin="6,0,0,0"
+                                                        DockPanel.Dock="Right"
+                                                        Command="{Binding RemoveCommand}" />
+                                                <TextBlock Text="{Binding Text}" FontSize="11"
+                                                           TextWrapping="Wrap" />
+                                            </DockPanel>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                                <TextBlock Text="{Binding LinksError}" Style="{StaticResource FieldError}" />
+
+                                <TextBlock Text="Add a link: pick a day" FontSize="11" Margin="0,6,0,0" />
+                                <DatePicker SelectedDate="{Binding PickerDate}" Width="160"
+                                            HorizontalAlignment="Left" Margin="0,2,0,0" />
+                                <TextBlock Text="{Binding PickerText}" FontSize="11"
+                                           Foreground="#FF5A5A5A" Margin="0,2,0,0" />
+
+                                <TextBlock Text="Messages of that day" FontSize="11" Margin="0,4,0,0" />
+                                <ListBox ItemsSource="{Binding PickerMessages}"
+                                         SelectedItem="{Binding SelectedPickerMessage}"
+                                         DisplayMemberPath="Text" Height="120" Margin="0,2,0,0"
+                                         ScrollViewer.HorizontalScrollBarVisibility="Disabled" />
+                                <Button Content="Link this message" Padding="8,2" Margin="0,4,0,0"
+                                        HorizontalAlignment="Left"
+                                        Command="{Binding AddMessageLinkCommand}" />
+
+                                <TextBlock Text="Memories of that day" FontSize="11" Margin="0,6,0,0" />
+                                <ListBox ItemsSource="{Binding PickerEntries}"
+                                         SelectedItem="{Binding SelectedPickerEntry}"
+                                         DisplayMemberPath="Text" Height="80" Margin="0,2,0,0"
+                                         ScrollViewer.HorizontalScrollBarVisibility="Disabled" />
+                                <Button Content="Link this memory" Padding="8,2" Margin="0,4,0,0"
+                                        HorizontalAlignment="Left"
+                                        Command="{Binding AddEntryLinkCommand}" />
+
+                                <TextBlock Text="{Binding FormError}" Style="{StaticResource FieldError}"
+                                           Margin="0,10,0,0" />
+                                <StackPanel Orientation="Horizontal" Margin="0,10,0,4">
+                                    <Button Content="Save" Padding="12,3"
+                                            Command="{Binding SaveCommand}" />
+                                    <Button Content="Cancel" Padding="12,3" Margin="8,0,0,0"
+                                            Command="{Binding CancelCommand}" />
+                                </StackPanel>
+                            </StackPanel>
+                        </ScrollViewer>
+                    </Border>
+                </Grid>
             </DockPanel>
         </Border>
 
@@ -565,6 +914,88 @@
             </DockPanel>
         </Border>
 
+        <!-- Memory details (CH-42 step 5): what the selected memory row holds, with the phone's
+             headings. Docked right like the review panel, and independent of it: opening it selects
+             no message and changes no review. A message link moves the conversation; Edit opens a
+             personal memory in the Memories area's form. -->
+        <Border DockPanel.Dock="Right" Width="360" Background="#FFF7F6F3"
+                BorderBrush="#FFCFC8BC" BorderThickness="1,0,0,0" Padding="10"
+                Visibility="{Binding IsMemoryDetailsOpen, Converter={StaticResource BoolToVisibility}}">
+            <DockPanel>
+                <DockPanel DockPanel.Dock="Top" LastChildFill="False" Margin="0,0,0,8">
+                    <TextBlock Text="{Binding MemoryDetails.CollectionName, FallbackValue=''}" FontWeight="Bold"
+                               FontSize="13" DockPanel.Dock="Left" VerticalAlignment="Center" />
+                    <Button Content="Close" Padding="8,2" DockPanel.Dock="Right"
+                            Command="{Binding CloseMemoryDetailsCommand}" />
+                    <Button Content="Edit…" Padding="8,2" Margin="0,0,6,0" DockPanel.Dock="Right"
+                            Command="{Binding EditMemoryCommand}"
+                            Visibility="{Binding MemoryDetails.IsPersonal, FallbackValue=Collapsed,
+                                Converter={StaticResource BoolToVisibility}}" />
+                </DockPanel>
+
+                <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                    <StackPanel x:Name="MemoryDetailsBody" DataContext="{Binding MemoryDetails}">
+                        <Image Source="{Binding Image}" MaxHeight="200" Stretch="Uniform"
+                               HorizontalAlignment="Left" Margin="0,0,0,6"
+                               Visibility="{Binding HasImage, Converter={StaticResource BoolToVisibility}}" />
+                        <TextBlock Text="{Binding Title}" FontSize="15" FontWeight="SemiBold" TextWrapping="Wrap" />
+                        <TextBlock Text="{Binding DateText}" FontSize="11" Foreground="#FF6A6A6A" TextWrapping="Wrap" />
+                        <TextBlock Text="{Binding Summary}" Margin="0,6,0,0" TextWrapping="Wrap"
+                                   Visibility="{Binding HasSummary, Converter={StaticResource BoolToVisibility}}" />
+                        <ItemsControl ItemsSource="{Binding Lines}" Margin="0,6,0,0">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <TextBlock Text="{Binding}" TextWrapping="Wrap" />
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+
+                        <StackPanel Visibility="{Binding HasItems, Converter={StaticResource BoolToVisibility}}">
+                            <TextBlock Text="{Binding ItemsHeading}" FontWeight="SemiBold" Margin="0,10,0,2" />
+                            <ItemsControl ItemsSource="{Binding Items}"
+                                          ItemTemplate="{StaticResource MemoryItemTemplate}" />
+                        </StackPanel>
+
+                        <StackPanel Visibility="{Binding HasDayEvidence, Converter={StaticResource BoolToVisibility}}">
+                            <TextBlock Text="{Binding DayHeading}" FontWeight="SemiBold" Margin="0,10,0,2" />
+                            <TextBlock Text="{Binding DayEvidenceText}" TextWrapping="Wrap" />
+                        </StackPanel>
+
+                        <StackPanel Visibility="{Binding HasOtherPeriods, Converter={StaticResource BoolToVisibility}}">
+                            <TextBlock Text="{Binding OtherPeriodsHeading}" FontSize="11" Foreground="#FF6A6A6A"
+                                       Margin="0,6,0,2" />
+                            <ItemsControl ItemsSource="{Binding OtherPeriods}">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <TextBlock Text="{Binding}" FontSize="12" TextWrapping="Wrap" />
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </StackPanel>
+
+                        <StackPanel Visibility="{Binding HasLinks, Converter={StaticResource BoolToVisibility}}">
+                            <TextBlock Text="{Binding LinksHeading}" FontWeight="SemiBold" Margin="0,10,0,2" />
+                            <ItemsControl ItemsSource="{Binding Links}">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <TextBlock Margin="0,2" TextWrapping="Wrap">
+                                            <Hyperlink Click="MemoryLinkClick">
+                                                <Run Text="{Binding Text, Mode=OneWay}" />
+                                            </Hyperlink>
+                                        </TextBlock>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </StackPanel>
+
+                        <TextBlock Text="{Binding SourceLine}" FontSize="11" Foreground="#FF6A6A6A"
+                                   Margin="0,10,0,0" TextWrapping="Wrap"
+                                   Visibility="{Binding HasSource, Converter={StaticResource BoolToVisibility}}" />
+                    </StackPanel>
+                </ScrollViewer>
+            </DockPanel>
+        </Border>
+
         <!-- Conversation.
 
              The ItemsControl carries its own ScrollViewer with CanContentScroll set, so its
@@ -582,10 +1013,56 @@
              does that when the view-model raises MovedToPage. The review panel opening and
              closing does not move the list. -->
         <DockPanel>
-            <TextBlock Text="{Binding ConversationTitle}" FontSize="13" FontWeight="SemiBold"
-                       Margin="12,8" DockPanel.Dock="Top" TextTrimming="CharacterEllipsis" />
+            <!-- Conversation header: the title, and the memory layers (CH-42 step 5) when the memories
+                 file beside the workspace has any. Switches and filters are remembered per workspace,
+                 never in the workspace or the memories file. -->
+            <DockPanel DockPanel.Dock="Top" Margin="12,8" LastChildFill="True">
+                <Grid DockPanel.Dock="Right"
+                      Visibility="{Binding HasLayers, Converter={StaticResource BoolToVisibility}}">
+                    <ToggleButton x:Name="LayersButton" Content="Layers" Padding="10,2"
+                                  IsChecked="{Binding IsLayersOpen}"
+                                  ToolTip="Memory layers shown among the messages" />
+                    <Popup x:Name="LayersPopup" IsOpen="{Binding IsLayersOpen}"
+                           PlacementTarget="{Binding ElementName=LayersButton}"
+                           Placement="Bottom" StaysOpen="False" AllowsTransparency="True">
+                        <Border Background="#FFF7F6F3" BorderBrush="#FFCFC8BC" BorderThickness="1"
+                                Padding="10" MinWidth="240" MaxWidth="360">
+                            <StackPanel>
+                                <TextBlock Text="Memory layers" FontWeight="SemiBold" Margin="0,0,0,6" />
+                                <ItemsControl ItemsSource="{Binding Layers}">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate DataType="{x:Type vm:MemoryLayerViewModel}">
+                                            <StackPanel Margin="0,2,0,4">
+                                                <CheckBox Content="{Binding Name}" IsChecked="{Binding IsShown}" />
+                                                <ItemsControl ItemsSource="{Binding Filters}" Margin="20,2,0,0"
+                                                              IsEnabled="{Binding IsShown}"
+                                                              Visibility="{Binding HasFilters,
+                                                                  Converter={StaticResource BoolToVisibility}}">
+                                                    <ItemsControl.ItemTemplate>
+                                                        <DataTemplate DataType="{x:Type vm:MemoryFilterViewModel}">
+                                                            <CheckBox Content="{Binding Title}" IsChecked="{Binding IsOn}"
+                                                                      FontSize="11" Margin="0,1" />
+                                                        </DataTemplate>
+                                                    </ItemsControl.ItemTemplate>
+                                                </ItemsControl>
+                                            </StackPanel>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                                <TextBlock Text="{Binding LayersNote}" FontSize="11" Foreground="#FF5A5A5A"
+                                           TextWrapping="Wrap" Margin="0,4,0,0"
+                                           Visibility="{Binding HasLayersNote,
+                                               Converter={StaticResource BoolToVisibility}}" />
+                            </StackPanel>
+                        </Border>
+                    </Popup>
+                </Grid>
 
-            <ItemsControl x:Name="MessageList" ItemsSource="{Binding Messages}"
+                <TextBlock Text="{Binding ConversationTitle}" FontSize="13" FontWeight="SemiBold"
+                           VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+            </DockPanel>
+
+            <ItemsControl x:Name="MessageList" ItemsSource="{Binding Rows}"
                           VirtualizingPanel.IsVirtualizing="True"
                           VirtualizingPanel.VirtualizationMode="Recycling"
                           VirtualizingPanel.ScrollUnit="Pixel"

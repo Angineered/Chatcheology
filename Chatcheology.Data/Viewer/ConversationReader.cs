@@ -86,6 +86,42 @@ namespace Chatcheology.Data.Viewer
         }
 
         /// <summary>
+        /// Every message's sequence number and stored local time, in conversation order: what memory
+        /// rows are placed among (CH-42 step 5). No message body is read.
+        /// </summary>
+        /// <remarks>
+        /// One pass of <c>UNIQUE (ConversationID, SequenceNumber)</c>. Order is the sequence order; the
+        /// times are not assumed to rise with it.
+        /// </remarks>
+        public ConversationMessageTimes ReadMessageTimes(SqliteConnection connection, long conversationID)
+        {
+            ArgumentNullException.ThrowIfNull(connection);
+
+            using var command = connection.CreateCommand();
+            command.CommandText =
+                """
+                SELECT SequenceNumber, MessageDateTimeLocal
+                FROM Message
+                WHERE ConversationID = $conversationID
+                ORDER BY SequenceNumber;
+                """;
+            command.Parameters.AddWithValue("$conversationID", conversationID);
+
+            var sequenceNumbers = new List<int>();
+            var times = new List<DateTime>();
+
+            using var reader = command.ExecuteReader();
+
+            while (reader.Read())
+            {
+                sequenceNumbers.Add(reader.GetInt32(0));
+                times.Add(ReadStoredDateTime(reader, 1));
+            }
+
+            return new ConversationMessageTimes(sequenceNumbers, times);
+        }
+
+        /// <summary>
         /// The first page of a conversation.
         /// </summary>
         /// <exception cref="InvalidOperationException">

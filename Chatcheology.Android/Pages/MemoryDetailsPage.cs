@@ -46,7 +46,7 @@ namespace Chatcheology.Android.Pages
 
             if (details.Items.Count > 0)
             {
-                body.Add(Heading("Trophies"));
+                body.Add(Heading(MemoryWording.ItemsHeading));
 
                 foreach (var item in details.Items)
                 {
@@ -56,13 +56,13 @@ namespace Chatcheology.Android.Pages
 
             if (details.DayEvidenceText.Length > 0)
             {
-                body.Add(Heading("This day"));
+                body.Add(Heading(MemoryWording.DayHeading));
                 body.Add(new Label { Text = details.DayEvidenceText, FontSize = 15 });
             }
 
             if (details.OtherPeriods.Count > 0)
             {
-                body.Add(Muted(details.Key.PeriodIndex is null ? "Periods this day:" : "Other periods this day:", 13));
+                body.Add(Muted(MemoryWording.OtherPeriodsHeading(details.Key.PeriodIndex is not null), 13));
 
                 foreach (var period in details.OtherPeriods)
                 {
@@ -72,7 +72,7 @@ namespace Chatcheology.Android.Pages
 
             if (details.Links.Count > 0)
             {
-                body.Add(Heading("Linked"));
+                body.Add(Heading(MemoryWording.LinksHeading));
 
                 foreach (var link in details.Links)
                 {
@@ -82,7 +82,7 @@ namespace Chatcheology.Android.Pages
 
             if (details.SourceText.Length > 0)
             {
-                body.Add(Muted("Source: " + details.SourceText, 12));
+                body.Add(Muted(MemoryWording.SourceLine(details.SourceText), 12));
             }
 
             Content = new ScrollView { Content = body };
@@ -96,7 +96,7 @@ namespace Chatcheology.Android.Pages
                 Children =
                 {
                     new Label { Text = item.Name, FontSize = 15, FontAttributes = FontAttributes.Bold },
-                    Muted(item.TimeText + " · " + item.ParticipantName + (item.IsHidden ? " · hidden trophy" : string.Empty), 12),
+                    Muted(MemoryWording.ItemMeta(item), 12),
                 },
             };
 

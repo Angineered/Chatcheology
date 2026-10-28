@@ -19,6 +19,8 @@
     <ProjectReference Include="..\Chatcheology.Core\Chatcheology.Core.csproj" />
     <ProjectReference Include="..\Chatcheology.Data\Chatcheology.Data.csproj" />
     <ProjectReference Include="..\Chatcheology.Desktop\Chatcheology.Desktop.csproj" />
+    <!-- The phone's presentation rules, for the CH-42 step 4 round trip (desktop form to phone card). -->
+    <ProjectReference Include="..\Chatcheology.Mobile\Chatcheology.Mobile.csproj" />
   </ItemGroup>
 
   <ItemGroup>

@@ -174,6 +174,16 @@ namespace Chatcheology.Desktop.Services
                 cancellationToken);
 
         /// <summary>
+        /// Every message's sequence number and local time, for placing memory rows (CH-42 step 5). No
+        /// message body is read.
+        /// </summary>
+        internal Task<ConversationMessageTimes> ReadMessageTimesAsync(
+            long conversationID, CancellationToken cancellationToken) =>
+            ReadAsync(
+                connection => _conversations.ReadMessageTimes(connection, conversationID),
+                cancellationToken);
+
+        /// <summary>
         /// One page, its attachments' reconstruction states, and what of their media is reachable.
         /// </summary>
         internal Task<LoadedPage> LoadPageAsync(

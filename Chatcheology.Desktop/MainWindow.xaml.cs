@@ -7,6 +7,7 @@ using System.Windows.Input;
 using Chatcheology.Desktop.Controls;
 using Chatcheology.Desktop.Services;
 using Chatcheology.Desktop.ViewModels;
+using Chatcheology.Mobile.Memories;
 using Microsoft.Win32;
 
 namespace Chatcheology.Desktop
@@ -32,7 +33,11 @@ namespace Chatcheology.Desktop
         /// Stands in for the file dialog. Only the tests supply one, so they can open a synthetic
         /// workspace in the real window; the application always asks the operator.
         /// </param>
-        internal MainWindow(Func<string?>? chooseWorkspace)
+        /// <param name="layerSettings">
+        /// Where memory layer choices are remembered (CH-42 step 5). Only the tests supply one, so a test
+        /// never writes the operator's own settings file.
+        /// </param>
+        internal MainWindow(Func<string?>? chooseWorkspace, LayerSettings? layerSettings = null)
         {
             InitializeComponent();
 
@@ -45,7 +50,14 @@ namespace Chatcheology.Desktop
                     ChooseArchiveFolder = () => ChooseFolder("Choose an archive folder to check"),
                     OpenFolder = OpenFolder,
                 },
-                new ArchiveOperations());
+                new ArchiveOperations(),
+                new MemoriesDialogs
+                {
+                    ChooseImage = ChooseImage,
+                    ConfirmCreateFile = text => Confirm(text, "Create memories file"),
+                    ConfirmDelete = text => Confirm(text, "Delete memory"),
+                },
+                layerSettings: layerSettings);
 
             DataContext = _viewModel;
 
@@ -82,6 +94,33 @@ namespace Chatcheology.Desktop
                 this,
                 confirmation.Text,
                 "Export archive",
+                MessageBoxButton.OKCancel,
+                MessageBoxImage.Question,
+                MessageBoxResult.Cancel) == MessageBoxResult.OK;
+
+        /// <remarks>
+        /// An image for a personal memory (CH-42 step 4). The file is only read; a copy goes into the
+        /// memories folder when the memory is saved. No initial directory and no remembered location.
+        /// </remarks>
+        private string? ChooseImage()
+        {
+            var dialog = new OpenFileDialog
+            {
+                Title = "Choose an image for this memory",
+                Filter = "Images (*.png;*.jpg;*.jpeg;*.gif;*.webp)|*.png;*.jpg;*.jpeg;*.gif;*.webp|All files (*.*)|*.*",
+                CheckFileExists = true,
+                Multiselect = false,
+            };
+
+            return dialog.ShowDialog(this) == true ? dialog.FileName : null;
+        }
+
+        /// <remarks>Cancel is the default, so a stray Enter changes nothing.</remarks>
+        private bool Confirm(string text, string caption) =>
+            MessageBox.Show(
+                this,
+                text,
+                caption,
                 MessageBoxButton.OKCancel,
                 MessageBoxImage.Question,
                 MessageBoxResult.Cancel) == MessageBoxResult.OK;
@@ -185,6 +224,27 @@ namespace Chatcheology.Desktop
                 e.Handled = true;
 
                 await _viewModel.OpenReviewAsync(attachment.AttachmentID);
+            }
+        }
+
+        /// <remarks>
+        /// A memory row (CH-42 step 5) opens its details. It selects no message and opens no review.
+        /// </remarks>
+        private void MemoryRowClick(object sender, MouseButtonEventArgs e)
+        {
+            if (sender is FrameworkElement { DataContext: MemoryRowViewModel row })
+            {
+                e.Handled = true;
+                _viewModel.SelectMemoryRow(row);
+            }
+        }
+
+        /// <remarks>A link in the memory details: a message moves the conversation; an entry opens its row.</remarks>
+        private async void MemoryLinkClick(object sender, RoutedEventArgs e)
+        {
+            if (sender is FrameworkContentElement { DataContext: MemoryLinkLine link })
+            {
+                await _viewModel.FollowMemoryLinkAsync(link);
             }
         }
 
