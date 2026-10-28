@@ -12,8 +12,14 @@
       4. the launcher activity (MAIN/LAUNCHER) is the only exported component;
       5. every FileProvider is not exported, grants per-URI permissions, and its paths file allows
          only files-path "archives/";
-      6. zipalign -c -P 16 passes (16 KB page alignment of native libraries).
-    Prints one line per check and exits 1 if any fails.
+      6. zipalign -c -P 16 passes (16 KB page alignment of native libraries);
+      7. the permissions are exactly the allowed ones (CH-47): POST_NOTIFICATIONS and
+         RECEIVE_BOOT_COMPLETED for noted-date notifications, both required, plus AndroidX's own
+         signature-level <package>.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION, which may be there. Any
+         other requested or declared permission fails (INTERNET, an exact-alarm or foreground-service
+         permission, anything else), from uses-permission and uses-permission-sdk-23 alike.
+    Prints one line per check and exits 1 if any fails. tools\Test-CheckAndroidRelease.ps1 runs it on
+    small synthetic APKs and shows that each failing case fails.
 
 .PARAMETER Apk
     The APK to check. Default: the signed Release APK of Chatcheology.Android in this repository.
@@ -264,6 +270,24 @@ foreach ($provider in $providers) {
 # 6. 16 KB page alignment.
 $align = Invoke-Native $zipalign @('-c', '-P', '16', '-v', '4', $Apk)
 Report ($align.ExitCode -eq 0) 'zipalign -c -P 16 passes' (($align.Output | Select-Object -Last 1) -join '')
+
+# 7. Exactly the allowed permissions (CH-47). Requested (uses-permission, uses-permission-sdk-23) and
+#    declared (permission) alike; the only declared one allowed is AndroidX's signature-level guard.
+$package = [string]@(Find-Elements $manifest 'manifest')[0].Attributes['package']
+$required = @('android.permission.POST_NOTIFICATIONS', 'android.permission.RECEIVE_BOOT_COMPLETED')
+$optional = @("$package.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION")
+$requested = @(
+    @(Find-Elements $manifest 'uses-permission') + @(Find-Elements $manifest 'uses-permission-sdk-23') |
+        ForEach-Object { [string]$_.Attributes['name'] }
+)
+$declared = @(Find-Elements $manifest 'permission' | ForEach-Object { [string]$_.Attributes['name'] })
+
+$problems = @()
+foreach ($name in $requested) { if (-not (($required + $optional) -contains $name)) { $problems += "not allowed: $name" } }
+foreach ($name in $declared) { if (-not ($optional -contains $name)) { $problems += "declares: $name" } }
+foreach ($name in $required) { if (-not ($requested -contains $name)) { $problems += "missing: $name" } }
+
+Report ($problems.Count -eq 0) 'Permissions are exactly the allowed ones' $(if ($problems.Count) { $problems -join ', ' } else { ($requested | Sort-Object -Unique) -join ', ' })
 
 if ($failures -gt 0) {
     Write-Host "$failures check(s) failed."
