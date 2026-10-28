@@ -10,11 +10,11 @@ namespace Chatcheology.Mobile.Notifications
     /// <summary>One installed archive's noted dates, as the notification schedule sees them.</summary>
     /// <param name="ArchiveId">The archive's folder name under <c>archives/</c> (what a tap opens).</param>
     /// <param name="ContentsSha256">The archive's identity.</param>
-    /// <param name="ConversationTitle">The conversation's title, shown with the notification after unlock.</param>
     /// <param name="OnThisDayEnabled">Whether On this day is on for the archive; off, it never notifies.</param>
     /// <param name="Dates">Its gifted and own noted dates, each with whether it notifies (a muted gifted date does not).</param>
+    /// <param name="PostedThrough">The last day this archive's notification was posted, if any: it is not posted twice that day.</param>
     public sealed record ArchiveNotedDates(
-        string ArchiveId, string ContentsSha256, string ConversationTitle, bool OnThisDayEnabled, IReadOnlyList<NotedDateListing> Dates)
+        string ArchiveId, string ContentsSha256, bool OnThisDayEnabled, IReadOnlyList<NotedDateListing> Dates, DateOnly? PostedThrough = null)
     {
         /// <summary>The dates that can notify: none when On this day is off, otherwise every date not muted.</summary>
         public IEnumerable<NotedDateListing> Notifying => OnThisDayEnabled ? Dates.Where(date => date.Notify) : [];
@@ -23,17 +23,16 @@ namespace Chatcheology.Mobile.Notifications
     /// <summary>The one notification an archive gets on a day.</summary>
     /// <param name="ArchiveId">The archive's folder name.</param>
     /// <param name="ContentsSha256">The archive's identity.</param>
-    /// <param name="ConversationTitle">The conversation's title.</param>
     /// <param name="Count">How many of its noted dates fall on the day.</param>
-    /// <param name="Text">
-    /// The text: the one date as the card shows it ("Our anniversary · 8 years", or the title alone), or
-    /// "N noted dates today" when several.
-    /// </param>
-    public sealed record DueNotification(string ArchiveId, string ContentsSha256, string ConversationTitle, int Count, string Text);
+    /// <param name="Text">What the notification says: see <see cref="NotedDateSchedule.TextFor"/>.</param>
+    public sealed record DueNotification(string ArchiveId, string ContentsSha256, int Count, string Text);
 
     /// <summary>The next moment a noted date notifies, and what is posted then.</summary>
     /// <param name="Day">The day.</param>
-    /// <param name="LocalMoment">The day at the notification time, in the phone's local wall-clock time.</param>
+    /// <param name="LocalMoment">
+    /// When, in the phone's local wall-clock time: the day at the notification time, or, for today when that
+    /// time has already passed without today being posted, a moment from now (<see cref="NotedDateSchedule.CatchUpDelay"/>).
+    /// </param>
     /// <param name="Due">One notification per archive with noted dates that day, in archive order.</param>
     public sealed record NextNotification(DateOnly Day, DateTime LocalMoment, IReadOnlyList<DueNotification> Due);
 
@@ -44,11 +43,17 @@ namespace Chatcheology.Mobile.Notifications
     /// <remarks>
     /// <para>Only noted dates notify; message years never do. One notification per archive per day, at the
     /// app's time (default 09:00, local). A muted gifted date and every date of an archive with On this day
-    /// off are left out. An archive with no messages still notifies for its noted dates.</para>
+    /// off are left out. An archive with no messages still notifies for its noted dates. An archive already
+    /// posted today (<see cref="ArchiveNotedDates.PostedThrough"/>) is not posted again that day.</para>
+    /// <para><strong>Late today.</strong> When the time has passed and an archive due today has not been posted
+    /// (the phone was off or restarted, the alarm was deferred, a date for today was added), today is
+    /// scheduled at once: <see cref="CatchUpDelay"/> from now, through the normal alarm.</para>
     /// <para>29 February follows <see cref="NotedDates.Matches"/>: in a year without one it notifies on
     /// 28 February.</para>
     /// <para>Times are local wall-clock times; turning one into an instant is <see cref="ToUtc"/>'s job, so the
     /// day arithmetic never crosses a daylight-saving change.</para>
+    /// <para><strong>Privacy.</strong> The notification never carries a title or the conversation's name, so
+    /// nothing personal is on a lock screen whatever its setting; the titles are on the card after the tap.</para>
     /// </remarks>
     public static class NotedDateSchedule
     {
@@ -58,7 +63,21 @@ namespace Chatcheology.Mobile.Notifications
         /// </summary>
         public const int DaysAhead = 367;
 
-        /// <summary>The notifications for <paramref name="day"/>: one per archive with noted dates that day.</summary>
+        /// <summary>How long after now a late notification for today is scheduled.</summary>
+        public static readonly TimeSpan CatchUpDelay = TimeSpan.FromMinutes(1);
+
+        /// <summary>
+        /// What a notification for <paramref name="count"/> noted dates says: "A noted date today" or
+        /// "N noted dates today". Never a title (CH-47 review, 2026-10-28): the one place to change if titles
+        /// are ever shown after unlock.
+        /// </summary>
+        public static string TextFor(int count) =>
+            count == 1 ? "A noted date today" : $"{count.ToString(CultureInfo.CurrentCulture)} noted dates today";
+
+        /// <summary>
+        /// The notifications for <paramref name="day"/>: one per archive with noted dates that day and not yet
+        /// posted that day.
+        /// </summary>
         public static IReadOnlyList<DueNotification> DueOn(IEnumerable<ArchiveNotedDates> archives, DateOnly day)
         {
             ArgumentNullException.ThrowIfNull(archives);
@@ -67,38 +86,32 @@ namespace Chatcheology.Mobile.Notifications
 
             foreach (var archive in archives)
             {
-                var today = archive.Notifying
-                    .Where(date => NotedDates.Matches(date.Month, date.Day, day))
-                    .OrderBy(date => date.Title, StringComparer.CurrentCultureIgnoreCase)
-                    .ToList();
-
-                if (today.Count == 0)
+                if (archive.PostedThrough == day)
                 {
                     continue;
                 }
 
-                var text = today.Count == 1
-                    ? new NotedToday(today[0].Title, null, NotedDates.YearsSince(today[0].Year, day), null).Text
-                    : $"{today.Count.ToString(CultureInfo.CurrentCulture)} noted dates today";
+                var count = archive.Notifying.Count(date => NotedDates.Matches(date.Month, date.Day, day));
 
-                due.Add(new DueNotification(archive.ArchiveId, archive.ContentsSha256, archive.ConversationTitle, today.Count, text));
+                if (count > 0)
+                {
+                    due.Add(new DueNotification(archive.ArchiveId, archive.ContentsSha256, count, TextFor(count)));
+                }
             }
 
             return due;
         }
 
         /// <summary>
-        /// The first moment strictly after <paramref name="localNow"/> at which a noted date notifies, or
-        /// <see langword="null"/> when nothing can notify.
+        /// The next moment a noted date notifies after <paramref name="localNow"/>, or <see langword="null"/> when
+        /// nothing can notify. Today at the time when that is still ahead; today at once (a
+        /// <see cref="CatchUpDelay"/> from now) when the time has passed and an archive due today is not yet
+        /// posted; otherwise the first later day with one.
         /// </summary>
         /// <param name="archives">Every installed archive's noted dates.</param>
         /// <param name="time">The app's notification time.</param>
         /// <param name="localNow">The phone's local time now.</param>
-        /// <param name="postedThrough">
-        /// The last day whose notifications were posted, if any: when that is today, today is not scheduled again
-        /// (moving the time later on a day already notified does not notify twice).
-        /// </param>
-        public static NextNotification? Next(IEnumerable<ArchiveNotedDates> archives, TimeOnly time, DateTime localNow, DateOnly? postedThrough = null)
+        public static NextNotification? Next(IEnumerable<ArchiveNotedDates> archives, TimeOnly time, DateTime localNow)
         {
             ArgumentNullException.ThrowIfNull(archives);
 
@@ -109,16 +122,18 @@ namespace Chatcheology.Mobile.Notifications
                 return null;
             }
 
-            var day = DateOnly.FromDateTime(localNow);
+            var now = DateTime.SpecifyKind(localNow, DateTimeKind.Unspecified);
+            var day = DateOnly.FromDateTime(now);
 
-            if (day.ToDateTime(time) <= DateTime.SpecifyKind(localNow, DateTimeKind.Unspecified))
+            if (day.ToDateTime(time) <= now)
             {
-                day = day.AddDays(1);
-            }
+                var late = DueOn(list, day);
 
-            // Only today counts: a later recorded day (the clock was set back) is ignored rather than trusted.
-            if (postedThrough is { } posted && posted == day && posted == DateOnly.FromDateTime(localNow))
-            {
+                if (late.Count > 0)
+                {
+                    return new NextNotification(day, now + CatchUpDelay, late);
+                }
+
                 day = day.AddDays(1);
             }
 
@@ -188,9 +203,9 @@ namespace Chatcheology.Mobile.Notifications
                     archives.Add(new ArchiveNotedDates(
                         Path.GetFileName(folder),
                         hash,
-                        reader.Info.ConversationTitle,
                         settings.GetOnThisDayEnabled(hash),
-                        NotedDates.List(settings, hash, reader.ReadNotedDates())));
+                        NotedDates.List(settings, hash, reader.ReadNotedDates()),
+                        settings.GetNotedDatesPostedThrough(hash)));
                 }
                 catch (Exception exception) when (exception is ArchiveFormatException or SqliteException or IOException or UnauthorizedAccessException)
                 {

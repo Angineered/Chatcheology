@@ -32,7 +32,9 @@ namespace Chatcheology.Mobile.Settings
     /// day the card was shown), <c>.layers</c> (collection ids switched away from their default, each
     /// <c>id:on</c> or <c>id:off</c>) and <c>.memoryFilters</c> (filters turned off, each
     /// <c>id:filter</c>; CH-42), <c>.ownNotedDates</c> (a JSON list of the dates the phone's user added; CH-47)
-    /// and <c>.mutedNotedDates</c> (gifted noted-date ids that do not notify, comma separated). Own noted dates
+    /// <c>.mutedNotedDates</c> (gifted noted-date ids that do not notify, comma separated) and
+    /// <c>.notedDatesPosted</c> (the last day its noted-date notification was posted, so it is posted once a
+    /// day; CH-47 step 3). Own noted dates
     /// are private to the phone, never written into the archive, and forgotten with the rest on remove.</para>
     /// <para>Stars (CH-38) are private to the phone and never written into the archive. They are the one
     /// thing removing the archive keeps (Angie, 2026-10-22): the same archive (same hash) imported again
@@ -46,7 +48,7 @@ namespace Chatcheology.Mobile.Settings
         private static readonly string[] Names =
         [
             "me", "position", "lastOpenedUtc", "validatedUtc", "validation", "onThisDay", "onThisDayShown",
-            "layers", "memoryFilters", "ownNotedDates", "mutedNotedDates",
+            "layers", "memoryFilters", "ownNotedDates", "mutedNotedDates", "notedDatesPosted",
         ];
 
         private readonly ISettingsStore _store;
@@ -275,6 +277,16 @@ namespace Chatcheology.Mobile.Settings
                 "mutedNotedDates",
                 ids.Count == 0 ? null : string.Join(',', ids.Order().Select(id => id.ToString(CultureInfo.InvariantCulture))));
         }
+
+        /// <summary>The last day (by the phone's date) this archive's noted-date notification was posted, or <see langword="null"/>.</summary>
+        public DateOnly? GetNotedDatesPostedThrough(string contentsSha256) =>
+            DateOnly.TryParseExact(Get(contentsSha256, "notedDatesPosted"), "yyyy'-'MM'-'dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var day)
+                ? day
+                : null;
+
+        /// <summary>Records the day this archive's noted-date notification was posted.</summary>
+        public void SetNotedDatesPostedThrough(string contentsSha256, DateOnly day) =>
+            Set(contentsSha256, "notedDatesPosted", day.ToString("yyyy'-'MM'-'dd", CultureInfo.InvariantCulture));
 
         private sealed class StoredNotedDate
         {
