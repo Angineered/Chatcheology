@@ -160,6 +160,46 @@ namespace Chatcheology.Mobile.Memories
     public sealed record MemorySearchHit(
         MemoryKey Key, string Title, string DateText, string CollectionName, IReadOnlyList<MatchRange> Highlights);
 
+    /// <summary>One entry as a <see cref="MemorySource"/> gives it.</summary>
+    /// <param name="Entry">The entry.</param>
+    /// <param name="Periods">Its periods with their items, each item naming a participant; empty for a personal entry.</param>
+    /// <param name="ImagePath">The image file when it is there; otherwise <see langword="null"/>.</param>
+    /// <param name="Links">Its links (a message by the sequence number of the conversation the rows are placed in).</param>
+    public sealed record MemorySourceEntry(
+        ArchiveEntry Entry, IReadOnlyList<ArchiveEntryPeriod> Periods, string? ImagePath, IReadOnlyList<ArchiveEntryLink> Links);
+
+    /// <summary>
+    /// What a <see cref="MemoryIndex"/> is built from, whatever holds it: an archive on the phone, or the
+    /// memories file beside the workspace and the workspace conversation on the desktop (CH-42 step 5).
+    /// The rules (placement, which rows show, details and wording) are the index's, so both show the same.
+    /// </summary>
+    public sealed class MemorySource
+    {
+        /// <summary>The collections, ordered by identifier.</summary>
+        public required IReadOnlyList<ArchiveCollection> Collections { get; init; }
+
+        /// <summary>Every entry of those collections, collection by collection, in the source's own order.</summary>
+        public required IReadOnlyList<MemorySourceEntry> Entries { get; init; }
+
+        /// <summary>Each participant's display name, by the identifier items carry.</summary>
+        public required IReadOnlyDictionary<long, string> ParticipantNames { get; init; }
+
+        /// <summary>The item definitions (names and icons) the items may use.</summary>
+        public required IReadOnlyList<ArchiveItemDefinition> Definitions { get; init; }
+
+        /// <summary>A definition's icon file when it is there; otherwise <see langword="null"/>.</summary>
+        public required Func<ArchiveItemDefinition, string?> IconPath { get; init; }
+
+        /// <summary>The local time of every message, in chat order.</summary>
+        public required IReadOnlyList<DateTime> MessageTimes { get; init; }
+
+        /// <summary>
+        /// The sequence number of each message in <see cref="MessageTimes"/>, rising; <see langword="null"/>
+        /// when they are 1 to the number of messages (an archive's).
+        /// </summary>
+        public IReadOnlyList<int>? MessageSequenceNumbers { get; init; }
+    }
+
     /// <summary>
     /// The archive's memories (CH-42), read once when the archive opens: collections, entries, periods
     /// with items, item definitions, and the message times the rows are placed among.
@@ -183,14 +223,24 @@ namespace Chatcheology.Mobile.Memories
         private readonly Dictionary<long, MemoryEntry> _byID;
         private readonly IReadOnlyList<DateTime> _prefixMaximum;
         private readonly IReadOnlyList<DateTime> _messageTimes;
+        private readonly IReadOnlyList<int>? _sequenceNumbers;
 
         private MemoryIndex(
-            IReadOnlyList<ArchiveCollection> collections, List<MemoryEntry> entries, IReadOnlyList<DateTime> messageTimes)
+            IReadOnlyList<ArchiveCollection> collections,
+            List<MemoryEntry> entries,
+            IReadOnlyList<DateTime> messageTimes,
+            IReadOnlyList<int>? sequenceNumbers = null)
         {
+            if (sequenceNumbers is not null && sequenceNumbers.Count != messageTimes.Count)
+            {
+                throw new ArgumentException("Every message time needs its sequence number.", nameof(sequenceNumbers));
+            }
+
             Collections = collections;
             _entries = entries;
             _byID = entries.ToDictionary(e => e.Entry.EntryID);
             _messageTimes = messageTimes;
+            _sequenceNumbers = sequenceNumbers;
 
             var prefix = new DateTime[messageTimes.Count];
 
@@ -231,9 +281,7 @@ namespace Chatcheology.Mobile.Memories
                 return Empty;
             }
 
-            var names = reader.ReadParticipants().ToDictionary(p => p.ParticipantID, p => p.DisplayName);
-            var definitions = reader.ReadAllItemDefinitions().ToDictionary(d => (d.SetId, d.ItemId));
-            var entries = new List<MemoryEntry>();
+            var entries = new List<MemorySourceEntry>();
 
             foreach (var collection in collections)
             {
@@ -245,20 +293,65 @@ namespace Chatcheology.Mobile.Memories
                         ? reader.ReadPeriods(entry.EntryID)
                         : [];
 
-                    entries.Add(new MemoryEntry(
-                        collection,
+                    entries.Add(new MemorySourceEntry(
                         entry,
                         periods,
                         reader.ImageFullPath(entry) is { } path && File.Exists(path) ? path : null,
-                        names,
-                        definitions,
-                        icon => reader.IconFullPath(icon) is { } file && File.Exists(file) ? file : null,
                         reader.ReadLinks(entry.EntryID)));
                 }
             }
 
-            return new MemoryIndex(collections, entries, reader.ReadMessageTimes());
+            return Build(new MemorySource
+            {
+                Collections = collections,
+                Entries = entries,
+                ParticipantNames = reader.ReadParticipants().ToDictionary(p => p.ParticipantID, p => p.DisplayName),
+                Definitions = reader.ReadAllItemDefinitions(),
+                IconPath = icon => reader.IconFullPath(icon) is { } file && File.Exists(file) ? file : null,
+                MessageTimes = reader.ReadMessageTimes(),
+            });
         }
+
+        /// <summary>
+        /// Builds the index from <paramref name="source"/>: the same rows, details and wording whatever
+        /// holds the memories. Entries of a collection the source does not list are left out.
+        /// </summary>
+        public static MemoryIndex Build(MemorySource source)
+        {
+            ArgumentNullException.ThrowIfNull(source);
+
+            if (source.Collections.Count == 0)
+            {
+                return Empty;
+            }
+
+            var collections = source.Collections.ToDictionary(c => c.CollectionID);
+            var definitions = source.Definitions.ToDictionary(d => (d.SetId, d.ItemId));
+            var entries = new List<MemoryEntry>(source.Entries.Count);
+
+            foreach (var item in source.Entries)
+            {
+                if (!collections.TryGetValue(item.Entry.CollectionID, out var collection))
+                {
+                    continue;
+                }
+
+                entries.Add(new MemoryEntry(
+                    collection,
+                    item.Entry,
+                    item.Periods,
+                    item.ImagePath,
+                    source.ParticipantNames,
+                    definitions,
+                    source.IconPath,
+                    item.Links));
+            }
+
+            return new MemoryIndex(source.Collections, entries, source.MessageTimes, source.MessageSequenceNumbers);
+        }
+
+        /// <summary>The collection an entry belongs to, or <see langword="null"/> when the entry is not in the index.</summary>
+        public ArchiveCollection? CollectionOf(long entryID) => _byID.GetValueOrDefault(entryID)?.Collection;
 
         /// <summary>The visible rows of <paramref name="view"/>, placed among the messages, in order.</summary>
         public MemoryLayout Layout(MemoryView view)
@@ -359,11 +452,55 @@ namespace Chatcheology.Mobile.Memories
         internal MemoryEntry? Entry(long entryID) => _byID.GetValueOrDefault(entryID);
 
         /// <summary>The local time of a message, or <see langword="null"/> when there is no such message.</summary>
-        internal DateTime? MessageTime(int sequenceNumber) =>
-            sequenceNumber >= 1 && sequenceNumber <= _messageTimes.Count ? _messageTimes[sequenceNumber - 1] : null;
+        internal DateTime? MessageTime(int sequenceNumber)
+        {
+            if (_sequenceNumbers is null)
+            {
+                return sequenceNumber >= 1 && sequenceNumber <= _messageTimes.Count ? _messageTimes[sequenceNumber - 1] : null;
+            }
+
+            var index = BinarySearch(_sequenceNumbers, sequenceNumber);
+
+            return index >= 0 ? _messageTimes[index] : null;
+        }
+
+        private static int BinarySearch(IReadOnlyList<int> sorted, int value)
+        {
+            var low = 0;
+            var high = sorted.Count - 1;
+
+            while (low <= high)
+            {
+                var middle = (low + high) / 2;
+
+                if (sorted[middle] == value)
+                {
+                    return middle;
+                }
+
+                if (sorted[middle] < value)
+                {
+                    low = middle + 1;
+                }
+                else
+                {
+                    high = middle - 1;
+                }
+            }
+
+            return -1;
+        }
 
         /// <summary>The sequence number of the last message at or before <paramref name="time"/> in the placement sense.</summary>
         private int After(DateTime time)
+        {
+            var count = MessagesNotAfter(time);
+
+            return count == 0 || _sequenceNumbers is null ? count : _sequenceNumbers[count - 1];
+        }
+
+        /// <summary>How many messages, in chat order, come before the first whose time or any earlier one's is after <paramref name="time"/>.</summary>
+        private int MessagesNotAfter(DateTime time)
         {
             // The first index whose running maximum is later than the time; every message before it is not.
             var low = 0;

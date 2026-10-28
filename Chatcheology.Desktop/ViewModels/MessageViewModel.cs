@@ -23,6 +23,7 @@ namespace Chatcheology.Desktop.ViewModels
     public sealed class MessageViewModel : ObservableObject
     {
         private bool _isFromLocalParticipant;
+        private DateOnly? _dateSeparator;
 
         internal MessageViewModel(
             ConversationMessage message,
@@ -41,11 +42,8 @@ namespace Chatcheology.Desktop.ViewModels
 
             TimeText = message.MessageDateTimeLocal.ToString("HH:mm", CultureInfo.CurrentCulture);
 
-            DateSeparatorText = dateSeparator is { } date
-                ? date.ToString("d MMMM yyyy", CultureInfo.CurrentCulture)
-                : string.Empty;
-
-            HasDateSeparator = dateSeparator is not null;
+            Day = DateOnly.FromDateTime(message.MessageDateTimeLocal);
+            _dateSeparator = dateSeparator;
 
             // The placeholder text is the export's marker for an omitted item, not something the
             // sender wrote, so the attachment card stands in its place rather than beneath it.
@@ -152,11 +150,32 @@ namespace Chatcheology.Desktop.ViewModels
         /// <summary>Whether the stored content is the export's media placeholder marker.</summary>
         public bool IsPlaceholderOnly { get; }
 
+        /// <summary>The message's local calendar day.</summary>
+        public DateOnly Day { get; }
+
         /// <summary>Whether this message begins a new calendar day on the page.</summary>
-        public bool HasDateSeparator { get; }
+        public bool HasDateSeparator => _dateSeparator is not null;
 
         /// <summary>The separator's text, or empty.</summary>
-        public string DateSeparatorText { get; }
+        public string DateSeparatorText => SeparatorText(_dateSeparator);
+
+        /// <summary>The words of a date separator, such as "6 April 2026"; empty for none.</summary>
+        internal static string SeparatorText(DateOnly? day) =>
+            day is { } date ? date.ToString("d MMMM yyyy", CultureInfo.CurrentCulture) : string.Empty;
+
+        /// <summary>
+        /// Sets the date separator again, when memory rows (CH-42 step 5) are placed among the page's
+        /// messages: a day is announced once, by whichever row begins it.
+        /// </summary>
+        internal void SetDateSeparator(DateOnly? day)
+        {
+            if (_dateSeparator != day)
+            {
+                _dateSeparator = day;
+                OnPropertyChanged(nameof(HasDateSeparator));
+                OnPropertyChanged(nameof(DateSeparatorText));
+            }
+        }
 
         /// <summary>Whether the export system wrote this rather than a participant.</summary>
         public bool IsSystemMessage { get; }

@@ -540,6 +540,7 @@ namespace Chatcheology.Desktop.ViewModels
                 IsBusy = false;
                 await RefreshAsync(collectionID, entryID).ConfigureAwait(true);
                 StatusText = status;
+                FileChanged?.Invoke(this, EventArgs.Empty);
             }
             catch (PersonalMemoryValidationException exception)
             {
@@ -577,6 +578,44 @@ namespace Chatcheology.Desktop.ViewModels
         {
             await RefreshAsync(collectionID, entryID).ConfigureAwait(true);
             StatusText = "Memory saved.";
+            FileChanged?.Invoke(this, EventArgs.Empty);
+        }
+
+        /// <summary>
+        /// Raised after the memories file was changed here (a collection added or renamed, a memory saved
+        /// or deleted), so the conversation's memory layers can be read again (CH-42 step 5).
+        /// </summary>
+        public event EventHandler? FileChanged;
+
+        /// <summary>
+        /// Opens a personal memory in the form, opening the area first when it is closed: the Edit action
+        /// of the conversation's memory details (CH-42 step 5).
+        /// </summary>
+        internal async Task EditAsync(long entryID)
+        {
+            if (!IsOpen)
+            {
+                await OpenAsync().ConfigureAwait(true);
+            }
+            else if (Form is not null)
+            {
+                StatusText = "Finish or cancel the open memory first.";
+                return;
+            }
+
+            if (Collections.FirstOrDefault(c => c.Entries.Any(e => e.EntryID == entryID)) is not { } collection)
+            {
+                StatusText = "That memory is not in the memories file any more.";
+                return;
+            }
+
+            SelectedCollection = collection;
+            SelectedEntry = collection.Entries.First(e => e.EntryID == entryID);
+
+            if (EditEntryCommand.CanExecute(null))
+            {
+                await EditEntryAsync().ConfigureAwait(true);
+            }
         }
 
         internal static bool IsExpected(Exception exception) =>

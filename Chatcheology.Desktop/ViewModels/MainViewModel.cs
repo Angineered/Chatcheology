@@ -1,8 +1,12 @@
+using System.Collections.Concurrent;
 using System.Collections.ObjectModel;
 using System.Globalization;
 using System.Windows.Media;
+using Chatcheology.Archive;
 using Chatcheology.Data.Viewer;
 using Chatcheology.Desktop.Services;
+using Chatcheology.Mobile.Conversation;
+using Chatcheology.Mobile.Memories;
 
 namespace Chatcheology.Desktop.ViewModels
 {
@@ -14,9 +18,16 @@ namespace Chatcheology.Desktop.ViewModels
     /// <see cref="WorkspaceSession"/>, whose connection SQLite itself will not let anything write
     /// to. There is no confirm, replace, revoke or review action here; those belong to the phase
     /// that adds them deliberately, through the services that already exist for them.</para>
-    /// <para><strong>Nothing about the operator is remembered.</strong> The local-participant
-    /// selection lives in this object and nowhere else — not in the workspace, not in a settings
-    /// file, not in the registry — and goes when the workspace is closed.</para>
+    /// <para><strong>Nothing about the operator is remembered</strong>, with one exception. The
+    /// local-participant selection lives in this object and nowhere else — not in the workspace, not
+    /// in a settings file, not in the registry — and goes when the workspace is closed. The exception
+    /// is the memory layer switches and filters (CH-42 step 5), remembered per workspace in a small
+    /// local settings file keyed by a hash of the workspace path (<see cref="LayerSettings"/>).</para>
+    /// <para><strong>Memory layers (CH-42 step 5).</strong> With a layer on, the page also carries
+    /// memory rows from the memories file beside the workspace, placed among the messages by the phone's
+    /// own rules. They live in <see cref="Rows"/> beside the messages; <see cref="Messages"/> stays the
+    /// page's messages only, and with every layer off <see cref="Rows"/> is exactly those messages.
+    /// Selecting a memory row opens its details and never touches the review panel.</para>
     /// </remarks>
     public sealed class MainViewModel : ObservableObject
     {
@@ -37,6 +48,9 @@ namespace Chatcheology.Desktop.ViewModels
         /// </remarks>
         private Task _outstandingRead = Task.CompletedTask;
 
+        /// <summary>The memory layers' read of the message times (CH-42 step 5), awaited the same way.</summary>
+        private Task _layersRead = Task.CompletedTask;
+
         private ConversationSummary? _selectedConversation;
         private ConversationParticipantSummary? _localParticipant;
         private ConversationPage? _page;
@@ -49,6 +63,20 @@ namespace Chatcheology.Desktop.ViewModels
         private bool _hasLowQualityCopies;
         private bool _showLowQualityCopies;
         private bool _showDetails;
+
+        // Memory layers (CH-42 step 5).
+        private readonly LayerSettings _layerSettings;
+        private ConcurrentDictionary<string, ImageSource?> _images = new(StringComparer.OrdinalIgnoreCase);
+        private LoadedMemoryLayers _memoryLayers = LoadedMemoryLayers.None;
+        private MemoryLayout _layout = MemoryLayout.Empty;
+        private ConversationMessageTimes? _messageTimes;
+        private long? _messageTimesFor;
+        private int _layersVersion;
+        private int _composeVersion;
+        private bool _isLayersOpen;
+        private string _layersNote = string.Empty;
+        private MemoryDetailsViewModel? _memoryDetails;
+        private MemoryRowViewModel? _selectedMemoryRow;
 
         /// <summary>
         /// Creates the viewer.
@@ -70,15 +98,19 @@ namespace Chatcheology.Desktop.ViewModels
         /// <param name="archiveOperations">Counting, exporting and checking; a seam for tests.</param>
         /// <param name="memoriesDialogs">The Memories area's dialogs (CH-42 step 4).</param>
         /// <param name="memoriesBackend">The memories file and messages for a context; a seam for tests.</param>
+        /// <param name="layerSettings">Where layer choices are remembered (CH-42 step 5); the default file when null.</param>
         internal MainViewModel(
             Func<string?> chooseWorkspace,
             ArchiveDialogs archiveDialogs,
             IArchiveOperations archiveOperations,
             MemoriesDialogs? memoriesDialogs = null,
-            Func<MemoriesContext, MemoriesBackend>? memoriesBackend = null)
+            Func<MemoriesContext, MemoriesBackend>? memoriesBackend = null,
+            LayerSettings? layerSettings = null)
         {
             _chooseWorkspace = chooseWorkspace
                 ?? throw new ArgumentNullException(nameof(chooseWorkspace));
+
+            _layerSettings = layerSettings ?? new LayerSettings();
 
             Review = new AttachmentReviewViewModel(
                 () => _session?.DatabasePath ?? string.Empty,
@@ -107,6 +139,14 @@ namespace Chatcheology.Desktop.ViewModels
                 }
             };
 
+            // A save, rename or delete in the Memories area shows in the conversation at once.
+            Memories.FileChanged += (_, _) => _ = ReloadLayersAsync();
+
+            CloseMemoryDetailsCommand = new RelayCommand(CloseMemoryDetails, () => MemoryDetails is not null);
+            EditMemoryCommand = new AsyncRelayCommand(
+                EditMemoryAsync,
+                () => MemoryDetails?.IsPersonal == true && !Archive.IsRunning && !Review.IsBusy);
+
             // A decision in flight holds the archive commands off, and they are told when it ends.
             Review.PropertyChanged += (_, e) =>
             {
@@ -114,6 +154,7 @@ namespace Chatcheology.Desktop.ViewModels
                 {
                     Archive.RaiseCommandStates();
                     Memories.RaiseCommandStates();
+                    EditMemoryCommand?.RaiseCanExecuteChanged();
                 }
             };
 
@@ -124,6 +165,7 @@ namespace Chatcheology.Desktop.ViewModels
                 Review.AreDecisionsSuspended = Archive.IsRunning;
                 OpenWorkspaceCommand?.RaiseCanExecuteChanged();
                 Memories.RaiseCommandStates();
+                EditMemoryCommand?.RaiseCanExecuteChanged();
             };
 
             OpenWorkspaceCommand = new AsyncRelayCommand(OpenWorkspaceAsync, () => !Archive.IsRunning);
@@ -153,6 +195,75 @@ namespace Chatcheology.Desktop.ViewModels
 
         /// <summary>The messages of the page currently on screen.</summary>
         public ObservableCollection<MessageViewModel> Messages { get; } = [];
+
+        /// <summary>
+        /// What the conversation list shows: the page's messages and, with a memory layer on, its memory
+        /// rows among them (CH-42 step 5). With every layer off, exactly <see cref="Messages"/>.
+        /// </summary>
+        public ObservableCollection<object> Rows { get; } = [];
+
+        /// <summary>One switch per memory collection, with an imported one's filters (CH-42 step 5).</summary>
+        public ObservableCollection<MemoryLayerViewModel> Layers { get; } = [];
+
+        /// <summary>Whether the Layers control has anything to offer.</summary>
+        public bool HasLayers => Layers.Count > 0 || LayersNote.Length > 0;
+
+        /// <summary>Whether the Layers control is open.</summary>
+        public bool IsLayersOpen
+        {
+            get => _isLayersOpen;
+            set => SetProperty(ref _isLayersOpen, value);
+        }
+
+        /// <summary>
+        /// Why a layer is not offered (an imported collection needs "Show as"), or why there are none (the
+        /// memories file could not be read); empty otherwise.
+        /// </summary>
+        public string LayersNote
+        {
+            get => _layersNote;
+            private set
+            {
+                if (SetProperty(ref _layersNote, value))
+                {
+                    OnPropertyChanged(nameof(HasLayersNote));
+                    OnPropertyChanged(nameof(HasLayers));
+                }
+            }
+        }
+
+        /// <summary>Whether there is a note.</summary>
+        public bool HasLayersNote => LayersNote.Length > 0;
+
+        /// <summary>The selected memory row's details, or <see langword="null"/> when none is open.</summary>
+        public MemoryDetailsViewModel? MemoryDetails
+        {
+            get => _memoryDetails;
+            private set
+            {
+                if (SetProperty(ref _memoryDetails, value))
+                {
+                    OnPropertyChanged(nameof(IsMemoryDetailsOpen));
+                    CloseMemoryDetailsCommand.RaiseCanExecuteChanged();
+                    EditMemoryCommand.RaiseCanExecuteChanged();
+                }
+            }
+        }
+
+        /// <summary>Whether the memory details area is showing.</summary>
+        public bool IsMemoryDetailsOpen => MemoryDetails is not null;
+
+        /// <summary>Closes the memory details.</summary>
+        public RelayCommand CloseMemoryDetailsCommand { get; }
+
+        /// <summary>Opens the selected personal memory in the Memories area's form (CH-42 step 4).</summary>
+        public AsyncRelayCommand EditMemoryCommand { get; }
+
+        /// <summary>The memory layers as read; for tests.</summary>
+        internal LoadedMemoryLayers MemoryLayers => _memoryLayers;
+
+        /// <summary>The last reload of the memory layers (for tests to wait on).</summary>
+        internal Task LayersLoad { get; private set; } = Task.CompletedTask;
 
         /// <summary>The review panel, open or closed.</summary>
         public AttachmentReviewViewModel Review { get; }
@@ -218,9 +329,18 @@ namespace Chatcheology.Desktop.ViewModels
                     Participants.Add(participant);
                 }
 
-                LocalParticipant = null;
+                // As the property would, without a second layer reload: the one below covers it.
+                if (_localParticipant is not null)
+                {
+                    _localParticipant = null;
+                    OnPropertyChanged(nameof(LocalParticipant));
+                    ApplyAlignment();
+                }
+
+                ResetLayers();
 
                 _ = NavigateAsync(PageDirection.First, 0);
+                _ = ReloadLayersAsync();
             }
         }
 
@@ -240,6 +360,9 @@ namespace Chatcheology.Desktop.ViewModels
                 if (SetProperty(ref _localParticipant, value))
                 {
                     ApplyAlignment();
+
+                    // Imported memory items name the participants by role: Local is this one.
+                    _ = ReloadLayersAsync();
                 }
             }
         }
@@ -447,6 +570,9 @@ namespace Chatcheology.Desktop.ViewModels
             Participants.Clear();
             Conversations.Clear();
 
+            ResetLayers();
+            Rows.Clear();
+
             _page = null;
             _selectedConversation = null;
             _localParticipant = null;
@@ -557,8 +683,13 @@ namespace Chatcheology.Desktop.ViewModels
                 var brushes = BuildBrushes(SelectedConversation);
                 var showLowQualityCopies = ShowLowQualityCopies;
 
-                var built = await Task
-                    .Run(() => Build(loaded, brushes, showLowQualityCopies), navigation.Token)
+                var layout = _layout;
+                var images = _images;
+
+                var (built, memoryRows) = await Task
+                    .Run(
+                        () => (Build(loaded, brushes, showLowQualityCopies), BuildMemoryRows(loaded.Page, layout, images)),
+                        navigation.Token)
                     .ConfigureAwait(true);
 
                 if (navigation.IsCancellationRequested)
@@ -579,6 +710,15 @@ namespace Chatcheology.Desktop.ViewModels
                 }
 
                 ApplyAlignment();
+
+                _composeVersion++;
+                ComposeRows(memoryRows);
+
+                // The layers changed while the page was read: place the current ones.
+                if (!ReferenceEquals(layout, _layout))
+                {
+                    _ = ComposeAsync();
+                }
 
                 if (isMove)
                 {
@@ -669,7 +809,17 @@ namespace Chatcheology.Desktop.ViewModels
                 // Finished either way. Whatever it was, it is no longer holding anything.
             }
 
+            try
+            {
+                await _layersRead.ConfigureAwait(true);
+            }
+            catch
+            {
+                // The same for the memory layers' read of the message times.
+            }
+
             _outstandingRead = Task.CompletedTask;
+            _layersRead = Task.CompletedTask;
         }
 
         /// <summary>
@@ -809,6 +959,361 @@ namespace Chatcheology.Desktop.ViewModels
                 await OpenReviewAsync(attachment).ConfigureAwait(true);
             }
         }
+
+        // -----------------------------------------------------------------------------------
+        // Memory layers (CH-42 step 5).
+        // -----------------------------------------------------------------------------------
+
+        /// <summary>Forgets the layers of the conversation that was open.</summary>
+        private void ResetLayers()
+        {
+            _layersVersion++;
+            _composeVersion++;
+            _memoryLayers = LoadedMemoryLayers.None;
+            _layout = MemoryLayout.Empty;
+            _messageTimes = null;
+            _messageTimesFor = null;
+            _images = new ConcurrentDictionary<string, ImageSource?>(StringComparer.OrdinalIgnoreCase);
+            _selectedMemoryRow = null;
+            MemoryDetails = null;
+            IsLayersOpen = false;
+            Layers.Clear();
+            LayersNote = string.Empty;
+            OnPropertyChanged(nameof(HasLayers));
+        }
+
+        /// <summary>
+        /// Reads the memories file again (the conversation, "Show as" or the file changed), then places
+        /// the visible rows on the page. Read only; the workspace is read for the message times once per
+        /// conversation, through the session like every other read.
+        /// </summary>
+        internal Task ReloadLayersAsync()
+        {
+            var task = ReloadLayersCoreAsync();
+            LayersLoad = task;
+
+            return task;
+        }
+
+        private async Task ReloadLayersCoreAsync()
+        {
+            if (_session is not { } session || SelectedConversation is not { } conversation)
+            {
+                return;
+            }
+
+            var version = ++_layersVersion;
+            var local = LocalParticipant?.ParticipantID;
+
+            try
+            {
+                if (_messageTimes is null || _messageTimesFor != conversation.ConversationID)
+                {
+                    var read = session.ReadMessageTimesAsync(conversation.ConversationID, CancellationToken.None);
+                    Track(read);
+
+                    var times = await read.ConfigureAwait(true);
+
+                    if (version != _layersVersion)
+                    {
+                        return;
+                    }
+
+                    _messageTimes = times;
+                    _messageTimesFor = conversation.ConversationID;
+                }
+
+                var messageTimes = _messageTimes;
+                var path = session.DatabasePath;
+
+                var loaded = await Task
+                    .Run(() => MemoryLayerSource.Load(path, conversation, local, messageTimes))
+                    .ConfigureAwait(true);
+
+                if (version != _layersVersion)
+                {
+                    return;
+                }
+
+                _memoryLayers = loaded;
+                _images = new ConcurrentDictionary<string, ImageSource?>(StringComparer.OrdinalIgnoreCase);
+
+                BuildLayerChoices(path);
+
+                // Open details follow the file: refreshed when the entry is still there, closed when not.
+                if (MemoryDetails is { } open)
+                {
+                    ShowMemoryDetails(open.Key);
+                }
+
+                await ApplyLayoutAsync().ConfigureAwait(true);
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException and not ObjectDisposedException)
+            {
+                if (version == _layersVersion)
+                {
+                    LayersNote = "The memory layers could not be read (" + exception.GetType().Name + ").";
+                }
+            }
+            catch (Exception)
+            {
+                // The workspace closed under the read; a later reload owns the layers.
+            }
+        }
+
+        /// <summary>The switches and filters, from the collections and the remembered choices.</summary>
+        private void BuildLayerChoices(string workspacePath)
+        {
+            var choices = _layerSettings.Read(workspacePath);
+
+            Layers.Clear();
+
+            foreach (var collection in _memoryLayers.Index.Collections)
+            {
+                var shown = choices.Layers.TryGetValue(collection.CollectionID, out var chosen)
+                    ? chosen
+                    : collection.ShownByDefault;
+
+                IReadOnlyList<(string, bool)> filters = MemoryIndex.HasFilters(collection)
+                    ? MemoryFilters.All.Select(f => (f, !choices.FiltersOff.Contains((collection.CollectionID, f)))).ToList()
+                    : [];
+
+                Layers.Add(new MemoryLayerViewModel(collection.CollectionID, collection.Name, shown, filters, OnLayerChanged));
+            }
+
+            LayersNote = _memoryLayers.Problem
+                         ?? (_memoryLayers.Unnamed.Count == 0
+                             ? string.Empty
+                             : string.Join(", ", _memoryLayers.Unnamed.Select(c => c.Name)) +
+                               ": choose “Show as” to show it. Its items name the conversation's two participants.");
+
+            OnPropertyChanged(nameof(HasLayers));
+        }
+
+        /// <summary>A switch or filter moved: remember it for this workspace and place the rows again.</summary>
+        private void OnLayerChanged()
+        {
+            if (_session is { } session)
+            {
+                var defaults = _memoryLayers.Index.Collections.ToDictionary(c => c.CollectionID, c => c.ShownByDefault);
+                var previous = _layerSettings.Read(session.DatabasePath);
+                var layers = new Dictionary<long, bool>(previous.Layers);
+
+                foreach (var layer in Layers)
+                {
+                    if (defaults.TryGetValue(layer.CollectionID, out var byDefault) && layer.IsShown == byDefault)
+                    {
+                        layers.Remove(layer.CollectionID);
+                    }
+                    else
+                    {
+                        layers[layer.CollectionID] = layer.IsShown;
+                    }
+                }
+
+                var off = previous.FiltersOff
+                    .Where(f => Layers.All(l => l.CollectionID != f.CollectionID))
+                    .Concat(Layers.SelectMany(l => l.Filters).Where(f => !f.IsOn).Select(f => (f.CollectionID, f.Filter)))
+                    .ToHashSet();
+
+                _layerSettings.Write(session.DatabasePath, new LayerChoices(layers, off));
+            }
+
+            _ = ApplyLayoutAsync();
+        }
+
+        /// <summary>Which rows are visible now, from the switches and filters.</summary>
+        internal MemoryView CurrentView() => new(
+            Layers.Where(l => l.IsShown).Select(l => l.CollectionID),
+            Layers.SelectMany(l => l.Filters).Where(f => !f.IsOn).Select(f => (f.CollectionID, f.Filter)));
+
+        private Task ApplyLayoutAsync()
+        {
+            _layout = _memoryLayers.Index.Layout(CurrentView());
+
+            return ComposeAsync();
+        }
+
+        /// <summary>Places the current layout's rows on the page on screen, without reading the workspace.</summary>
+        private async Task ComposeAsync()
+        {
+            var version = ++_composeVersion;
+            var page = _page;
+            var layout = _layout;
+            var images = _images;
+
+            var memoryRows = page is null || layout.IsEmpty
+                ? []
+                : await Task.Run(() => BuildMemoryRows(page, layout, images)).ConfigureAwait(true);
+
+            if (version != _composeVersion || !ReferenceEquals(page, _page))
+            {
+                return;
+            }
+
+            ComposeRows(memoryRows);
+        }
+
+        /// <summary>The memory rows of a page: those after its messages, and before the first for the page that starts the chat.</summary>
+        private static List<MemoryRowViewModel> BuildMemoryRows(
+            ConversationPage page, MemoryLayout layout, ConcurrentDictionary<string, ImageSource?> images)
+        {
+            if (layout.IsEmpty || page.FirstSequenceNumber is not { } first || page.LastSequenceNumber is not { } last)
+            {
+                return [];
+            }
+
+            return layout
+                .Between(page.HasEarlier ? first : 0, last)
+                .Select(placement => new MemoryRowViewModel(placement, images))
+                .ToList();
+        }
+
+        /// <summary>
+        /// Fills <see cref="Rows"/>: each memory row after the message it follows (rows before the first
+        /// message first), and a date separator on whichever row begins a day. With no memory row this is
+        /// the messages with the separators they were built with.
+        /// </summary>
+        private void ComposeRows(IReadOnlyList<MemoryRowViewModel> memoryRows)
+        {
+            var rows = new List<object>(Messages.Count + memoryRows.Count);
+            DateOnly? day = null;
+            var next = 0;
+
+            void AddMemoriesUpTo(int sequenceNumber)
+            {
+                while (next < memoryRows.Count && memoryRows[next].After <= sequenceNumber)
+                {
+                    var row = memoryRows[next++];
+                    row.SetDateSeparator(row.Day != day ? row.Day : null);
+                    row.IsSelected = _selectedMemoryRow is { } selected && selected.Key == row.Key;
+                    day = row.Day;
+                    rows.Add(row);
+                }
+            }
+
+            if (Messages.Count > 0)
+            {
+                AddMemoriesUpTo(Messages[0].SequenceNumber - 1);
+            }
+
+            foreach (var message in Messages)
+            {
+                message.SetDateSeparator(message.Day != day ? message.Day : null);
+                day = message.Day;
+                rows.Add(message);
+
+                AddMemoriesUpTo(message.SequenceNumber);
+            }
+
+            Rows.Clear();
+
+            foreach (var row in rows)
+            {
+                Rows.Add(row);
+            }
+
+            if (_selectedMemoryRow is { } current)
+            {
+                _selectedMemoryRow = rows.OfType<MemoryRowViewModel>().FirstOrDefault(r => r.Key == current.Key) ?? current;
+            }
+        }
+
+        /// <summary>
+        /// Selects a memory row and shows its details. Nothing else changes: no message is selected and
+        /// the review panel stays as it is.
+        /// </summary>
+        public void SelectMemoryRow(MemoryRowViewModel row)
+        {
+            ArgumentNullException.ThrowIfNull(row);
+
+            foreach (var other in Rows.OfType<MemoryRowViewModel>())
+            {
+                other.IsSelected = ReferenceEquals(other, row);
+            }
+
+            _selectedMemoryRow = row;
+            ShowMemoryDetails(row.Key);
+        }
+
+        private void ShowMemoryDetails(MemoryKey key)
+        {
+            var index = _memoryLayers.Index;
+
+            if (index.Details(key) is not { } details)
+            {
+                CloseMemoryDetails();
+
+                return;
+            }
+
+            var isPersonal = index.CollectionOf(key.EntryID)?.Kind == ArchiveMemoryVocabulary.KindPersonal;
+            MemoryDetails = new MemoryDetailsViewModel(details, isPersonal, _images);
+        }
+
+        private void CloseMemoryDetails()
+        {
+            foreach (var row in Rows.OfType<MemoryRowViewModel>())
+            {
+                row.IsSelected = false;
+            }
+
+            _selectedMemoryRow = null;
+            MemoryDetails = null;
+        }
+
+        /// <summary>Opens the shown personal memory in the Memories area's form.</summary>
+        private async Task EditMemoryAsync()
+        {
+            if (MemoryDetails is not { IsPersonal: true } details)
+            {
+                return;
+            }
+
+            await Memories.EditAsync(details.Key.EntryID).ConfigureAwait(true);
+        }
+
+        /// <summary>
+        /// Follows a link in the details: a message link goes to the page that starts at that message; an
+        /// entry link goes to that memory's row and shows its details, when its layer is on.
+        /// </summary>
+        public async Task FollowMemoryLinkAsync(MemoryLinkLine link)
+        {
+            ArgumentNullException.ThrowIfNull(link);
+
+            if (link.SequenceNumber is { } sequence)
+            {
+                await NavigateAsync(PageDirection.From, sequence).ConfigureAwait(true);
+                StatusText = "Showing the linked message.";
+
+                return;
+            }
+
+            if (link.EntryID is not { } entryID)
+            {
+                return;
+            }
+
+            if (_memoryLayers.Index.FirstRowOf(entryID, CurrentView()) is not { } key
+                || _layout.Find(key) is not { } placement)
+            {
+                StatusText = "The linked memory is in a layer that is switched off.";
+
+                return;
+            }
+
+            await NavigateAsync(
+                placement.After == 0 ? PageDirection.First : PageDirection.From,
+                placement.After).ConfigureAwait(true);
+
+            if (Rows.OfType<MemoryRowViewModel>().FirstOrDefault(r => r.Key == key) is { } row)
+            {
+                SelectMemoryRow(row);
+            }
+        }
+
+        /// <summary>Records a read of the session so a decision waits for it before the session closes.</summary>
+        private void Track(Task read) => _layersRead = read;
 
         // -----------------------------------------------------------------------------------
         // Building the page.

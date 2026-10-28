@@ -66,6 +66,33 @@ namespace Chatcheology.Mobile.Memories
             return type + " trophy #" + itemId;
         }
 
+        /// <summary>The details' heading over the trophies.</summary>
+        public const string ItemsHeading = "Trophies";
+
+        /// <summary>The details' heading over the day evidence.</summary>
+        public const string DayHeading = "This day";
+
+        /// <summary>The details' heading over a personal memory's links.</summary>
+        public const string LinksHeading = "Linked";
+
+        /// <summary>
+        /// The line over the day's periods: "Periods this day:" for a "different times" line (no period
+        /// chosen), otherwise "Other periods this day:".
+        /// </summary>
+        public static string OtherPeriodsHeading(bool forPeriod) =>
+            forPeriod ? "Other periods this day:" : "Periods this day:";
+
+        /// <summary>A trophy's second line in the details: "20:18:03 · Alex", with " · hidden trophy" when the source marks it hidden.</summary>
+        public static string ItemMeta(MemoryItemLine item)
+        {
+            ArgumentNullException.ThrowIfNull(item);
+
+            return item.TimeText + " · " + item.ParticipantName + (item.IsHidden ? " · hidden trophy" : string.Empty);
+        }
+
+        /// <summary>The details' source line, "Source: PSN trophies".</summary>
+        public static string SourceLine(string source) => "Source: " + source;
+
         /// <summary>An exact time as the details show it, to the second.</summary>
         public static string ExactTime(DateTime local) => local.ToString("HH:mm:ss", CultureInfo.CurrentCulture);
 

@@ -253,6 +253,122 @@
                 </Border>
             </StackPanel>
         </DataTemplate>
+
+        <!-- A memory row (CH-42 step 5): never a message. Centred, lilac and framed, unlike bubbles
+             and the date separator; the content and wording are the phone's own rows. A click opens
+             the memory's details; it selects no message and leaves the review panel alone. -->
+        <Style x:Key="MemoryCardFrame" TargetType="Border">
+            <Setter Property="BorderBrush" Value="#FF6A4C9C" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Background" Value="#FFF1ECFA" />
+            <Setter Property="CornerRadius" Value="10" />
+            <Setter Property="HorizontalAlignment" Value="Center" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="ToolTip" Value="Show this memory's details" />
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding IsSelected}" Value="True">
+                    <Setter Property="BorderThickness" Value="2.5" />
+                    <Setter Property="Background" Value="#FFE4DAF5" />
+                </DataTrigger>
+            </Style.Triggers>
+        </Style>
+
+        <!-- The muted "different times" line keeps its plain look; selected, it is tinted. -->
+        <Style x:Key="MemoryLineFrame" TargetType="Border">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="CornerRadius" Value="6" />
+            <Setter Property="HorizontalAlignment" Value="Center" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="ToolTip" Value="Show this memory's details" />
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding IsSelected}" Value="True">
+                    <Setter Property="Background" Value="#FFE4DAF5" />
+                </DataTrigger>
+            </Style.Triggers>
+        </Style>
+
+        <DataTemplate DataType="{x:Type vm:MemoryRowViewModel}">
+            <StackPanel>
+                <Border Margin="0,12,0,8" Padding="10,3" CornerRadius="9"
+                        Background="#FFDDD7CC" HorizontalAlignment="Center"
+                        Visibility="{Binding HasDateSeparator,
+                            Converter={StaticResource BoolToVisibility}}">
+                    <TextBlock Text="{Binding DateSeparatorText}" FontSize="11"
+                               Foreground="#FF3C3C3C" />
+                </Border>
+
+                <!-- A PSN period card. -->
+                <Border Style="{StaticResource MemoryCardFrame}" MaxWidth="420" Margin="40,6" Padding="10,8"
+                        MouseLeftButtonUp="MemoryRowClick"
+                        Visibility="{Binding IsPeriodCard, Converter={StaticResource BoolToVisibility}}">
+                    <DockPanel>
+                        <Image Source="{Binding Image}" Width="56" Height="56" Margin="0,0,10,0"
+                               VerticalAlignment="Top" Stretch="Uniform" DockPanel.Dock="Left"
+                               Visibility="{Binding HasImage, Converter={StaticResource BoolToVisibility}}" />
+                        <StackPanel>
+                            <TextBlock Text="{Binding Title}" FontWeight="SemiBold" TextWrapping="Wrap" />
+                            <TextBlock Text="{Binding DateText}" FontSize="11" Foreground="#FF6A6A6A" />
+                            <ItemsControl ItemsSource="{Binding Lines}" Margin="0,2,0,0">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <TextBlock Text="{Binding}" FontSize="12" TextWrapping="Wrap" />
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                            <TextBlock Text="{Binding LabelText}" FontSize="11" Foreground="#FF6A4C9C"
+                                       Margin="0,2,0,0" />
+                            <TextBlock Text="{Binding SourceText}" FontSize="10" Foreground="#FF6A6A6A"
+                                       Visibility="{Binding HasSource, Converter={StaticResource BoolToVisibility}}" />
+                        </StackPanel>
+                    </DockPanel>
+                </Border>
+
+                <!-- A personal memory at its start (a range shows one card). -->
+                <Border Style="{StaticResource MemoryCardFrame}" Width="300" Margin="40,6" Padding="0,0,0,8"
+                        MouseLeftButtonUp="MemoryRowClick"
+                        Visibility="{Binding IsEntryCard, Converter={StaticResource BoolToVisibility}}">
+                    <StackPanel>
+                        <Image Source="{Binding Image}" MaxHeight="170" Stretch="Uniform"
+                               Visibility="{Binding HasImage, Converter={StaticResource BoolToVisibility}}" />
+                        <TextBlock Text="{Binding CollectionName}" FontSize="10" Foreground="#FF6A4C9C"
+                                   Margin="10,6,10,0" />
+                        <TextBlock Text="{Binding Title}" FontWeight="SemiBold" Margin="10,0"
+                                   TextWrapping="Wrap" />
+                        <TextBlock Text="{Binding DateText}" FontSize="11" Foreground="#FF6A6A6A"
+                                   Margin="10,0" TextWrapping="Wrap" />
+                        <TextBlock Text="{Binding Summary}" FontSize="12" Margin="10,2,10,0"
+                                   TextWrapping="Wrap" MaxHeight="72" TextTrimming="CharacterEllipsis"
+                                   Visibility="{Binding HasSummary, Converter={StaticResource BoolToVisibility}}" />
+                        <TextBlock Text="{Binding SourceText}" FontSize="10" Foreground="#FF6A6A6A"
+                                   Margin="10,2,10,0"
+                                   Visibility="{Binding HasSource, Converter={StaticResource BoolToVisibility}}" />
+                    </StackPanel>
+                </Border>
+
+                <!-- The muted "different times" line: not a claim of simultaneous play. -->
+                <Border Style="{StaticResource MemoryLineFrame}" MaxWidth="460" Margin="40,2" Padding="8,2"
+                        MouseLeftButtonUp="MemoryRowClick"
+                        Visibility="{Binding IsDifferentTimes, Converter={StaticResource BoolToVisibility}}">
+                    <TextBlock Text="{Binding Text}" FontSize="11" FontStyle="Italic" Foreground="#FF6A6A6A"
+                               TextWrapping="Wrap" TextAlignment="Center" />
+                </Border>
+            </StackPanel>
+        </DataTemplate>
+
+        <!-- One trophy in the memory details: icon, name (or "Bronze trophy #12"), time and whose. -->
+        <DataTemplate x:Key="MemoryItemTemplate" DataType="{x:Type vm:MemoryItemViewModel}">
+            <DockPanel Margin="0,3">
+                <Image Source="{Binding Icon}" Width="36" Height="36" Margin="0,0,8,0"
+                       VerticalAlignment="Top" DockPanel.Dock="Left"
+                       Visibility="{Binding HasIcon, Converter={StaticResource BoolToVisibility}}" />
+                <StackPanel>
+                    <TextBlock Text="{Binding Name}" FontWeight="SemiBold" TextWrapping="Wrap" />
+                    <TextBlock Text="{Binding Meta}" FontSize="11" Foreground="#FF6A6A6A" TextWrapping="Wrap" />
+                    <TextBlock Text="{Binding Detail}" FontSize="11" TextWrapping="Wrap"
+                               Visibility="{Binding HasDetail, Converter={StaticResource BoolToVisibility}}" />
+                </StackPanel>
+            </DockPanel>
+        </DataTemplate>
     </Window.Resources>
 
     <DockPanel>
@@ -797,6 +913,88 @@
             </DockPanel>
         </Border>
 
+        <!-- Memory details (CH-42 step 5): what the selected memory row holds, with the phone's
+             headings. Docked right like the review panel, and independent of it: opening it selects
+             no message and changes no review. A message link moves the conversation; Edit opens a
+             personal memory in the Memories area's form. -->
+        <Border DockPanel.Dock="Right" Width="360" Background="#FFF7F6F3"
+                BorderBrush="#FFCFC8BC" BorderThickness="1,0,0,0" Padding="10"
+                Visibility="{Binding IsMemoryDetailsOpen, Converter={StaticResource BoolToVisibility}}">
+            <DockPanel>
+                <DockPanel DockPanel.Dock="Top" LastChildFill="False" Margin="0,0,0,8">
+                    <TextBlock Text="{Binding MemoryDetails.CollectionName, FallbackValue=''}" FontWeight="Bold"
+                               FontSize="13" DockPanel.Dock="Left" VerticalAlignment="Center" />
+                    <Button Content="Close" Padding="8,2" DockPanel.Dock="Right"
+                            Command="{Binding CloseMemoryDetailsCommand}" />
+                    <Button Content="Edit…" Padding="8,2" Margin="0,0,6,0" DockPanel.Dock="Right"
+                            Command="{Binding EditMemoryCommand}"
+                            Visibility="{Binding MemoryDetails.IsPersonal, FallbackValue=Collapsed,
+                                Converter={StaticResource BoolToVisibility}}" />
+                </DockPanel>
+
+                <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                    <StackPanel x:Name="MemoryDetailsBody" DataContext="{Binding MemoryDetails}">
+                        <Image Source="{Binding Image}" MaxHeight="200" Stretch="Uniform"
+                               HorizontalAlignment="Left" Margin="0,0,0,6"
+                               Visibility="{Binding HasImage, Converter={StaticResource BoolToVisibility}}" />
+                        <TextBlock Text="{Binding Title}" FontSize="15" FontWeight="SemiBold" TextWrapping="Wrap" />
+                        <TextBlock Text="{Binding DateText}" FontSize="11" Foreground="#FF6A6A6A" TextWrapping="Wrap" />
+                        <TextBlock Text="{Binding Summary}" Margin="0,6,0,0" TextWrapping="Wrap"
+                                   Visibility="{Binding HasSummary, Converter={StaticResource BoolToVisibility}}" />
+                        <ItemsControl ItemsSource="{Binding Lines}" Margin="0,6,0,0">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <TextBlock Text="{Binding}" TextWrapping="Wrap" />
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+
+                        <StackPanel Visibility="{Binding HasItems, Converter={StaticResource BoolToVisibility}}">
+                            <TextBlock Text="{Binding ItemsHeading}" FontWeight="SemiBold" Margin="0,10,0,2" />
+                            <ItemsControl ItemsSource="{Binding Items}"
+                                          ItemTemplate="{StaticResource MemoryItemTemplate}" />
+                        </StackPanel>
+
+                        <StackPanel Visibility="{Binding HasDayEvidence, Converter={StaticResource BoolToVisibility}}">
+                            <TextBlock Text="{Binding DayHeading}" FontWeight="SemiBold" Margin="0,10,0,2" />
+                            <TextBlock Text="{Binding DayEvidenceText}" TextWrapping="Wrap" />
+                        </StackPanel>
+
+                        <StackPanel Visibility="{Binding HasOtherPeriods, Converter={StaticResource BoolToVisibility}}">
+                            <TextBlock Text="{Binding OtherPeriodsHeading}" FontSize="11" Foreground="#FF6A6A6A"
+                                       Margin="0,6,0,2" />
+                            <ItemsControl ItemsSource="{Binding OtherPeriods}">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <TextBlock Text="{Binding}" FontSize="12" TextWrapping="Wrap" />
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </StackPanel>
+
+                        <StackPanel Visibility="{Binding HasLinks, Converter={StaticResource BoolToVisibility}}">
+                            <TextBlock Text="{Binding LinksHeading}" FontWeight="SemiBold" Margin="0,10,0,2" />
+                            <ItemsControl ItemsSource="{Binding Links}">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <TextBlock Margin="0,2" TextWrapping="Wrap">
+                                            <Hyperlink Click="MemoryLinkClick">
+                                                <Run Text="{Binding Text, Mode=OneWay}" />
+                                            </Hyperlink>
+                                        </TextBlock>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </StackPanel>
+
+                        <TextBlock Text="{Binding SourceLine}" FontSize="11" Foreground="#FF6A6A6A"
+                                   Margin="0,10,0,0" TextWrapping="Wrap"
+                                   Visibility="{Binding HasSource, Converter={StaticResource BoolToVisibility}}" />
+                    </StackPanel>
+                </ScrollViewer>
+            </DockPanel>
+        </Border>
+
         <!-- Conversation.
 
              The ItemsControl carries its own ScrollViewer with CanContentScroll set, so its
@@ -814,10 +1012,56 @@
              does that when the view-model raises MovedToPage. The review panel opening and
              closing does not move the list. -->
         <DockPanel>
-            <TextBlock Text="{Binding ConversationTitle}" FontSize="13" FontWeight="SemiBold"
-                       Margin="12,8" DockPanel.Dock="Top" TextTrimming="CharacterEllipsis" />
+            <!-- Conversation header: the title, and the memory layers (CH-42 step 5) when the memories
+                 file beside the workspace has any. Switches and filters are remembered per workspace,
+                 never in the workspace or the memories file. -->
+            <DockPanel DockPanel.Dock="Top" Margin="12,8" LastChildFill="True">
+                <Grid DockPanel.Dock="Right"
+                      Visibility="{Binding HasLayers, Converter={StaticResource BoolToVisibility}}">
+                    <ToggleButton x:Name="LayersButton" Content="Layers" Padding="10,2"
+                                  IsChecked="{Binding IsLayersOpen}"
+                                  ToolTip="Memory layers shown among the messages" />
+                    <Popup x:Name="LayersPopup" IsOpen="{Binding IsLayersOpen}"
+                           PlacementTarget="{Binding ElementName=LayersButton}"
+                           Placement="Bottom" StaysOpen="False" AllowsTransparency="True">
+                        <Border Background="#FFF7F6F3" BorderBrush="#FFCFC8BC" BorderThickness="1"
+                                Padding="10" MinWidth="240" MaxWidth="360">
+                            <StackPanel>
+                                <TextBlock Text="Memory layers" FontWeight="SemiBold" Margin="0,0,0,6" />
+                                <ItemsControl ItemsSource="{Binding Layers}">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate DataType="{x:Type vm:MemoryLayerViewModel}">
+                                            <StackPanel Margin="0,2,0,4">
+                                                <CheckBox Content="{Binding Name}" IsChecked="{Binding IsShown}" />
+                                                <ItemsControl ItemsSource="{Binding Filters}" Margin="20,2,0,0"
+                                                              IsEnabled="{Binding IsShown}"
+                                                              Visibility="{Binding HasFilters,
+                                                                  Converter={StaticResource BoolToVisibility}}">
+                                                    <ItemsControl.ItemTemplate>
+                                                        <DataTemplate DataType="{x:Type vm:MemoryFilterViewModel}">
+                                                            <CheckBox Content="{Binding Title}" IsChecked="{Binding IsOn}"
+                                                                      FontSize="11" Margin="0,1" />
+                                                        </DataTemplate>
+                                                    </ItemsControl.ItemTemplate>
+                                                </ItemsControl>
+                                            </StackPanel>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                                <TextBlock Text="{Binding LayersNote}" FontSize="11" Foreground="#FF5A5A5A"
+                                           TextWrapping="Wrap" Margin="0,4,0,0"
+                                           Visibility="{Binding HasLayersNote,
+                                               Converter={StaticResource BoolToVisibility}}" />
+                            </StackPanel>
+                        </Border>
+                    </Popup>
+                </Grid>
 
-            <ItemsControl x:Name="MessageList" ItemsSource="{Binding Messages}"
+                <TextBlock Text="{Binding ConversationTitle}" FontSize="13" FontWeight="SemiBold"
+                           VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+            </DockPanel>
+
+            <ItemsControl x:Name="MessageList" ItemsSource="{Binding Rows}"
                           VirtualizingPanel.IsVirtualizing="True"
                           VirtualizingPanel.VirtualizationMode="Recycling"
                           VirtualizingPanel.ScrollUnit="Pixel"

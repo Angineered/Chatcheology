@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
@@ -16,6 +16,8 @@
   <ItemGroup>
     <ProjectReference Include="..\Chatcheology.Core\Chatcheology.Core.csproj" />
     <ProjectReference Include="..\Chatcheology.Data\Chatcheology.Data.csproj" />
+    <!-- The phone's memory rules (placement, rows, details, wording), shared so both show the same (CH-42 step 5). -->
+    <ProjectReference Include="..\Chatcheology.Mobile\Chatcheology.Mobile.csproj" />
   </ItemGroup>
 
 </Project>
