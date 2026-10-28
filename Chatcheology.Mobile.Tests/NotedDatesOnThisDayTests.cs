@@ -263,6 +263,20 @@ namespace Chatcheology.Mobile.Tests
         }
 
         [Fact]
+        public void Saving_a_new_date_twice_under_the_same_id_does_not_duplicate_it()
+        {
+            var archive = Install(new ArchiveBuilder());
+            var today = D(2026, 7, 4);
+
+            using var session = ArchiveSession.Open(archive, _settings);
+
+            Assert.Empty(session.SaveOwnNotedDate("fixed", "Once", 7, 4, null, null, today));
+            Assert.Empty(session.SaveOwnNotedDate("fixed", "Once", 7, 4, null, null, today));
+
+            Assert.Equal(["fixed"], session.NotedDateListings.Select(l => l.Id).ToList());
+        }
+
+        [Fact]
         public void The_synthetic_archive_carries_noted_dates_and_validates()
         {
             using var folder = new TemporaryFolder();

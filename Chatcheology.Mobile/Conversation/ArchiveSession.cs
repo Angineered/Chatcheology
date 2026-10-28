@@ -378,7 +378,11 @@ namespace Chatcheology.Mobile.Conversation
         /// Adds a date of the phone's own, or replaces the one with <paramref name="id"/>. Nothing is stored
         /// when a rule of <see cref="NotedDateRules"/> is broken; the broken rules are returned.
         /// </summary>
-        /// <param name="id">The own date to replace, or <see langword="null"/> to add one.</param>
+        /// <param name="id">
+        /// The own date to replace; when none has this id, a new one is added under it (so a repeated save of the
+        /// same new date, with an id chosen once, replaces rather than duplicates). <see langword="null"/> adds one
+        /// with a fresh id.
+        /// </param>
         /// <param name="title">The title.</param>
         /// <param name="month">The month.</param>
         /// <param name="day">The day.</param>
@@ -398,7 +402,7 @@ namespace Chatcheology.Mobile.Conversation
 
             var own = _settings.GetOwnNotedDates(_identity).ToList();
             var existing = id is null ? -1 : own.FindIndex(date => date.Id == id);
-            var date = new OwnNotedDate(existing >= 0 ? own[existing].Id : Guid.NewGuid().ToString("N"), title!.Trim(), month, day, year, stored);
+            var date = new OwnNotedDate(id ?? Guid.NewGuid().ToString("N"), title!.Trim(), month, day, year, stored);
 
             if (existing >= 0)
             {

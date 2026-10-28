@@ -13,6 +13,8 @@ namespace Chatcheology.Android.Pages
         private readonly ArchiveSession _session;
         private readonly string? _id;
         private readonly Action _saved;
+        private readonly string _newId = Guid.NewGuid().ToString("N");
+        private bool _saving;
         private readonly Entry _title = new() { Placeholder = "Title", MaxLength = NotedDateRules.MaxTitleLength };
         private readonly Picker _month = new() { Title = "Month" };
         private readonly Entry _day = new() { Placeholder = "Day", Keyboard = Keyboard.Numeric, MaxLength = 2 };
@@ -75,6 +77,14 @@ namespace Chatcheology.Android.Pages
 
         private async void OnSaveClicked(object? sender, EventArgs e)
         {
+            if (_saving)
+            {
+                return;
+            }
+
+            _saving = true;
+            var saved = false;
+
             try
             {
                 var today = OnThisDay.TodayFrom(TimeProvider.System);
@@ -86,7 +96,7 @@ namespace Chatcheology.Android.Pages
                 var day = int.TryParse(dayText, NumberStyles.None, CultureInfo.InvariantCulture, out var d) ? d : 0;
                 int? year = string.IsNullOrEmpty(yearText) ? null : int.TryParse(yearText, NumberStyles.None, CultureInfo.InvariantCulture, out var y) ? y : 0;
 
-                var errors = _session.SaveOwnNotedDate(_id, _title.Text, month, day, year, _note.Text, today);
+                var errors = _session.SaveOwnNotedDate(_id ?? _newId, _title.Text, month, day, year, _note.Text, today);
 
                 _titleError.Text = errors.GetValueOrDefault(NotedDateField.Title);
                 _dateError.Text = errors.GetValueOrDefault(NotedDateField.Date);
@@ -95,6 +105,7 @@ namespace Chatcheology.Android.Pages
 
                 if (errors.Count == 0)
                 {
+                    saved = true;
                     _saved();
                     await Navigation.PopAsync();
                 }
@@ -103,6 +114,11 @@ namespace Chatcheology.Android.Pages
             {
                 // A button handler: nothing here may end the app.
                 _titleError.Text = "That could not be saved.";
+            }
+            finally
+            {
+                // Stays set once saved (the page is closing); a refused or failed save can be tried again.
+                _saving = saved;
             }
         }
 
