@@ -17,8 +17,9 @@ namespace Chatcheology.Data.ArchiveExport
     /// <para>Read: collections, entries, periods, items and links, with each entry image's hash and
     /// extension, from a format 2 file the item definitions (CH-43) that some item uses, with each
     /// icon's hash and extension (a format 1 file has none), from a format 3 file each personal
-    /// entry's extra photos with their captions (CH-46; older files have none), and from a format 4 file the
-    /// noted dates as they are (CH-47; older files have none). Not read at all: image and icon source
+    /// entry's extra photos with their captions (CH-46; older files have none), from a format 4 file the
+    /// noted dates as they are (CH-47; older files have none), and from a format 5 file the external links as
+    /// they are (CH-48; older files have none; never opened). Not read at all: image and icon source
     /// URLs, definitions no item uses, and nothing naming a source account is in the file to read.
     /// Items carry their role; the combined source maps it onto an archive participant.</para>
     /// </remarks>
@@ -40,6 +41,9 @@ namespace Chatcheology.Data.ArchiveExport
 
         /// <summary>The noted dates (CH-47, format 4; none before), ordered by identifier, as stored.</summary>
         internal IReadOnlyList<ArchiveNotedDate> NotedDates { get; init; } = [];
+
+        /// <summary>The external links (CH-48, format 5; none before), ordered by identifier, as stored.</summary>
+        internal IReadOnlyList<ArchiveExternalLink> ExternalLinks { get; init; } = [];
 
         /// <summary>Each entry image's and used item icon's file in the memories media folder, by hash.</summary>
         internal required IReadOnlyDictionary<string, MemoryImage> Images { get; init; }
@@ -89,6 +93,7 @@ namespace Chatcheology.Data.ArchiveExport
                 var links = ReadLinks(connection);
                 var definitions = hasDefinitions ? ReadDefinitions(connection, images) : [];
                 var notedDates = formatVersion >= MemoriesDatabase.FirstFormatWithNotedDates ? ReadNotedDates(connection) : [];
+                var externalLinks = formatVersion >= MemoriesDatabase.FirstFormatWithExternalLinks ? ReadExternalLinks(connection) : [];
 
                 return new MemoriesArchiveSource
                 {
@@ -97,6 +102,7 @@ namespace Chatcheology.Data.ArchiveExport
                     Links = links,
                     Definitions = definitions,
                     NotedDates = notedDates,
+                    ExternalLinks = externalLinks,
                     Images = images,
                     MediaFolder = mediaFolder,
                 };
@@ -444,6 +450,35 @@ namespace Chatcheology.Data.ArchiveExport
             }
 
             return dates;
+        }
+
+        /// <summary>Every external link (format 5), ordered by identifier, exactly as stored.</summary>
+        private static List<ArchiveExternalLink> ReadExternalLinks(SqliteConnection connection)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = "SELECT ExternalLinkID, OwnerKind, OwnerID, Ordinal, Url, Label FROM ExternalLink ORDER BY ExternalLinkID;";
+
+            var links = new List<ArchiveExternalLink>();
+
+            using var reader = command.ExecuteReader();
+
+            while (reader.Read())
+            {
+                links.Add(new ArchiveExternalLink
+                {
+                    ExternalLinkID = reader.GetInt64(0),
+                    OwnerKind = ExternalLinkRules.TryParseOwnerKind(reader.GetString(1), out var kind)
+                        ? kind
+                        : throw new ArchiveExportRefusedException(
+                            "An external link in the memories file has an owner kind this build does not know. Nothing was written."),
+                    OwnerID = reader.GetInt64(2),
+                    Ordinal = reader.GetInt32(3),
+                    Url = reader.GetString(4),
+                    Label = Nullable(reader, 5),
+                });
+            }
+
+            return links;
         }
 
         private static List<ArchiveEntryLink> ReadLinks(SqliteConnection connection)

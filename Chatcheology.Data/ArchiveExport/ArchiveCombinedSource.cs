@@ -472,6 +472,9 @@ namespace Chatcheology.Data.ArchiveExport
         /// <summary>The noted dates (CH-47) exactly as the memories file holds them, with their identifiers.</summary>
         internal IReadOnlyList<ArchiveNotedDate> ToArchiveNotedDates() => Memories?.NotedDates ?? [];
 
+        /// <summary>The external links (CH-48) exactly as the memories file holds them, with their identifiers.</summary>
+        internal IReadOnlyList<ArchiveExternalLink> ToArchiveExternalLinks() => Memories?.ExternalLinks ?? [];
+
         /// <summary>Every link, a message link re-mapped to the archive sequence number.</summary>
         internal IReadOnlyList<ArchiveEntryLink> ToArchiveLinks() =>
             Memories?.Links.Select(link => new ArchiveEntryLink
