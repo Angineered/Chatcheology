@@ -45,6 +45,13 @@ namespace Chatcheology.Archive.Tests
 
                 Assert.False(string.IsNullOrEmpty(host));
                 Assert.All(host, c => Assert.True(char.IsAsciiLetterLower(c) || char.IsAsciiDigit(c) || c is '-' or '.', url));
+
+                // One source of truth: the host shown is the host of the link that opens, and that link is stable.
+                var launch = ExternalLinkRules.LaunchUri(url)!;
+                Assert.Equal(new Uri(launch).Host, host);
+                Assert.Equal(launch, new Uri(launch).AbsoluteUri);
+                Assert.Equal(launch, ExternalLinkRules.LaunchUri(launch));
+                Assert.Equal(host, ExternalLinkRules.DisplayHost(launch));
             }
         }
 
@@ -76,6 +83,38 @@ namespace Chatcheology.Archive.Tests
             Assert.NotNull(ExternalLinkRules.UrlError(url));
             Assert.Null(ExternalLinkRules.DisplayHost(url));
             Assert.Null(ExternalLinkRules.LaunchUri(url));
+        }
+
+        /// <summary>
+        /// Numeric hosts, ASCII or spelled in full-width digits and letters: a browser reads them as an IPv4
+        /// address (127.0.0.1, 1.2.0.3, 0.0.0.1), so the host shown would not be the one opened. All refused.
+        /// </summary>
+        [Theory]
+        [InlineData("https://\uFF10\uFF58\uFF17\uFF46.\uFF11/")]
+        [InlineData("https://\uFF12\uFF11\uFF13\uFF10\uFF17\uFF10\uFF16\uFF14\uFF14\uFF13\uFF13/")]
+        [InlineData("https://\uFF10\uFF11\uFF17\uFF17.\uFF10.\uFF10.\uFF11/")]
+        [InlineData("https://\uFF11.\uFF12.\uFF13/")]
+        [InlineData("https://\uFF11/")]
+        [InlineData("https://0\uFF587f000001/")]
+        [InlineData("https://127.0.0.1/")]
+        [InlineData("https://0x7f.1/")]
+        [InlineData("https://2130706433/")]
+        [InlineData("https://1.2.3/")]
+        [InlineData("https://photos.example.0x1/")]
+        [InlineData("https://photos.example.123/")]
+        public void ANumericHost_IsRefused_SoTheHostShownIsTheHostOpened(string url)
+        {
+            Assert.NotNull(ExternalLinkRules.UrlError(url));
+            Assert.Null(ExternalLinkRules.DisplayHost(url));
+            Assert.Null(ExternalLinkRules.LaunchUri(url));
+        }
+
+        [Fact]
+        public void ANameWithDigits_IsStillKept()
+        {
+            Assert.Equal("photos1.example.org", ExternalLinkRules.DisplayHost("https://photos1.example.org/a"));
+            Assert.Equal("123.example.org", ExternalLinkRules.DisplayHost("https://123.example.org/a"));
+            Assert.Equal("0x7f.example", ExternalLinkRules.DisplayHost("https://0x7f.example/a"));
         }
 
         [Theory]

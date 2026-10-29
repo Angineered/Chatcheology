@@ -70,7 +70,8 @@ namespace Chatcheology.Archive
     /// decimal digits, <c>-</c> and <c>.</c>, and at most one <c>:</c> followed by a numeric port: so no
     /// user-info part (<c>https://a@b</c> disguises the real host) and no look-alike of <c>@</c>, <c>/</c>,
     /// <c>.</c>, <c>?</c> or <c>#</c> that a browser would turn into one. Its IDN host must compute to plain
-    /// ASCII. Relative, fragment-only, <c>http</c>, <c>javascript:</c>, <c>file:</c>, <c>intent:</c>,
+    /// ASCII, be a name (not a numeric or IPv4-looking host, full-width digits included), and give a stable launch
+    /// form whose host is the one shown. Relative, fragment-only, <c>http</c>, <c>javascript:</c>, <c>file:</c>, <c>intent:</c>,
     /// <c>content:</c> and every other scheme are refused. Every address these rules accept has a host
     /// <see cref="DisplayHost"/> can show and a <see cref="LaunchUri"/> form.</para>
     /// <para>Label: optional; trimmed, 1 to 60 characters, no control or format character; blank means none.</para>
@@ -188,31 +189,101 @@ namespace Chatcheology.Archive
                 return "The link's host has characters a web address host cannot have.";
             }
 
-            return TryParse(url, out _, out _) ? null : "That is not a complete https link.";
+            if (!TryParse(url, out var uri, out _))
+            {
+                return "That is not a complete https link.";
+            }
+
+            if (uri.HostNameType != UriHostNameType.Dns)
+            {
+                return "Only links to a named host can be kept, not to a numeric address.";
+            }
+
+            return TryLaunchForm(uri, out _, out _) ? null : "Only links to a named host can be kept, not to a numeric address.";
         }
 
         /// <summary>
-        /// The address in the form to hand to another app: <see cref="Uri.AbsoluteUri"/> with the host in punycode
-        /// (the host <see cref="DisplayHost"/> shows), so the scheme and host are lower case. <see langword="null"/>
-        /// when the address breaks a rule. Trims first, as a store does.
+        /// The one source of truth for the host shown and the link opened: the launch form (the parsed link with
+        /// its host in punycode, as <see cref="Uri.AbsoluteUri"/>) and that form's own host. The form must be
+        /// stable (parsed again, it gives the same text and the same host, a DNS name both times), and the host
+        /// must not end in a number (a browser reads <c>0x7f.1</c>, <c>2130706433</c> or <c>1.2.3</c> as an IPv4
+        /// address), so what is shown is exactly what opens. Numeric hosts are refused outright: gallery links use
+        /// names.
         /// </summary>
-        public static string? LaunchUri(string? url)
+        private static bool TryLaunchForm(Uri uri, out string launch, out string host)
         {
-            var stored = NormaliseUrl(url);
-
-            if (UrlError(stored) is not null || !TryParse(stored!, out var uri, out var host))
-            {
-                return null;
-            }
+            launch = string.Empty;
+            host = string.Empty;
 
             try
             {
-                return new UriBuilder(uri) { Host = host }.Uri.AbsoluteUri;
+                var first = new UriBuilder(uri) { Host = uri.IdnHost.ToLowerInvariant() }.Uri;
+
+                if (first.HostNameType != UriHostNameType.Dns)
+                {
+                    return false;
+                }
+
+                var text = first.AbsoluteUri;
+
+                if (!Uri.TryCreate(text, UriKind.Absolute, out var again)
+                    || again.HostNameType != UriHostNameType.Dns
+                    || !string.Equals(again.AbsoluteUri, text, StringComparison.Ordinal)
+                    || !string.Equals(again.Host, first.Host, StringComparison.Ordinal)
+                    || !string.Equals(again.IdnHost, again.Host, StringComparison.Ordinal))
+                {
+                    return false;
+                }
+
+                var name = again.Host;
+
+                if (name.Length == 0
+                    || !name.All(c => char.IsAsciiLetterLower(c) || char.IsAsciiDigit(c) || c is '-' or '.')
+                    || EndsInANumber(name))
+                {
+                    return false;
+                }
+
+                launch = text;
+                host = name;
+                return true;
             }
-            catch (UriFormatException)
+            catch (Exception exception) when (exception is UriFormatException or ArgumentException or InvalidOperationException)
             {
-                return null;
+                return false;
             }
+        }
+
+        /// <summary>
+        /// Whether a browser would read the ASCII host as an IPv4 address: its last label (ignoring one trailing
+        /// dot) is all decimal digits, or <c>0x</c> followed by hex digits.
+        /// </summary>
+        private static bool EndsInANumber(string host)
+        {
+            var trimmed = host.EndsWith('.') ? host[..^1] : host;
+            var last = trimmed[(trimmed.LastIndexOf('.') + 1)..];
+
+            return (last.Length > 0 && last.All(char.IsAsciiDigit))
+                || (last.StartsWith("0x", StringComparison.Ordinal) && last[2..].All(char.IsAsciiHexDigitLower));
+        }
+
+        /// <summary>
+        /// The address in the form to hand to another app: <see cref="Uri.AbsoluteUri"/> with the host in punycode,
+        /// so the scheme and host are lower case. Its host is exactly what <see cref="DisplayHost"/> shows.
+        /// <see langword="null"/> when the address breaks a rule. Trims first, as a store does.
+        /// </summary>
+        public static string? LaunchUri(string? url) => TryLaunch(url, out var launch, out _) ? launch : null;
+
+        /// <summary>Both forms from one computation, after every rule; false when a rule fails.</summary>
+        private static bool TryLaunch(string? url, out string launch, out string host)
+        {
+            launch = string.Empty;
+            host = string.Empty;
+            var stored = NormaliseUrl(url);
+
+            return UrlError(stored) is null
+                && TryParse(stored!, out var uri, out _)
+                && TryLaunchForm(uri, out launch, out host);
         }
 
         private static bool IsFormat(char c) => char.GetUnicodeCategory(c) == UnicodeCategory.Format;
@@ -336,10 +407,8 @@ namespace Chatcheology.Archive
         /// </summary>
         public static string? DisplayHost(string? url)
         {
-            var stored = NormaliseUrl(url);
-
-            // UrlError has already computed the same host without failing, so this cannot throw.
-            return UrlError(stored) is null && TryParse(stored!, out _, out var host) ? host : null;
+            // The host of the launch form, never computed on its own, so what is shown is what opens.
+            return TryLaunch(url, out _, out var host) ? host : null;
         }
     }
 }
