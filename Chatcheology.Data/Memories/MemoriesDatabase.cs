@@ -29,15 +29,15 @@ namespace Chatcheology.Data.Memories
         /// <summary>The value of <c>MemoriesInfo.Purpose</c> in every memories file.</summary>
         internal const string MarkerPurpose = "Memories";
 
-        /// <summary>The memories table layout this build creates. Format 1, 2 and 3 files are still accepted.</summary>
+        /// <summary>The memories table layout this build creates. Format 1 to 4 files are still accepted.</summary>
         /// <remarks>
         /// Format 2 (CH-43) is additive: it adds <c>ItemDefinition</c> and nothing else changes. Format 3
-        /// (CH-46) is additive too: it adds <c>EntryImage</c> (a personal memory's extra photos), and so is
-        /// format 4 (CH-47): it adds <c>NotedDate</c>. An older file is upgraded in one transaction by
-        /// <see cref="UpgradeToCurrent"/> (the enrichment import and every personal write do this); every
-        /// other path reads and writes all four formats.
+        /// (CH-46) is additive too: it adds <c>EntryImage</c> (a personal memory's extra photos), and so are
+        /// format 4 (CH-47), which adds <c>NotedDate</c>, and format 5 (CH-48), which adds <c>ExternalLink</c>.
+        /// An older file is upgraded in one transaction by <see cref="UpgradeToCurrent"/> (the enrichment import
+        /// and every personal write do this); every other path reads and writes all five formats.
         /// </remarks>
-        internal const int MarkerFormatVersion = 4;
+        internal const int MarkerFormatVersion = 5;
 
         /// <summary>The format this build creates and upgrades to.</summary>
         public const int CurrentFormatVersion = MarkerFormatVersion;
@@ -56,6 +56,9 @@ namespace Chatcheology.Data.Memories
 
         /// <summary>The first format with <c>NotedDate</c> (CH-47); fixed, whatever the current format is.</summary>
         public const int FirstFormatWithNotedDates = 4;
+
+        /// <summary>The first format with <c>ExternalLink</c> (CH-48); fixed, whatever the current format is.</summary>
+        public const int FirstFormatWithExternalLinks = 5;
 
         /// <summary>
         /// The SQLite <c>user_version</c> of a memories file. Distinct from every workspace schema
@@ -109,8 +112,14 @@ namespace Chatcheology.Data.Memories
         /// <summary>The tables of a format 3 file.</summary>
         internal static readonly string[] VersionThreeTableNames = [.. VersionTwoTableNames, EntryImageTableName];
 
-        /// <summary>The tables of a current (format 4) file.</summary>
-        internal static readonly string[] TableNames = [.. VersionThreeTableNames, NotedDateTableName];
+        /// <summary>The table format 5 adds.</summary>
+        internal const string ExternalLinkTableName = "ExternalLink";
+
+        /// <summary>The tables of a format 4 file.</summary>
+        internal static readonly string[] VersionFourTableNames = [.. VersionThreeTableNames, NotedDateTableName];
+
+        /// <summary>The tables of a current (format 5) file.</summary>
+        internal static readonly string[] TableNames = [.. VersionFourTableNames, ExternalLinkTableName];
 
         // GLOB patterns that pin the stored spellings: local wall clock without zone, UTC with Z.
         private const string LocalGlob =
@@ -444,6 +453,60 @@ namespace Chatcheology.Data.Memories
             """,
         ];
 
+        /// <summary>
+        /// Format 4 to 5 (CH-48): the marker is rebuilt for format 5 and <c>ExternalLink</c> is added: web
+        /// addresses (for photos kept elsewhere) on personal entries and noted dates, an ordered list per owner.
+        /// No other table is touched. The checks are the archive's own (<see cref="ExternalLinkRules.TableChecks"/>);
+        /// the owner, which a foreign key cannot name (an entry or a noted date), is checked by triggers.
+        /// </summary>
+        private static readonly string[] UpgradeToFiveStatements =
+        [
+            .. MarkerUpgradeStatements(FirstFormatWithExternalLinks),
+
+            $"""
+            CREATE TABLE ExternalLink (
+                ExternalLinkID INTEGER PRIMARY KEY,
+                OwnerKind      TEXT NOT NULL,
+                OwnerID        INTEGER NOT NULL,
+                Ordinal        INTEGER NOT NULL,
+                Url            TEXT NOT NULL,
+                Label          TEXT NULL,
+
+                UNIQUE (OwnerKind, OwnerID, Ordinal),
+
+                {ExternalLinkRules.TableChecks}
+            );
+            """,
+
+            // A link belongs to an entry of a personal collection or to a noted date that exists; CHECK cannot
+            // look across tables.
+            $"""
+            CREATE TRIGGER ExternalLink_Owner_Insert
+            BEFORE INSERT ON ExternalLink
+            BEGIN
+                {ExternalLinkOwnerCheck}
+            END;
+            """,
+
+            $"""
+            CREATE TRIGGER ExternalLink_Owner_Update
+            BEFORE UPDATE ON ExternalLink
+            BEGIN
+                {ExternalLinkOwnerCheck}
+            END;
+            """,
+        ];
+
+        private const string ExternalLinkOwnerCheck =
+            $"""
+            SELECT RAISE(ABORT, 'An external link belongs to a personal entry or a noted date.')
+                WHERE (NEW.OwnerKind = '{ExternalLinkRules.OwnerEntry}'
+                       AND (SELECT c.Kind FROM Entry e JOIN Collection c ON c.CollectionID = e.CollectionID
+                            WHERE e.EntryID = NEW.OwnerID) IS NOT '{KindPersonal}')
+                   OR (NEW.OwnerKind = '{ExternalLinkRules.OwnerNotedDate}'
+                       AND NOT EXISTS (SELECT 1 FROM NotedDate WHERE NotedDateID = NEW.OwnerID));
+            """;
+
         /// <summary>The memories file path beside a main workspace.</summary>
         public static string PathBeside(string mainWorkspacePath)
         {
@@ -486,6 +549,10 @@ namespace Chatcheology.Data.Memories
         /// <summary>Creates a format 3 file exactly as CH-46 did. For upgrade tests only.</summary>
         internal static void CreateFormatVersionThree(string databasePath, DateTime createdDateTimeUtc) =>
             Create(databasePath, createdDateTimeUtc, FirstFormatWithEntryImages);
+
+        /// <summary>Creates a format 4 file exactly as CH-47 did. For upgrade tests only.</summary>
+        internal static void CreateFormatVersionFour(string databasePath, DateTime createdDateTimeUtc) =>
+            Create(databasePath, createdDateTimeUtc, FirstFormatWithNotedDates);
 
         private static void Create(string databasePath, DateTime createdDateTimeUtc, int version)
         {
@@ -610,13 +677,13 @@ namespace Chatcheology.Data.Memories
         }
 
         /// <summary>
-        /// The format version of an open memories file (1 to 4), after proving it is one. Call it
+        /// The format version of an open memories file (1 to 5), after proving it is one. Call it
         /// outside a transaction.
         /// </summary>
         public static int ReadFormatVersion(SqliteConnection connection) => RequireMemoriesFile(connection);
 
         /// <summary>
-        /// Upgrades an older file (format 1, 2 or 3) to the current format inside <paramref name="transaction"/>:
+        /// Upgrades an older file (format 1 to 4) to the current format inside <paramref name="transaction"/>:
         /// additive only, every existing row unchanged. A current file is left as it is. The
         /// connection must come from <see cref="OpenConnection"/>, which proved the file.
         /// </summary>
@@ -636,7 +703,7 @@ namespace Chatcheology.Data.Memories
                 return false;
             }
 
-            if (version is not (FormatVersionOne or FormatVersionTwo or FirstFormatWithEntryImages))
+            if (version is not (FormatVersionOne or FormatVersionTwo or FirstFormatWithEntryImages or FirstFormatWithNotedDates))
             {
                 throw new InvalidOperationException("The memories file's format version is not one this build upgrades. Nothing has been written.");
             }
@@ -665,6 +732,11 @@ namespace Chatcheology.Data.Memories
                 steps.AddRange(UpgradeToFourStatements);
             }
 
+            if (from < FirstFormatWithExternalLinks && to >= FirstFormatWithExternalLinks)
+            {
+                steps.AddRange(UpgradeToFiveStatements);
+            }
+
             foreach (var statement in steps)
             {
                 command.CommandText = statement;
@@ -674,7 +746,7 @@ namespace Chatcheology.Data.Memories
 
         /// <summary>
         /// Throws unless the connection is open on a memories file: every table of its format and
-        /// exactly one valid marker row (format 1 or 2). A main workspace or an older-exports file
+        /// exactly one valid marker row (format 1 to 5). A main workspace or an older-exports file
         /// is refused by name.
         /// </summary>
         /// <returns>The file's format version.</returns>
@@ -719,13 +791,14 @@ namespace Chatcheology.Data.Memories
                 SELECT
                     (SELECT COUNT(*) FROM MemoriesInfo),
                     (SELECT COUNT(*) FROM MemoriesInfo
-                     WHERE MemoriesInfoID = 1 AND Purpose = $purpose AND FormatVersion IN ($one, $two, $three, $current)),
+                     WHERE MemoriesInfoID = 1 AND Purpose = $purpose AND FormatVersion IN ($one, $two, $three, $four, $current)),
                     (SELECT MAX(FormatVersion) FROM MemoriesInfo);
                 """;
             command.Parameters.AddWithValue("$purpose", MarkerPurpose);
             command.Parameters.AddWithValue("$one", FormatVersionOne);
             command.Parameters.AddWithValue("$two", FormatVersionTwo);
             command.Parameters.AddWithValue("$three", FirstFormatWithEntryImages);
+            command.Parameters.AddWithValue("$four", FirstFormatWithNotedDates);
             command.Parameters.AddWithValue("$current", MarkerFormatVersion);
 
             long allRows, validRows;
@@ -749,10 +822,11 @@ namespace Chatcheology.Data.Memories
             }
 
             // The marker and the tables must agree: format 2 adds ItemDefinition, format 3 EntryImage,
-            // format 4 NotedDate.
+            // format 4 NotedDate, format 5 ExternalLink.
             if (tables.Contains(ItemDefinitionTableName) != (version >= FirstFormatWithDefinitions)
                 || tables.Contains(EntryImageTableName) != (version >= FirstFormatWithEntryImages)
-                || tables.Contains(NotedDateTableName) != (version >= FirstFormatWithNotedDates))
+                || tables.Contains(NotedDateTableName) != (version >= FirstFormatWithNotedDates)
+                || tables.Contains(ExternalLinkTableName) != (version >= FirstFormatWithExternalLinks))
             {
                 throw new InvalidOperationException(
                     "The memories file's format version and its tables do not agree, so it is not treated as a " +

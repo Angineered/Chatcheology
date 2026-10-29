@@ -34,12 +34,11 @@ namespace Chatcheology.Data.Tests.Memories
         // ---------------------------------------------------------------------------------------
 
         [Fact]
-        public void ANewFile_IsFormatFour_WithTheNotedDateTable()
+        public void ANewFile_IsTheCurrentFormat_WithTheNotedDateTable()
         {
             _folder.CreateMemories();
 
-            Assert.Equal(4, MemoriesDatabase.CurrentFormatVersion);
-            Assert.Equal(4, _folder.Scalar("SELECT FormatVersion FROM MemoriesInfo;"));
+            Assert.Equal(MemoriesDatabase.CurrentFormatVersion, _folder.Scalar("SELECT FormatVersion FROM MemoriesInfo;"));
             Assert.Equal(1, _folder.Scalar("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'NotedDate';"));
         }
 
@@ -75,7 +74,7 @@ namespace Chatcheology.Data.Tests.Memories
             // The first write upgrades, in the same transaction, keeping every row.
             var id = _store.Add(Draft(), false, Now);
 
-            Assert.Equal(4, _folder.Scalar("SELECT FormatVersion FROM MemoriesInfo;"));
+            Assert.Equal(MemoriesDatabase.CurrentFormatVersion, _folder.Scalar("SELECT FormatVersion FROM MemoriesInfo;"));
             Assert.Equal(1, _folder.Scalar("SELECT COUNT(*) FROM sqlite_master WHERE name = 'NotedDate';"));
             Assert.Equal(1, _folder.Scalar("SELECT COUNT(*) FROM sqlite_master WHERE name = 'EntryImage';"));
             Assert.Equal(1, _folder.Scalar("SELECT COUNT(*) FROM sqlite_master WHERE name = 'ItemDefinition';"));
@@ -99,7 +98,7 @@ namespace Chatcheology.Data.Tests.Memories
         [Fact]
         public void AFormatFourMarkerWithoutTheNotedDateTable_IsRefused()
         {
-            _folder.CreateMemories();
+            MemoriesDatabase.CreateFormatVersionFour(_folder.MemoriesPath, Now);
             Execute("DROP TABLE NotedDate;");
 
             Assert.Throws<InvalidOperationException>(() => MemoriesDatabase.OpenConnection(_folder.MemoriesPath));
@@ -130,7 +129,7 @@ namespace Chatcheology.Data.Tests.Memories
 
             Assert.Equal(rows, Rows());
             Assert.Equal(2, rows.Count);
-            Assert.Equal(4, _folder.Scalar("SELECT FormatVersion FROM MemoriesInfo;"));
+            Assert.Equal(MemoriesDatabase.CurrentFormatVersion, _folder.Scalar("SELECT FormatVersion FROM MemoriesInfo;"));
         }
 
         // ---------------------------------------------------------------------------------------
@@ -153,7 +152,7 @@ namespace Chatcheology.Data.Tests.Memories
             var id = _store.Add(Draft(), true, Now);
 
             Assert.True(_store.FileExists);
-            Assert.Equal(4, _folder.Scalar("SELECT FormatVersion FROM MemoriesInfo;"));
+            Assert.Equal(MemoriesDatabase.CurrentFormatVersion, _folder.Scalar("SELECT FormatVersion FROM MemoriesInfo;"));
             Assert.Equal(new NotedDate(id, "Invented anniversary", 2, 14, 2019, null), _store.List().Single());
 
             // Nothing else is written: no collection, entry or link.

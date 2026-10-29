@@ -3,7 +3,7 @@ using Microsoft.Data.Sqlite;
 namespace Chatcheology.Data.Memories.Psn
 {
     /// <summary>What one enrichment run did (or, for a dry run, would do). Counts only.</summary>
-    /// <param name="FormatVersionBefore">The memories file's format before the run (1 to 4).</param>
+    /// <param name="FormatVersionBefore">The memories file's format before the run (1 to 5).</param>
     /// <param name="Upgraded">The file was an older format and is (or would be) upgraded to the current one.</param>
     /// <param name="Sets">Trophy sets in the definitions file.</param>
     /// <param name="Definitions">Definitions in the file.</param>
@@ -68,7 +68,7 @@ namespace Chatcheology.Data.Memories.Psn
         }
 
         /// <summary>
-        /// Upgrades an older file (format 1, 2 or 3) and stores the definitions, all in one transaction.
+        /// Upgrades an older file (format 1 to 4) and stores the definitions, all in one transaction.
         /// </summary>
         public static PsnEnrichResult Enrich(string memoriesPath, PsnTrophyDefinitions definitions)
         {
