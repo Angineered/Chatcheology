@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text.Json;
 using Chatcheology.Archive;
 using Chatcheology.Mobile.Conversation;
+using Chatcheology.Mobile.Memories;
 
 namespace Chatcheology.Mobile.Settings
 {
@@ -31,7 +32,8 @@ namespace Chatcheology.Mobile.Settings
     /// conversation), <c>.onThisDay</c> ("off" when turned off), <c>.onThisDayShown</c> (the last
     /// day the card was shown), <c>.layers</c> (collection ids switched away from their default, each
     /// <c>id:on</c> or <c>id:off</c>) and <c>.memoryFilters</c> (filters turned off, each
-    /// <c>id:filter</c>; CH-42), <c>.ownNotedDates</c> (a JSON list of the dates the phone's user added; CH-47)
+    /// <c>id:filter</c>; CH-42), <c>.ownNotedDates</c> (a JSON list of the dates the phone's user added; CH-47;
+    /// each with its ordered gallery links, address and label, CH-48)
     /// <c>.mutedNotedDates</c> (gifted noted-date ids that do not notify, comma separated) and
     /// <c>.notedDatesPosted</c> (the last day its noted-date notification was posted, so it is posted once a
     /// day; CH-47 step 3). Own noted dates
@@ -220,7 +222,10 @@ namespace Chatcheology.Mobile.Settings
                         && ids.Add(id)
                         && NotedDateRules.Validate(title, month, day, item.Year, item.Note, int.MaxValue).Count == 0)
                     {
-                        dates.Add(new OwnNotedDate(id, title.Trim(), month, day, item.Year, NotedDateRules.NormaliseNote(item.Note)));
+                        dates.Add(new OwnNotedDate(id, title.Trim(), month, day, item.Year, NotedDateRules.NormaliseNote(item.Note))
+                        {
+                            Links = ReadLinks(item.Links),
+                        });
                     }
                 }
 
@@ -245,6 +250,9 @@ namespace Chatcheology.Mobile.Settings
                 Day = date.Day,
                 Year = date.Year,
                 Note = date.Note,
+                Links = date.Links.Count == 0
+                    ? null
+                    : JsonSerializer.SerializeToElement(date.Links.Select(link => new StoredLink { Url = link.Url, Label = link.Label }).ToList()),
             }).ToList();
 
             Set(contentsSha256, "ownNotedDates", list.Count == 0 ? null : JsonSerializer.Serialize(list));
@@ -301,6 +309,66 @@ namespace Chatcheology.Mobile.Settings
             public int? Year { get; set; }
 
             public string? Note { get; set; }
+
+            /// <summary>The gallery links (CH-48): read as raw JSON, so a damaged list costs only the links.</summary>
+            public JsonElement? Links { get; set; }
+        }
+
+        private sealed class StoredLink
+        {
+            public string? Url { get; set; }
+
+            public string? Label { get; set; }
+        }
+
+        /// <summary>
+        /// An own date's gallery links (CH-48), in the stored order: a link that is not an object with a text
+        /// address (and a text label or none), or that breaks <see cref="ExternalLinkRules"/>, is dropped; anything
+        /// but a list reads as none; at most <see cref="ExternalLinkRules.MaxLinksPerOwner"/> are kept. Never throws.
+        /// </summary>
+        private static IReadOnlyList<GalleryLink> ReadLinks(JsonElement? stored)
+        {
+            if (stored is not { ValueKind: JsonValueKind.Array } array)
+            {
+                return [];
+            }
+
+            var links = new List<GalleryLink>();
+
+            foreach (var item in array.EnumerateArray())
+            {
+                if (item.ValueKind != JsonValueKind.Object
+                    || !item.TryGetProperty("Url", out var url) || url.ValueKind != JsonValueKind.String)
+                {
+                    continue;
+                }
+
+                string? label = null;
+
+                if (item.TryGetProperty("Label", out var labelElement))
+                {
+                    if (labelElement.ValueKind == JsonValueKind.String)
+                    {
+                        label = labelElement.GetString();
+                    }
+                    else if (labelElement.ValueKind != JsonValueKind.Null)
+                    {
+                        continue;
+                    }
+                }
+
+                if (GalleryLinks.Keep(url.GetString(), label) is { } link)
+                {
+                    links.Add(link);
+                }
+
+                if (links.Count == ExternalLinkRules.MaxLinksPerOwner)
+                {
+                    break;
+                }
+            }
+
+            return links;
         }
 
         /// <summary>

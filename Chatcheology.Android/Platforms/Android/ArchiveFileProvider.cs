@@ -142,6 +142,28 @@ namespace Chatcheology.Android
             return Start(activity, intent);
         }
 
+        /// <summary>
+        /// Opens an external gallery link (CH-48) in the app that handles it: <c>ACTION_VIEW</c>, category
+        /// <c>BROWSABLE</c>, no flags. <paramref name="launchUri"/> must be <c>ExternalLinkRules.LaunchUri</c> of the
+        /// stored address, computed just before (<c>GalleryLinks.Open</c> does that); anything not starting with
+        /// <c>https://</c> is refused here as well. Needs no permission and no <c>&lt;queries&gt;</c> entry: the
+        /// app starts the activity and never asks which apps could take it.
+        /// </summary>
+        internal static OpenResult OpenWebLink(string launchUri)
+        {
+            var activity = Platform.CurrentActivity;
+
+            if (activity is null || !launchUri.StartsWith("https://", StringComparison.Ordinal))
+            {
+                return OpenResult.NotAllowed;
+            }
+
+            var intent = new Intent(Intent.ActionView, global::Android.Net.Uri.Parse(launchUri));
+            intent.AddCategory(Intent.CategoryBrowsable);
+
+            return Start(activity, intent);
+        }
+
         private static OpenResult Start(Activity activity, Intent intent)
         {
             try

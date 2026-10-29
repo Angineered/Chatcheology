@@ -335,6 +335,9 @@ namespace Chatcheology.Mobile.Synthetic
                 writer.WriteNotedDate(new ArchiveNotedDate { NotedDateID = 1, Title = "Our synthetic anniversary", Month = 3, Day = 14, Year = 2016, Note = "An invented note.", });
                 writer.WriteNotedDate(new ArchiveNotedDate { NotedDateID = 2, Title = "Invented birthday", Month = 8, Day = 2, Year = null, Note = null, });
                 writer.WriteNotedDate(new ArchiveNotedDate { NotedDateID = 3, Title = "Invented leap day", Month = 2, Day = 29, Year = 2020, Note = null, });
+
+                // CH-48: one invented gallery link on the anniversary, on a reserved example domain.
+                writer.WriteExternalLink(new ArchiveExternalLink { ExternalLinkID = 101, OwnerKind = ExternalLinkOwnerKind.NotedDate, OwnerID = 1, Ordinal = 1, Url = "https://example.org/synthetic-anniversary", Label = null });
             }
 
             var counts = writer.Complete();

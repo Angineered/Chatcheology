@@ -71,15 +71,21 @@ namespace Chatcheology.Mobile.Conversation
         /// <paramref name="gifted"/> are the archive's own noted dates (none for an archive without any); the
         /// phone's own are read from <paramref name="settings"/>.
         /// </summary>
+        /// <remarks><paramref name="giftedLinks"/> are the gifted dates' gallery links (CH-48) by identifier, or none.</remarks>
         public static OnThisDay For(
-            ArchiveSettings settings, string contentsSha256, IEnumerable<DateOnly> days, DateOnly today, IEnumerable<ArchiveNotedDate>? gifted = null)
+            ArchiveSettings settings,
+            string contentsSha256,
+            IEnumerable<DateOnly> days,
+            DateOnly today,
+            IEnumerable<ArchiveNotedDate>? gifted = null,
+            IReadOnlyDictionary<long, IReadOnlyList<Memories.GalleryLink>>? giftedLinks = null)
         {
             ArgumentNullException.ThrowIfNull(settings);
             ArgumentException.ThrowIfNullOrWhiteSpace(contentsSha256);
 
             var dayList = days as IReadOnlyCollection<DateOnly> ?? days.ToList();
             var noted = NotedDates.For(
-                NotedDates.List(settings, contentsSha256, gifted ?? []),
+                NotedDates.List(settings, contentsSha256, gifted ?? [], giftedLinks),
                 dayList.ToHashSet(),
                 today);
 

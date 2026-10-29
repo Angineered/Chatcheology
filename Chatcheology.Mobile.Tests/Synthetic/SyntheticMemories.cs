@@ -112,6 +112,10 @@ namespace Chatcheology.Mobile.Synthetic
             writer.WriteEntryLink(new ArchiveEntryLink { EntryLinkID = 1, FromEntryID = 10, ToEntryID = null, ToMessageSequenceNumber = 61 });
             writer.WriteEntryLink(new ArchiveEntryLink { EntryLinkID = 2, FromEntryID = 10, ToEntryID = 1, ToMessageSequenceNumber = null });
 
+            // CH-48: two invented external gallery links on reserved example domains, one labelled.
+            writer.WriteExternalLink(new ArchiveExternalLink { ExternalLinkID = 1, OwnerKind = ExternalLinkOwnerKind.Entry, OwnerID = 10, Ordinal = 1, Url = "https://example.org/synthetic-album/day-1", Label = "Invented day 1" });
+            writer.WriteExternalLink(new ArchiveExternalLink { ExternalLinkID = 2, OwnerKind = ExternalLinkOwnerKind.Entry, OwnerID = 10, Ordinal = 2, Url = "https://www.example.com/synthetic-album/day-2", Label = null });
+
             // Definitions for some trophies; the others show as "Bronze trophy #7" and so on.
             var icons = new[]
             {

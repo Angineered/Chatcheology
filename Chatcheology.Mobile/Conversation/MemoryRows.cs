@@ -134,7 +134,14 @@ namespace Chatcheology.Mobile.Conversation
             ExtraPhotoCount = entry.PhotosAfterShown;
             SourceText = entry.SourceText;
             CollectionName = entry.Collection.Name;
+            GalleryText = GalleryLinks.Summary(entry.Galleries);
         }
+
+        /// <summary>"Gallery · photos.google.com", "3 galleries", or empty (CH-48).</summary>
+        public string GalleryText { get; }
+
+        /// <summary>Whether the card shows a gallery line.</summary>
+        public bool HasGalleries => GalleryText.Length > 0;
 
         /// <summary>How many photos (whose file is there) follow the one drawn (CH-46).</summary>
         public int ExtraPhotoCount { get; }

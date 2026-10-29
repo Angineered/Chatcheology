@@ -35,6 +35,8 @@ namespace Chatcheology.Mobile.Tests.Support
         private readonly List<ArchiveEntry> _entries = [];
         private readonly List<ArchiveEntryLink> _links = [];
         private readonly List<ArchiveItemDefinition> _definitions = [];
+        private readonly List<ArchiveNotedDate> _notedDates = [];
+        private readonly List<ArchiveExternalLink> _externalLinks = [];
         private readonly Dictionary<string, (byte[] Bytes, string Extension)> _media = new(StringComparer.Ordinal);
         private long _nextItem = 1;
 
@@ -248,6 +250,22 @@ namespace Chatcheology.Mobile.Tests.Support
                 ToMessageSequenceNumber = toMessage,
             });
 
+        /// <summary>Adds a gifted noted date (CH-47).</summary>
+        internal void NotedDate(long id, string title, int month, int day, int? year = null) =>
+            _notedDates.Add(new ArchiveNotedDate { NotedDateID = id, Title = title, Month = month, Day = day, Year = year, Note = null });
+
+        /// <summary>Adds an external gallery link (CH-48) to a personal entry or a noted date, at the next ordinal of its owner.</summary>
+        internal void Gallery(ExternalLinkOwnerKind kind, long owner, string url, string? label = null) =>
+            _externalLinks.Add(new ArchiveExternalLink
+            {
+                ExternalLinkID = _externalLinks.Count + 1,
+                OwnerKind = kind,
+                OwnerID = owner,
+                Ordinal = _externalLinks.Count(link => link.OwnerKind == kind && link.OwnerID == owner) + 1,
+                Url = url,
+                Label = label,
+            });
+
         /// <summary>Writes the archive into <paramref name="folder"/>: database, media, manifest, contents list.</summary>
         internal string Write(string folder)
         {
@@ -323,6 +341,16 @@ namespace Chatcheology.Mobile.Tests.Support
                 foreach (var definition in _definitions)
                 {
                     writer.WriteItemDefinition(definition);
+                }
+
+                foreach (var notedDate in _notedDates)
+                {
+                    writer.WriteNotedDate(notedDate);
+                }
+
+                foreach (var link in _externalLinks)
+                {
+                    writer.WriteExternalLink(link);
                 }
 
                 counts = writer.Complete();

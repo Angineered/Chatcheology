@@ -173,6 +173,12 @@ namespace Chatcheology.Mobile.Memories
         /// whose file is not there is not shown.
         /// </summary>
         public IReadOnlyList<MemoryPhoto> ExtraPhotos { get; init; } = [];
+
+        /// <summary>
+        /// Its external gallery links (CH-48), in order. Only a personal entry's are used, and only those that
+        /// keep <see cref="ExternalLinkRules"/>; an imported entry never shows one.
+        /// </summary>
+        public IReadOnlyList<GalleryLink> Galleries { get; init; } = [];
     }
 
     /// <summary>One photo of a memory: its file, and its caption (the cover has none).</summary>
@@ -367,6 +373,9 @@ namespace Chatcheology.Mobile.Memories
 
             var entries = new List<MemorySourceEntry>();
 
+            // External gallery links (CH-48), read in one go; a row that breaks a rule is left out.
+            var galleries = GalleryLinks.GroupFromArchive(reader.ReadAllExternalLinks());
+
             foreach (var collection in collections)
             {
                 foreach (var entry in reader.ReadEntriesOf(collection.CollectionID))
@@ -388,6 +397,10 @@ namespace Chatcheology.Mobile.Memories
                                 reader.EntryImageFullPath(photo) is var file && File.Exists(file) ? file : null,
                                 photo.Caption))
                             .ToList(),
+                        Galleries = collection.Kind == ArchiveMemoryVocabulary.KindPersonal
+                                    && galleries.TryGetValue((ExternalLinkOwnerKind.Entry, entry.EntryID), out var links)
+                            ? links
+                            : [],
                     });
                 }
             }
@@ -436,7 +449,18 @@ namespace Chatcheology.Mobile.Memories
                     definitions,
                     source.IconPath,
                     item.Links,
-                    item.ExtraPhotos));
+                    item.ExtraPhotos)
+                {
+                    // Imported (PSN) memories get no link (CH-48), whatever the source gives; each link is
+                    // checked against the shared rules again.
+                    Galleries = collection.Kind == ArchiveMemoryVocabulary.KindPersonal
+                        ? item.Galleries
+                            .Select(link => GalleryLinks.Keep(link.Url, link.Label))
+                            .OfType<GalleryLink>()
+                            .Take(ExternalLinkRules.MaxLinksPerOwner)
+                            .ToList()
+                        : [],
+                });
             }
 
             return new MemoryIndex(source.Collections, entries, source.MessageTimes, source.MessageSequenceNumbers);
@@ -676,6 +700,9 @@ namespace Chatcheology.Mobile.Memories
 
         internal string SourceText { get; }
 
+        /// <summary>The external gallery links (CH-48) of a personal entry, in order; none for an imported one.</summary>
+        internal IReadOnlyList<GalleryLink> Galleries { get; init; } = [];
+
         internal DateTime FirstItemLocal { get; }
 
         internal ArchiveEntryPeriod Period(int index) => Periods.First(p => p.PeriodIndex == index);
@@ -787,6 +814,7 @@ namespace Chatcheology.Mobile.Memories
                 DayEvidenceText = Entry.DayLevel is { } level ? MemoryWording.DayEvidenceLine(level) : string.Empty,
                 OtherPeriods = others,
                 Links = links,
+                Galleries = Galleries,
             };
         }
 
@@ -892,6 +920,12 @@ namespace Chatcheology.Mobile.Memories
 
         /// <summary>A personal memory's links.</summary>
         public required IReadOnlyList<MemoryLinkLine> Links { get; init; }
+
+        /// <summary>
+        /// A personal memory's external gallery links (CH-48), in order: each listed as its label, or its host
+        /// without one, and opened only after a confirmation.
+        /// </summary>
+        public IReadOnlyList<GalleryLink> Galleries { get; init; } = [];
 
         /// <summary>Whether there is an image.</summary>
         public bool HasImage => ImagePath is not null;
