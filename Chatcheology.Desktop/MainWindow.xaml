@@ -287,6 +287,42 @@
             </Style.Triggers>
         </Style>
 
+        <!-- Gallery links (CH-48): shared by the memory form and the noted-date form. -->
+        <DataTemplate DataType="{x:Type vm:GalleryLinksEditor}">
+            <StackPanel Margin="0,2,0,0">
+                <ItemsControl ItemsSource="{Binding Rows}">
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <Border BorderBrush="#FFDDD7CC" BorderThickness="1" Padding="6" Margin="0,0,0,4">
+                                <StackPanel>
+                                    <TextBlock Text="{Binding Heading}" FontSize="11" FontWeight="SemiBold" />
+                                    <TextBlock Text="Address (https://…)" FontSize="11" Margin="0,2,0,0" />
+                                    <TextBox Text="{Binding Url, UpdateSourceTrigger=PropertyChanged}" Margin="0,2,0,0" />
+                                    <TextBlock Text="{Binding UrlError}" Style="{StaticResource FieldError}" />
+                                    <TextBlock Text="Label (optional, up to 60 characters)" FontSize="11" Margin="0,4,0,0" />
+                                    <TextBox Text="{Binding Label, UpdateSourceTrigger=PropertyChanged}" Margin="0,2,0,0" />
+                                    <TextBlock Text="{Binding LabelError}" Style="{StaticResource FieldError}" />
+                                    <WrapPanel Margin="0,4,0,0">
+                                        <Button Content="Up" Padding="6,0" Margin="0,0,4,0" Command="{Binding MoveUpCommand}" />
+                                        <Button Content="Down" Padding="6,0" Margin="0,0,4,0" Command="{Binding MoveDownCommand}" />
+                                        <Button Content="Remove" Padding="6,0" Command="{Binding RemoveCommand}" />
+                                    </WrapPanel>
+                                </StackPanel>
+                            </Border>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+                <StackPanel Orientation="Horizontal" Margin="0,2,0,0">
+                    <Button Content="Add gallery link" Padding="8,2" Command="{Binding AddCommand}" />
+                    <TextBlock Text="{Binding CountText, Mode=OneWay}" FontSize="11" Foreground="#FF5A5A5A"
+                               VerticalAlignment="Center" Margin="8,0,0,0" />
+                </StackPanel>
+                <TextBlock Text="{Binding ListError}" Style="{StaticResource FieldError}" />
+                <TextBlock Text="{Binding NoticeText, Mode=OneWay}" FontSize="10" Foreground="#FF7A7A7A"
+                           TextWrapping="Wrap" Margin="0,2,0,0" />
+            </StackPanel>
+        </DataTemplate>
+
         <DataTemplate DataType="{x:Type vm:MemoryRowViewModel}">
             <StackPanel>
                 <Border Margin="0,12,0,8" Padding="10,3" CornerRadius="9"
@@ -633,6 +669,8 @@
                                 </ListBox.ItemTemplate>
                             </ListBox>
 
+                            <TextBlock Text="{Binding SelectedEntryGalleryText}" FontSize="11"
+                                       Foreground="#FF5A5A5A" Margin="0,4,0,0" />
                             <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
                                 <Button Content="Delete collection…" Padding="8,2"
                                         Command="{Binding DeleteCollectionCommand}"
@@ -671,6 +709,9 @@
                                         <DockPanel>
                                             <TextBlock Text="{Binding DateText}" Width="70"
                                                        Foreground="#FF5A5A5A" />
+                                            <TextBlock Text="{Binding GalleryText}" Width="150"
+                                                       DockPanel.Dock="Right" Foreground="#FF5A5A5A"
+                                                       TextAlignment="Right" TextTrimming="CharacterEllipsis" />
                                             <TextBlock Text="{Binding SinceText}" Width="80"
                                                        DockPanel.Dock="Right" Foreground="#FF5A5A5A"
                                                        TextAlignment="Right" />
@@ -800,6 +841,9 @@
                                 </StackPanel>
                                 <TextBlock Text="{Binding ImageError}" Style="{StaticResource FieldError}" />
 
+                                <TextBlock Text="Gallery links (optional)" FontWeight="SemiBold" Margin="0,10,0,0" />
+                                <ContentControl Content="{Binding GalleryLinks}" />
+
                                 <TextBlock Text="Links" FontWeight="SemiBold" Margin="0,10,0,0" />
                                 <ItemsControl ItemsSource="{Binding Links}" Margin="0,2,0,0">
                                     <ItemsControl.ItemTemplate>
@@ -894,6 +938,9 @@
                                          AcceptsReturn="True" TextWrapping="Wrap" Height="60"
                                          Margin="0,2,0,0" />
                                 <TextBlock Text="{Binding NoteError}" Style="{StaticResource FieldError}" />
+
+                                <TextBlock Text="Gallery links (optional)" FontWeight="SemiBold" Margin="0,10,0,0" />
+                                <ContentControl Content="{Binding GalleryLinks}" />
 
                                 <TextBlock Text="{Binding FormError}" Style="{StaticResource FieldError}"
                                            Margin="0,10,0,0" />

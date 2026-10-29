@@ -4,8 +4,14 @@ using Chatcheology.Data.Memories.Personal;
 namespace Chatcheology.Desktop.ViewModels
 {
     /// <summary>One noted date in the list (CH-47): title, "14 Feb", and "since 2019" when a year is set.</summary>
-    public sealed class NotedDateRow(NotedDate date)
+    public sealed class NotedDateRow(NotedDate date, IReadOnlyList<ExternalLink>? galleryLinks = null)
     {
+        /// <summary>The gallery links (CH-48), in order.</summary>
+        public IReadOnlyList<ExternalLink> GalleryLinks { get; } = galleryLinks ?? [];
+
+        /// <summary>"Gallery · host", "3 galleries", or empty.</summary>
+        public string GalleryText => GalleryWording.For(GalleryLinks);
+
         /// <summary>Its identifier in the memories file.</summary>
         public long NotedDateID { get; } = date.NotedDateID;
 
@@ -59,12 +65,14 @@ namespace Chatcheology.Desktop.ViewModels
         ];
 
         private readonly NotedDateStore _store;
+        private readonly ExternalLinkStore _linkStore;
         private readonly MemoriesDialogs _dialogs;
         private readonly Func<bool> _blocked;
         private readonly Func<DateTime> _utcNow;
         private readonly Action<long?> _closed;
         private readonly Action<bool> _saving;
-        private readonly long? _notedDateID;
+        private long? _notedDateID;
+        private bool _itemSaved;
 
         private string _title = string.Empty;
         private string _dayText = string.Empty;
@@ -81,6 +89,7 @@ namespace Chatcheology.Desktop.ViewModels
 
         internal NotedDateFormViewModel(
             NotedDateStore store,
+            ExternalLinkStore linkStore,
             MemoriesDialogs dialogs,
             NotedDateRow? existing,
             Func<bool> blocked,
@@ -89,6 +98,8 @@ namespace Chatcheology.Desktop.ViewModels
             Action<bool> saving)
         {
             _store = store;
+            _linkStore = linkStore;
+            GalleryLinks = new GalleryLinksEditor(existing?.GalleryLinks, () => !IsSaving);
             _dialogs = dialogs;
             _blocked = blocked;
             _utcNow = utcNow;
@@ -96,7 +107,7 @@ namespace Chatcheology.Desktop.ViewModels
             _saving = saving;
 
             SaveCommand = new AsyncRelayCommand(SaveAsync, () => !IsSaving && !_blocked());
-            CancelCommand = new RelayCommand(() => _closed(null), () => !IsSaving);
+            CancelCommand = new RelayCommand(() => _closed(_itemSaved ? _notedDateID : null), () => !IsSaving);
 
             if (existing is not null)
             {
@@ -122,6 +133,9 @@ namespace Chatcheology.Desktop.ViewModels
 
         /// <summary>"New noted date" or "Edit noted date".</summary>
         public string Heading => IsNew ? "New noted date" : "Edit noted date";
+
+        /// <summary>The gallery links (CH-48): up to 10, in order.</summary>
+        public GalleryLinksEditor GalleryLinks { get; }
 
         /// <summary>January to December.</summary>
         public IReadOnlyList<MonthChoice> Months => AllMonths;
@@ -238,6 +252,7 @@ namespace Chatcheology.Desktop.ViewModels
         {
             SaveCommand.RaiseCanExecuteChanged();
             CancelCommand.RaiseCanExecuteChanged();
+            GalleryLinks.RaiseCommandStates();
         }
 
         private string Problem(string field) => _problems.TryGetValue(field, out var text) ? text : string.Empty;
@@ -305,7 +320,9 @@ namespace Chatcheology.Desktop.ViewModels
 
         private async Task SaveAsync()
         {
-            if (HasProblems)
+            var galleryOk = GalleryLinks.Validate();
+
+            if (HasProblems || !galleryOk)
             {
                 // Show every problem, write nothing, and never reach the store.
                 _titleTouched = _dateTouched = _yearTouched = _noteTouched = true;
@@ -337,11 +354,15 @@ namespace Chatcheology.Desktop.ViewModels
             _saving(true);
 
             long? saved = null;
+            var itemSaved = false;
+            string? linkFailure = null;
+            var galleryDrafts = GalleryLinks.Drafts();
 
             try
             {
                 var now = _utcNow();
                 var store = _store;
+                var linkStore = _linkStore;
 
                 saved = _notedDateID is { } existing
                     ? await Task.Run(() =>
@@ -350,6 +371,24 @@ namespace Chatcheology.Desktop.ViewModels
                         return existing;
                     }).ConfigureAwait(true)
                     : await Task.Run(() => store.Add(draft, create, now)).ConfigureAwait(true);
+                itemSaved = true;
+
+                // Two transactions: the links were checked before the date was saved; a failure here is shown.
+                var id = saved.Value;
+
+                try
+                {
+                    await Task.Run(() => linkStore.ReplaceForNotedDate(id, galleryDrafts)).ConfigureAwait(true);
+                }
+                catch (PersonalMemoryValidationException exception)
+                {
+                    GalleryLinks.ShowStoreError(exception);
+                    linkFailure = "The noted date was saved, but its gallery links were not.";
+                }
+                catch (Exception exception) when (MemoriesViewModel.IsExpected(exception))
+                {
+                    linkFailure = MemoriesViewModel.Describe(exception, "The noted date was saved, but its gallery links were not.");
+                }
             }
             catch (PersonalMemoryValidationException exception)
             {
@@ -365,9 +404,24 @@ namespace Chatcheology.Desktop.ViewModels
                 _saving(false);
             }
 
-            if (saved is { } id)
+            if (itemSaved && saved is { } savedID)
             {
-                _closed(id);
+                // From here a Save updates this date instead of adding another.
+                _notedDateID = savedID;
+                _itemSaved = true;
+                OnPropertyChanged(nameof(IsNew));
+                OnPropertyChanged(nameof(Heading));
+            }
+
+            if (linkFailure is not null)
+            {
+                FormError = linkFailure + " Fix the problem and save again, or cancel to keep the date without them.";
+                return;
+            }
+
+            if (saved is { } id2)
+            {
+                _closed(id2);
             }
         }
 
