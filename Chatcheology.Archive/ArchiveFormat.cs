@@ -86,6 +86,13 @@ namespace Chatcheology.Archive
         /// </summary>
         public const string NotedDateTableName = "NotedDate";
 
+        /// <summary>
+        /// The table of external links (CH-48) on personal entries and noted dates. Written into every version 2
+        /// archive, but not required, like <see cref="EntryImageTableName"/>: a version 2 archive without it reads
+        /// as having no external links.
+        /// </summary>
+        public const string ExternalLinkTableName = "ExternalLink";
+
         /// <summary>The tables of the given format version a reader requires.</summary>
         /// <exception cref="ArgumentOutOfRangeException">Not a version this build knows.</exception>
         public static IReadOnlyList<string> TableNamesOf(int formatVersion) => formatVersion switch

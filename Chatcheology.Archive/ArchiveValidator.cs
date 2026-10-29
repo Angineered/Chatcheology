@@ -73,7 +73,12 @@ namespace Chatcheology.Archive
                 or ArchiveProblemKind.NotedDateTitleInvalid
                 or ArchiveProblemKind.NotedDateDateInvalid
                 or ArchiveProblemKind.NotedDateYearInvalid
-                or ArchiveProblemKind.NotedDateNoteInvalid => ArchiveCheck.LinksAndBasis,
+                or ArchiveProblemKind.NotedDateNoteInvalid
+                or ArchiveProblemKind.ExternalLinkUrlInvalid
+                or ArchiveProblemKind.ExternalLinkLabelInvalid
+                or ArchiveProblemKind.ExternalLinkOwnerInvalid
+                or ArchiveProblemKind.ExternalLinkOrdinalsInvalid
+                or ArchiveProblemKind.ExternalLinkTooMany => ArchiveCheck.LinksAndBasis,
 
             ArchiveProblemKind.SequenceNumberInvalid
                 or ArchiveProblemKind.SequenceGap
@@ -214,6 +219,7 @@ namespace Chatcheology.Archive
                     (counted.ItemDefinitions, reader.ReadCount("SELECT COUNT(*) FROM ItemDefinition;")),
                     (counted.EntryImages, reader.HasEntryImages ? reader.ReadCount("SELECT COUNT(*) FROM EntryImage;") : 0),
                     (counted.NotedDates, reader.HasNotedDates ? reader.ReadCount("SELECT COUNT(*) FROM NotedDate;") : 0),
+                    (counted.ExternalLinks, reader.HasExternalLinks ? reader.ReadCount("SELECT COUNT(*) FROM ExternalLink;") : 0),
                 };
 
                 var actual = reader.ReadCollectionCounts();
@@ -383,6 +389,7 @@ namespace Chatcheology.Archive
                     ? (int)reader.ReadCount("SELECT COUNT(*) FROM Entry;") + (int)reader.ReadCount("SELECT COUNT(*) FROM ItemDefinition;")
                       + (reader.HasEntryImages ? (int)reader.ReadCount("SELECT COUNT(*) FROM EntryImage;") : 0)
                       + (reader.HasNotedDates ? (int)reader.ReadCount("SELECT COUNT(*) FROM NotedDate;") : 0)
+                      + (reader.HasExternalLinks ? (int)reader.ReadCount("SELECT COUNT(*) FROM ExternalLink;") : 0)
                     : 0));
             record.Examined(ArchiveCheck.SequenceAndSenders, messages);
 
@@ -587,8 +594,42 @@ namespace Chatcheology.Archive
             record.AddCount(ArchiveProblemKind.PeriodCountsDiffer, (int)reader.ReadPeriodCountsDiffer());
 
             CheckNotedDates(reader, record);
+            CheckExternalLinks(reader, record);
 
             return images;
+        }
+
+        /// <summary>
+        /// External links (CH-48): each row's address and label against <see cref="ExternalLinkRules"/> and its
+        /// owner (a personal entry or a noted date of the archive), one problem per link; each owner's links
+        /// numbered 1..n and at most 10, one problem per owner. None in an archive without the table. No link is
+        /// opened or looked up.
+        /// </summary>
+        private static void CheckExternalLinks(ArchiveReader reader, Recorder record)
+        {
+            if (!reader.HasExternalLinks)
+            {
+                return;
+            }
+
+            foreach (var link in reader.ReadAllExternalLinks())
+            {
+                if (ExternalLinkRules.UrlError(link.Url) is not null)
+                {
+                    record.Add(ArchiveProblemKind.ExternalLinkUrlInvalid);
+                }
+
+                if (ExternalLinkRules.LabelError(link.Label) is not null)
+                {
+                    record.Add(ArchiveProblemKind.ExternalLinkLabelInvalid);
+                }
+            }
+
+            record.AddCount(
+                ArchiveProblemKind.ExternalLinkOwnerInvalid,
+                (int)reader.ReadCount(ArchiveMemoryRules.ExternalLinksOwnerInvalid(reader.HasNotedDates)));
+            record.AddCount(ArchiveProblemKind.ExternalLinkOrdinalsInvalid, (int)reader.ReadCount(ArchiveMemoryRules.ExternalLinkOwnersOrdinalsInvalid));
+            record.AddCount(ArchiveProblemKind.ExternalLinkTooMany, (int)reader.ReadCount(ArchiveMemoryRules.ExternalLinkOwnersTooMany));
         }
 
         /// <summary>
@@ -834,6 +875,27 @@ namespace Chatcheology.Archive
 
         /// <summary>Version 2 (CH-47): a noted date's note is blank or longer than 500 characters.</summary>
         NotedDateNoteInvalid,
+
+        /// <summary>
+        /// Version 2 (CH-48): an external link's address is not an absolute https link with a host, has a
+        /// user-info part or a space, or is longer than 2,000 characters.
+        /// </summary>
+        ExternalLinkUrlInvalid,
+
+        /// <summary>Version 2 (CH-48): an external link's label is blank or longer than 60 characters.</summary>
+        ExternalLinkLabelInvalid,
+
+        /// <summary>
+        /// Version 2 (CH-48): an external link's owner is not an entry of a personal collection or a noted date
+        /// the archive holds.
+        /// </summary>
+        ExternalLinkOwnerInvalid,
+
+        /// <summary>Version 2 (CH-48): an entry's or noted date's external links are not numbered 1..n (a gap or a repeat).</summary>
+        ExternalLinkOrdinalsInvalid,
+
+        /// <summary>Version 2 (CH-48): an entry or a noted date has more than 10 external links.</summary>
+        ExternalLinkTooMany,
     }
 
     /// <summary>

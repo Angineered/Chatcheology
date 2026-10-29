@@ -38,14 +38,14 @@ namespace Chatcheology.Archive
 
         private readonly string _messageColumns;
 
-        private ArchiveReader(
-            string folderPath, SqliteConnection connection, ArchiveInfo info, bool hasEntryImageTable, bool hasNotedDateTable)
+        private ArchiveReader(string folderPath, SqliteConnection connection, ArchiveInfo info, HashSet<string> tables)
         {
             FolderPath = folderPath;
             _connection = connection;
             Info = info;
-            HasEntryImages = info.FormatVersion >= 2 && hasEntryImageTable;
-            HasNotedDates = info.FormatVersion >= 2 && hasNotedDateTable;
+            HasEntryImages = info.FormatVersion >= 2 && tables.Contains(ArchiveFormat.EntryImageTableName);
+            HasNotedDates = info.FormatVersion >= 2 && tables.Contains(ArchiveFormat.NotedDateTableName);
+            HasExternalLinks = info.FormatVersion >= 2 && tables.Contains(ArchiveFormat.ExternalLinkTableName);
 
             // A version 1 archive has no Source column: every message in it is a workspace message.
             _messageColumns = info.FormatVersion >= 2 ? MessageColumnsV2 : MessageColumnsV1;
@@ -65,6 +65,12 @@ namespace Chatcheology.Archive
         /// lacks the table and reads as having no noted dates; a version 1 archive has none.
         /// </summary>
         public bool HasNotedDates { get; }
+
+        /// <summary>
+        /// Whether the archive has the <c>ExternalLink</c> table (CH-48). A version 2 archive written before it
+        /// lacks the table and reads as having no external links; a version 1 archive has none.
+        /// </summary>
+        public bool HasExternalLinks { get; }
 
         /// <summary>The archive folder, as a full path.</summary>
         public string FolderPath { get; }
@@ -142,12 +148,7 @@ namespace Chatcheology.Archive
                         "The archive's recorded format version does not match its database version.");
                 }
 
-                return new ArchiveReader(
-                    folder,
-                    connection,
-                    info,
-                    tables.Contains(ArchiveFormat.EntryImageTableName),
-                    tables.Contains(ArchiveFormat.NotedDateTableName));
+                return new ArchiveReader(folder, connection, info, tables);
             }
             catch (SqliteException)
             {
@@ -736,6 +737,74 @@ namespace Chatcheology.Archive
             }
 
             return dates;
+        }
+
+        /// <summary>
+        /// The external links (CH-48) of one personal entry or noted date, by ordinal, as stored. None in an archive
+        /// without the <c>ExternalLink</c> table. A value of the wrong kind is refused; the rules are the
+        /// validator's to count. Nothing here opens or checks a link.
+        /// </summary>
+        public IReadOnlyList<ArchiveExternalLink> ReadExternalLinks(ExternalLinkOwnerKind ownerKind, long ownerID)
+        {
+            if (!HasExternalLinks)
+            {
+                return [];
+            }
+
+            using var command = _connection.CreateCommand();
+            command.CommandText =
+                $"""
+                {ExternalLinkColumns}
+                WHERE OwnerKind = $kind AND OwnerID = $owner
+                ORDER BY Ordinal, ExternalLinkID;
+                """;
+            command.Parameters.AddWithValue("$kind", ExternalLinkRules.OwnerKindText(ownerKind));
+            command.Parameters.AddWithValue("$owner", ownerID);
+
+            return ReadExternalLinkRows(command);
+        }
+
+        /// <summary>
+        /// Every external link (CH-48), ordered by identifier, as stored. None in an archive without the
+        /// <c>ExternalLink</c> table. For the validator, the comparer and a viewer that groups them itself.
+        /// </summary>
+        public IReadOnlyList<ArchiveExternalLink> ReadAllExternalLinks()
+        {
+            if (!HasExternalLinks)
+            {
+                return [];
+            }
+
+            using var command = _connection.CreateCommand();
+            command.CommandText = $"{ExternalLinkColumns} ORDER BY ExternalLinkID;";
+
+            return ReadExternalLinkRows(command);
+        }
+
+        private const string ExternalLinkColumns = "SELECT ExternalLinkID, OwnerKind, OwnerID, Ordinal, Url, Label FROM ExternalLink";
+
+        private static List<ArchiveExternalLink> ReadExternalLinkRows(SqliteCommand command)
+        {
+            var links = new List<ArchiveExternalLink>();
+
+            using var reader = command.ExecuteReader();
+
+            while (reader.Read())
+            {
+                links.Add(new ArchiveExternalLink
+                {
+                    ExternalLinkID = Integer(reader, 0),
+                    OwnerKind = ExternalLinkRules.TryParseOwnerKind(Text(reader, 1), out var kind)
+                        ? kind
+                        : throw new ArchiveFormatException("An external link in the archive has an owner kind the format does not define."),
+                    OwnerID = Integer(reader, 2),
+                    Ordinal = Int32(reader, 3),
+                    Url = Text(reader, 4),
+                    Label = NullableText(reader, 5),
+                });
+            }
+
+            return links;
         }
 
         /// <summary>Every entry, ordered by identifier. For the validator and the comparer.</summary>

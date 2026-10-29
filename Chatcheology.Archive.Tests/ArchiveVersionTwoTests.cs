@@ -331,6 +331,287 @@ namespace Chatcheology.Archive.Tests
         }
 
         // ---------------------------------------------------------------------------------------
+        // External links (CH-48).
+        // ---------------------------------------------------------------------------------------
+
+        /// <summary>
+        /// Two links on the personal entry 20 (written out of order) and one on noted date 1; invented addresses.
+        /// The identifiers are not 1..n, so keeping them is visible.
+        /// </summary>
+        private static readonly ArchiveExternalLink[] ExternalLinks =
+        [
+            new() { ExternalLinkID = 7, OwnerKind = ExternalLinkOwnerKind.Entry, OwnerID = 20, Ordinal = 2, Url = "https://photos.example.org/album/b", Label = null },
+            new() { ExternalLinkID = 3, OwnerKind = ExternalLinkOwnerKind.Entry, OwnerID = 20, Ordinal = 1, Url = "https://photos.example.org/album/a", Label = "Day 1" },
+            new() { ExternalLinkID = 9, OwnerKind = ExternalLinkOwnerKind.NotedDate, OwnerID = 1, Ordinal = 1, Url = "https://photos.example.org/album/c?key=x#top", Label = "Invented album" },
+        ];
+
+        [Fact]
+        public void ExternalLinks_RoundTrip_AsStored_AndValidate()
+        {
+            var counts = WriteMemoryArchive(_folder.Path, externalLinks: true);
+
+            Assert.Equal(3, counts.ExternalLinks);
+            Assert.Contains("\"externalLinks\": 3", File.ReadAllText(Path.Combine(_folder.Path, ArchiveFormat.ManifestFileName)), StringComparison.Ordinal);
+
+            var result = ArchiveValidator.Validate(_folder.Path);
+            Assert.True(result.Passed, string.Join(", ", result.FirstProblems));
+
+            using var reader = ArchiveReader.Open(_folder.Path);
+
+            Assert.True(reader.HasExternalLinks);
+            Assert.Equal(
+                [(3L, 1, "https://photos.example.org/album/a", (string?)"Day 1"), (7L, 2, "https://photos.example.org/album/b", null)],
+                reader.ReadExternalLinks(ExternalLinkOwnerKind.Entry, 20).Select(l => (l.ExternalLinkID, l.Ordinal, l.Url, l.Label)));
+            Assert.Equal([9L], reader.ReadExternalLinks(ExternalLinkOwnerKind.NotedDate, 1).Select(l => l.ExternalLinkID));
+            Assert.Empty(reader.ReadExternalLinks(ExternalLinkOwnerKind.Entry, 1));
+            Assert.Empty(reader.ReadExternalLinks(ExternalLinkOwnerKind.NotedDate, 20));
+            Assert.Equal(
+                ExternalLinks.OrderBy(l => l.ExternalLinkID).Select(l => (l.ExternalLinkID, l.OwnerKind, l.OwnerID, l.Ordinal, l.Url, l.Label)),
+                reader.ReadAllExternalLinks().Select(l => (l.ExternalLinkID, l.OwnerKind, l.OwnerID, l.Ordinal, l.Url, l.Label)));
+        }
+
+        [Fact]
+        public void AnArchiveWithoutTheExternalLinkTable_ReadsAsNoLinks_AndValidates()
+        {
+            WriteMemoryArchive(_folder.Path, notedDates: true);
+            ArchiveSample.Tamper(_folder.Path, "DROP TABLE ExternalLink; VACUUM;");
+
+            // The manifest of a build before CH-48 had no externalLinks count; it reads as 0.
+            var manifestPath = Path.Combine(_folder.Path, ArchiveFormat.ManifestFileName);
+            File.WriteAllText(
+                manifestPath,
+                File.ReadAllText(manifestPath).Replace("    \"externalLinks\": 0,\n", string.Empty, StringComparison.Ordinal));
+            Assert.DoesNotContain("externalLinks", File.ReadAllText(manifestPath), StringComparison.Ordinal);
+            Assert.Equal(0, ArchiveManifest.Parse(File.ReadAllBytes(manifestPath)).Counts.ExternalLinks);
+            File.WriteAllBytes(Path.Combine(_folder.Path, ArchiveContents.FileName), ArchiveContents.Build(_folder.Path));
+
+            var result = ArchiveValidator.Validate(_folder.Path);
+            Assert.True(result.Passed, string.Join(", ", result.FirstProblems));
+
+            using var reader = ArchiveReader.Open(_folder.Path);
+
+            Assert.True(reader.HasMemories);
+            Assert.True(reader.HasNotedDates);
+            Assert.False(reader.HasExternalLinks);
+            Assert.Empty(reader.ReadAllExternalLinks());
+            Assert.Empty(reader.ReadExternalLinks(ExternalLinkOwnerKind.Entry, 20));
+        }
+
+        [Fact]
+        public void AnExternalLinkBreakingEachRule_IsFoundByTheValidator()
+        {
+            WriteMemoryArchive(_folder.Path, externalLinks: true);
+
+            var tooLong = "https://photos.example.org/" + new string('x', 2001 - 27);
+            Assert.Equal(2001, tooLong.Length);
+
+            // The schema states the address and label rules; a damaged or hand-edited file can still break them.
+            ArchiveSample.Tamper(
+                _folder.Path,
+                $"""
+                PRAGMA ignore_check_constraints = ON;
+                INSERT INTO ExternalLink VALUES (20, 'NotedDate', 2, 1, 'http://photos.example.org/x', NULL);
+                INSERT INTO ExternalLink VALUES (21, 'NotedDate', 2, 2, 'javascript:alert(1)', NULL);
+                INSERT INTO ExternalLink VALUES (22, 'NotedDate', 2, 3, 'https://photos.example.org@evil.example/x', NULL);
+                INSERT INTO ExternalLink VALUES (23, 'NotedDate', 2, 4, '{tooLong}', NULL);
+                INSERT INTO ExternalLink VALUES (24, 'NotedDate', 2, 5, '/relative/path', NULL);
+                INSERT INTO ExternalLink VALUES (25, 'NotedDate', 2, 6, 'https://photos.example.org/y', '   ');
+                INSERT INTO ExternalLink VALUES (26, 'NotedDate', 2, 7, 'https://photos.example.org/z', '{new string('l', 61)}');
+                INSERT INTO ExternalLink VALUES (30, 'Entry', 10, 1, 'https://photos.example.org/imported', NULL);
+                INSERT INTO ExternalLink VALUES (31, 'NotedDate', 99, 1, 'https://photos.example.org/gone', NULL);
+                INSERT INTO ExternalLink VALUES (32, 'Entry', 999, 1, 'https://photos.example.org/gone', NULL);
+                INSERT INTO ExternalLink VALUES (33, 'NotedDate', 4, 2, 'https://photos.example.org/gap', NULL);
+                INSERT INTO ExternalLink (ExternalLinkID, OwnerKind, OwnerID, Ordinal, Url, Label)
+                WITH RECURSIVE n(value) AS (SELECT 3 UNION ALL SELECT value + 1 FROM n WHERE value < 11)
+                SELECT 40 + value, 'Entry', 20, value, 'https://photos.example.org/many', NULL FROM n;
+                """);
+
+            var result = ArchiveValidator.Validate(_folder.Path);
+
+            Assert.Equal(5, result.ProblemCounts[ArchiveProblemKind.ExternalLinkUrlInvalid]);
+            Assert.Equal(2, result.ProblemCounts[ArchiveProblemKind.ExternalLinkLabelInvalid]);
+            Assert.Equal(3, result.ProblemCounts[ArchiveProblemKind.ExternalLinkOwnerInvalid]);
+            Assert.Equal(1, result.ProblemCounts[ArchiveProblemKind.ExternalLinkOrdinalsInvalid]);
+            Assert.Equal(1, result.ProblemCounts[ArchiveProblemKind.ExternalLinkTooMany]);
+            Assert.False(result.Checks.Single(c => c.Check == ArchiveCheck.LinksAndBasis).Passed);
+            Assert.Equal(ArchiveCheck.LinksAndBasis, ArchiveValidator.CheckOf(ArchiveProblemKind.ExternalLinkTooMany));
+
+            // The manifest's count is now behind too; no problem names a message.
+            Assert.Equal(1, result.ProblemCounts[ArchiveProblemKind.ManifestCountDiffers]);
+            Assert.All(result.FirstProblems, p => Assert.Null(p.SequenceNumber));
+        }
+
+        [Fact]
+        public void AnExternalLinkOnANotedDate_InAnArchiveWithoutTheNotedDateTable_HasNoOwner()
+        {
+            WriteMemoryArchive(_folder.Path, externalLinks: true);
+            ArchiveSample.Tamper(_folder.Path, "DROP TABLE NotedDate;");
+
+            var result = ArchiveValidator.Validate(_folder.Path);
+
+            Assert.Equal(1, result.ProblemCounts[ArchiveProblemKind.ExternalLinkOwnerInvalid]);
+        }
+
+        [Fact]
+        public void AnExternalLinkOfTheWrongKind_StopsTheRowChecks()
+        {
+            WriteMemoryArchive(_folder.Path, externalLinks: true);
+            ArchiveSample.Tamper(_folder.Path, "PRAGMA ignore_check_constraints = ON; UPDATE ExternalLink SET OwnerKind = 'Album' WHERE ExternalLinkID = 3;");
+
+            using (var reader = ArchiveReader.Open(_folder.Path))
+            {
+                Assert.Throws<ArchiveFormatException>(() => reader.ReadAllExternalLinks());
+            }
+
+            var result = ArchiveValidator.Validate(_folder.Path);
+
+            Assert.False(result.Passed);
+            Assert.Equal(1, result.ProblemCounts[ArchiveProblemKind.DatabaseUnreadable]);
+        }
+
+        [Fact]
+        public void AManifestExternalLinkCount_ThatDiffers_IsFound()
+        {
+            WriteMemoryArchive(_folder.Path, externalLinks: true);
+            ArchiveSample.Tamper(_folder.Path, "DELETE FROM ExternalLink WHERE ExternalLinkID = 9;");
+
+            var result = ArchiveValidator.Validate(_folder.Path);
+
+            Assert.Equal(1, result.ProblemCounts[ArchiveProblemKind.ManifestCountDiffers]);
+            Assert.Equal(0, result.ProblemCounts[ArchiveProblemKind.ExternalLinkOrdinalsInvalid]);
+        }
+
+        [Theory]
+        [InlineData("http://photos.example.org/a", null, 1)]
+        [InlineData("javascript:alert(1)", null, 1)]
+        [InlineData("file:///C:/synthetic.jpg", null, 1)]
+        [InlineData("intent://photos.example.org#Intent;end", null, 1)]
+        [InlineData("/relative/path", null, 1)]
+        [InlineData("#fragment", null, 1)]
+        [InlineData("https://someone@photos.example.org/a", null, 1)]
+        [InlineData(" https://photos.example.org/a", null, 1)]
+        [InlineData("https://photos.example.org/a", " ", 1)]
+        [InlineData("https://photos.example.org/a", "Label sixty-one characters long, which is one more than ok!!!", 1)]
+        [InlineData("https://photos.example.org/a", null, 0)]
+        public void TheWriter_RefusesAnExternalLinkBreakingARule(string url, string? label, int ordinal)
+        {
+            using var writer = Begin(Path.Combine(_folder.Path, ArchiveFormat.DatabaseFileName));
+
+            var refusal = Assert.Throws<InvalidOperationException>(() => writer.WriteExternalLink(new ArchiveExternalLink
+            {
+                ExternalLinkID = 1,
+                OwnerKind = ExternalLinkOwnerKind.Entry,
+                OwnerID = 20,
+                Ordinal = ordinal,
+                Url = url,
+                Label = label,
+            }));
+
+            // Names the rule, never the value.
+            Assert.Contains("external link", refusal.Message, StringComparison.Ordinal);
+            Assert.DoesNotContain("example", refusal.Message, StringComparison.Ordinal);
+        }
+
+        [Fact]
+        public void TheWriter_RefusesALinkTooLong_ButKeepsOneOfTheLongestLength()
+        {
+            var longest = "https://photos.example.org/" + new string('x', 2000 - 27);
+
+            using (var writer = Begin(Path.Combine(_folder.Path, ArchiveFormat.DatabaseFileName)))
+            {
+                Assert.Throws<InvalidOperationException>(() => writer.WriteExternalLink(Link(1, 20, 1, longest + "x")));
+                writer.WriteExternalLink(Link(1, 20, 1, longest));
+                writer.WriteExternalLink(Link(2, 20, 2, "https://photos.example.org/a", new string('l', 60)));
+                Assert.Equal(2, writer.Complete().ExternalLinks);
+            }
+        }
+
+        [Theory]
+        [InlineData("Entry", 10, 1)]
+        [InlineData("Entry", 999, 1)]
+        [InlineData("NotedDate", 1, 1)]
+        [InlineData("Entry", 20, 2)]
+        public void TheWriter_RefusesALinkWithoutAPersonalOwner_OrOutOfOrder(string kind, long owner, int ordinal)
+        {
+            using var writer = Begin(Path.Combine(_folder.Path, ArchiveFormat.DatabaseFileName));
+
+            // No noted date is written here, so noted date 1 is not there either.
+            writer.WriteExternalLink(new ArchiveExternalLink
+            {
+                ExternalLinkID = 1,
+                OwnerKind = Enum.Parse<ExternalLinkOwnerKind>(kind),
+                OwnerID = owner,
+                Ordinal = ordinal,
+                Url = "https://photos.example.org/a",
+                Label = null,
+            });
+
+            Assert.Throws<InvalidOperationException>(() => writer.Complete());
+        }
+
+        [Fact]
+        public void TheWriter_RefusesMoreThanTenLinksOnOneOwner()
+        {
+            using (var writer = Begin(Path.Combine(_folder.Path, ArchiveFormat.DatabaseFileName)))
+            {
+                for (var ordinal = 1; ordinal <= 11; ordinal++)
+                {
+                    writer.WriteExternalLink(Link(ordinal, 20, ordinal, "https://photos.example.org/a"));
+                }
+
+                Assert.Throws<InvalidOperationException>(() => writer.Complete());
+            }
+
+            File.Delete(Path.Combine(_folder.Path, ArchiveFormat.DatabaseFileName));
+
+            using (var writer = Begin(Path.Combine(_folder.Path, ArchiveFormat.DatabaseFileName)))
+            {
+                for (var ordinal = 1; ordinal <= 10; ordinal++)
+                {
+                    writer.WriteExternalLink(Link(ordinal, 20, ordinal, "https://photos.example.org/a"));
+                }
+
+                Assert.Equal(10, writer.Complete().ExternalLinks);
+            }
+        }
+
+        [Fact]
+        public void AVersionOneArchive_HasNoExternalLinks_AndRefusesOne()
+        {
+            ArchiveSample.WriteFolder(_folder.Path, gapless: true, formatVersion: 1);
+
+            using (var reader = ArchiveReader.Open(_folder.Path))
+            {
+                Assert.False(reader.HasExternalLinks);
+                Assert.Empty(reader.ReadAllExternalLinks());
+            }
+
+            var info = ArchiveSample.Info();
+            using var writer = ArchiveWriter.Create(Path.Combine(_folder.Path, "other.db"), new ArchiveInfo
+            {
+                FormatVersion = 1,
+                CreatedUtc = info.CreatedUtc,
+                ProducerVersion = info.ProducerVersion,
+                ConversationTitle = info.ConversationTitle,
+                SourceExportSha256 = info.SourceExportSha256,
+                TimeZoneID = info.TimeZoneID,
+                LocalParticipantID = info.LocalParticipantID,
+            });
+
+            Assert.Throws<InvalidOperationException>(() => writer.WriteExternalLink(ExternalLinks[0]));
+        }
+
+        private static ArchiveExternalLink Link(long id, long entry, int ordinal, string url, string? label = null) => new()
+        {
+            ExternalLinkID = id,
+            OwnerKind = ExternalLinkOwnerKind.Entry,
+            OwnerID = entry,
+            Ordinal = ordinal,
+            Url = url,
+            Label = label,
+        };
+
+        // ---------------------------------------------------------------------------------------
         // Version 1.
         // ---------------------------------------------------------------------------------------
 
@@ -839,17 +1120,25 @@ namespace Chatcheology.Archive.Tests
         }
 
         /// <summary>A whole version 2 archive folder with one export message, two collections and links.</summary>
-        private static ArchiveCounts WriteMemoryArchive(string folder, bool photos = false, bool notedDates = false)
+        private static ArchiveCounts WriteMemoryArchive(string folder, bool photos = false, bool notedDates = false, bool externalLinks = false)
         {
             ArchiveCounts counts;
 
             using (var writer = Begin(Path.Combine(folder, ArchiveFormat.DatabaseFileName), photos: photos))
             {
-                if (notedDates)
+                if (notedDates || externalLinks)
                 {
                     foreach (var date in NotedDates)
                     {
                         writer.WriteNotedDate(date);
+                    }
+                }
+
+                if (externalLinks)
+                {
+                    foreach (var link in ExternalLinks)
+                    {
+                        writer.WriteExternalLink(link);
                     }
                 }
 

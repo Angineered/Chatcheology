@@ -99,6 +99,39 @@ namespace Chatcheology.Archive
             WHERE NOT EXISTS (SELECT 1 FROM EntryItem AS i WHERE i.SetId = d.SetId AND i.ItemId = d.ItemId);
             """;
 
+        /// <summary>
+        /// External links (CH-48) whose owner is not a personal entry or a noted date of the archive. An archive
+        /// without the <c>NotedDate</c> table (<paramref name="hasNotedDates"/> false) has no noted date to own one.
+        /// </summary>
+        internal static string ExternalLinksOwnerInvalid(bool hasNotedDates) =>
+            $"""
+            SELECT COUNT(*) FROM ExternalLink AS l
+            LEFT JOIN Entry AS e ON l.OwnerKind = 'Entry' AND e.EntryID = l.OwnerID
+            LEFT JOIN Collection AS c ON c.CollectionID = e.CollectionID
+            WHERE NOT ((l.OwnerKind = 'Entry' AND c.Kind IS 'Personal')
+                    OR (l.OwnerKind = 'NotedDate' AND {(hasNotedDates
+                        ? "EXISTS (SELECT 1 FROM NotedDate AS n WHERE n.NotedDateID = l.OwnerID)"
+                        : "0")}));
+            """;
+
+        /// <summary>Owners (CH-48) whose links are not numbered 1..n without a gap or a repeat.</summary>
+        internal const string ExternalLinkOwnersOrdinalsInvalid =
+            """
+            SELECT COUNT(*) FROM (
+                SELECT 1 FROM ExternalLink
+                GROUP BY OwnerKind, OwnerID
+                HAVING MIN(Ordinal) <> 1 OR MAX(Ordinal) <> COUNT(*) OR COUNT(DISTINCT Ordinal) <> COUNT(*));
+            """;
+
+        /// <summary>Owners (CH-48) with more than the allowed number of links.</summary>
+        internal const string ExternalLinkOwnersTooMany =
+            """
+            SELECT COUNT(*) FROM (
+                SELECT 1 FROM ExternalLink
+                GROUP BY OwnerKind, OwnerID
+                HAVING COUNT(*) > 10);
+            """;
+
         /// <summary>Entries, periods and items per collection, ordered by collection.</summary>
         internal const string CollectionCounts =
             """
