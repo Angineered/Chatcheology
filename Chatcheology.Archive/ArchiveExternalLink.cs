@@ -64,11 +64,16 @@ namespace Chatcheology.Archive
     /// show the host through <see cref="DisplayHost"/>.
     /// </summary>
     /// <remarks>
-    /// <para>Address: an absolute <c>https</c> link, starting with <c>https://</c>, with a host and no
-    /// user-info part (<c>https://a@b</c> is refused: it disguises the real host), no space or control
-    /// character, at most 2,000 characters. Relative, fragment-only, <c>http</c>, <c>javascript:</c>,
-    /// <c>file:</c>, <c>intent:</c>, <c>content:</c> and every other scheme are refused.</para>
-    /// <para>Label: optional; trimmed, 1 to 60 characters; blank means none.</para>
+    /// <para>Address: an absolute <c>https</c> link, starting with <c>https://</c>, no space, control or format
+    /// character (such as a right-to-left override or a zero-width space), at most 2,000 characters. Its
+    /// authority (between <c>https://</c> and the first <c>/</c>, <c>?</c> or <c>#</c>) holds only letters,
+    /// decimal digits, <c>-</c> and <c>.</c>, and at most one <c>:</c> followed by a numeric port: so no
+    /// user-info part (<c>https://a@b</c> disguises the real host) and no look-alike of <c>@</c>, <c>/</c>,
+    /// <c>.</c>, <c>?</c> or <c>#</c> that a browser would turn into one. Its IDN host must compute to plain
+    /// ASCII. Relative, fragment-only, <c>http</c>, <c>javascript:</c>, <c>file:</c>, <c>intent:</c>,
+    /// <c>content:</c> and every other scheme are refused. Every address these rules accept has a host
+    /// <see cref="DisplayHost"/> can show and a <see cref="LaunchUri"/> form.</para>
+    /// <para>Label: optional; trimmed, 1 to 60 characters, no control or format character; blank means none.</para>
     /// <para>At most 10 links per owner, ordered 1..n.</para>
     /// <para>Lengths are counted in UTF-16 code units (<see cref="string.Length"/>), so a text that passes
     /// here also passes the schemas' <c>length()</c> checks, which count characters.</para>
@@ -157,9 +162,9 @@ namespace Chatcheology.Archive
                 return $"Keep the link to {MaxUrlLength.ToString("N0", CultureInfo.CurrentCulture)} characters.";
             }
 
-            if (url.Any(c => char.IsWhiteSpace(c) || char.IsControl(c)))
+            if (url.Any(c => char.IsWhiteSpace(c) || char.IsControl(c) || IsFormat(c)))
             {
-                return "A link cannot contain spaces or line breaks.";
+                return "A link cannot contain spaces, line breaks or invisible characters.";
             }
 
             if (!url.StartsWith(Prefix, StringComparison.OrdinalIgnoreCase))
@@ -170,7 +175,7 @@ namespace Chatcheology.Archive
             // The authority is everything between "https://" and the first '/', '?' or '#'. An '@' in it means
             // a user-info part, which can make "https://photos.google.com@example.org" look like another host.
             var rest = url[Prefix.Length..];
-            var end = rest.IndexOfAny(['/', '?', '#', '\\']);
+            var end = rest.IndexOfAny(['/', '?', '#']);
             var authority = end < 0 ? rest : rest[..end];
 
             if (authority.Contains('@', StringComparison.Ordinal))
@@ -178,15 +183,90 @@ namespace Chatcheology.Archive
                 return "A link with a name or password before the address (an @ before the host) cannot be kept.";
             }
 
-            if (!Uri.TryCreate(url, UriKind.Absolute, out var uri)
-                || !string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.Ordinal)
-                || string.IsNullOrEmpty(uri.Host)
-                || uri.UserInfo.Length > 0)
+            if (!IsPlainAuthority(authority))
             {
-                return "That is not a complete https link.";
+                return "The link's host has characters a web address host cannot have.";
             }
 
-            return null;
+            return TryParse(url, out _, out _) ? null : "That is not a complete https link.";
+        }
+
+        /// <summary>
+        /// The address in the form to hand to another app: <see cref="Uri.AbsoluteUri"/> with the host in punycode
+        /// (the host <see cref="DisplayHost"/> shows), so the scheme and host are lower case. <see langword="null"/>
+        /// when the address breaks a rule. Trims first, as a store does.
+        /// </summary>
+        public static string? LaunchUri(string? url)
+        {
+            var stored = NormaliseUrl(url);
+
+            if (UrlError(stored) is not null || !TryParse(stored!, out var uri, out var host))
+            {
+                return null;
+            }
+
+            try
+            {
+                return new UriBuilder(uri) { Host = host }.Uri.AbsoluteUri;
+            }
+            catch (UriFormatException)
+            {
+                return null;
+            }
+        }
+
+        private static bool IsFormat(char c) => char.GetUnicodeCategory(c) == UnicodeCategory.Format;
+
+        /// <summary>
+        /// Letters, decimal digits, '-' and '.', then at most one ':' with a numeric port. Anything else (a
+        /// full-width '@' or '/', a one-dot leader, a symbol that a browser maps to ASCII punctuation) is refused.
+        /// </summary>
+        private static bool IsPlainAuthority(string authority)
+        {
+            var colon = authority.IndexOf(':', StringComparison.Ordinal);
+            var host = colon < 0 ? authority : authority[..colon];
+
+            if (colon >= 0)
+            {
+                var port = authority[(colon + 1)..];
+
+                if (port.Length is < 1 or > 5 || !port.All(char.IsAsciiDigit))
+                {
+                    return false;
+                }
+            }
+
+            return host.Length > 0 && host.All(c => char.IsLetter(c) || char.IsDigit(c) || c is '-' or '.');
+        }
+
+        /// <summary>
+        /// Parses an address as an absolute https link with a host and no user-info part, and computes its IDN
+        /// host, which must come out as plain ASCII (letters, digits, '-', '.'), lower-cased. False on any failure.
+        /// </summary>
+        private static bool TryParse(string url, out Uri uri, out string host)
+        {
+            host = string.Empty;
+            uri = null!;
+
+            try
+            {
+                if (!Uri.TryCreate(url, UriKind.Absolute, out var parsed)
+                    || !string.Equals(parsed.Scheme, Uri.UriSchemeHttps, StringComparison.Ordinal)
+                    || string.IsNullOrEmpty(parsed.Host)
+                    || parsed.UserInfo.Length > 0)
+                {
+                    return false;
+                }
+
+                uri = parsed;
+                host = parsed.IdnHost.ToLowerInvariant();
+            }
+            catch (Exception exception) when (exception is UriFormatException or ArgumentException or InvalidOperationException)
+            {
+                return false;
+            }
+
+            return host.Length > 0 && host.All(c => char.IsAsciiLetterLower(c) || char.IsAsciiDigit(c) || c is '-' or '.');
         }
 
         /// <summary>The label's problem, or null. Checks the label as it would be stored (see <see cref="NormaliseLabel"/>).</summary>
@@ -202,6 +282,11 @@ namespace Chatcheology.Archive
             if (trimmed.Length == 0)
             {
                 return "A label cannot be blank; leave it out instead.";
+            }
+
+            if (label.Any(c => char.IsControl(c) || IsFormat(c)))
+            {
+                return "A label cannot contain line breaks or invisible characters.";
             }
 
             return trimmed.Length > MaxLabelLength
@@ -253,9 +338,8 @@ namespace Chatcheology.Archive
         {
             var stored = NormaliseUrl(url);
 
-            return UrlError(stored) is null && Uri.TryCreate(stored, UriKind.Absolute, out var uri)
-                ? uri.IdnHost.ToLowerInvariant()
-                : null;
+            // UrlError has already computed the same host without failing, so this cannot throw.
+            return UrlError(stored) is null && TryParse(stored!, out _, out var host) ? host : null;
         }
     }
 }

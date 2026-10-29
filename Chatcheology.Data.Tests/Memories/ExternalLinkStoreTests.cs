@@ -244,6 +244,11 @@ namespace Chatcheology.Data.Tests.Memories
         [InlineData("#fragment", null)]
         [InlineData("https://someone@photos.example.org/a", null)]
         [InlineData("", null)]
+        [InlineData("https://photos.google.com＠evil.example/", null)]
+        [InlineData("https://evil⒈example/", null)]
+        [InlineData("https://photos.example.org/‮gpj.exe", null)]
+        [InlineData("https://photos.example.org/a", "Day\n1")]
+        [InlineData("https://photos.example.org/a", "Day​1")]
         [InlineData("https://photos.example.org/a", "Sixty-one characters for a label is exactly one too many!!!!!")]
         public void EveryRule_IsTheStoresRule(string url, string? label)
         {

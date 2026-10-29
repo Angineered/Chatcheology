@@ -6,16 +6,131 @@ namespace Chatcheology.Archive.Tests
     /// </summary>
     public sealed class ExternalLinkRulesTests
     {
+        /// <summary>Every address the rule tests expect to be kept.</summary>
+        public static readonly TheoryData<string> Accepted = new()
+        {
+            "https://photos.example.org/album/abc",
+            "HTTPS://photos.example.org/album/abc",
+            "HTTPS://PHOTOS.EXAMPLE.ORG/x",
+            "https://photos.example.org",
+            "https://photos.example.org/",
+            "https://photos.example.org:8443/a?b=c&d=e#f",
+            "https://xn--pple-43d.example/a",
+            "https://\u0430pple.example/album",
+            "https://b\u00fccher.example/a",
+            "https://photos-1.example.org/a",
+            "https://photos.example.org/album/@someone",
+            "https://photos.example.org/a?mail=a@b.example",
+            "https://photos.example.org/a?x=\uFF20#\u2047",
+            "https://photos.example.org/" + new string('x', 2000 - 27),
+        };
+
         [Theory]
-        [InlineData("https://photos.example.org/album/abc")]
-        [InlineData("HTTPS://photos.example.org/album/abc")]
-        [InlineData("https://photos.example.org")]
-        [InlineData("https://photos.example.org:8443/a?b=c&d=e#f")]
-        [InlineData("https://xn--pple-43d.example/a")]
+        [MemberData(nameof(Accepted))]
         public void AnAbsoluteHttpsLinkWithAHost_IsKept(string url)
         {
             Assert.Null(ExternalLinkRules.UrlError(url));
             Assert.NotNull(ExternalLinkRules.DisplayHost(url));
+            Assert.NotNull(ExternalLinkRules.LaunchUri(url));
+        }
+
+        [Fact]
+        public void DisplayHost_NeverThrows_ForAnyAcceptedLink_AndShowsPlainAscii()
+        {
+            foreach (var url in ((IEnumerable<object[]>)Accepted).Select(row => (string)row[0]))
+            {
+                Assert.Null(ExternalLinkRules.UrlError(url));
+
+                var host = ExternalLinkRules.DisplayHost(url);
+
+                Assert.False(string.IsNullOrEmpty(host));
+                Assert.All(host, c => Assert.True(char.IsAsciiLetterLower(c) || char.IsAsciiDigit(c) || c is '-' or '.', url));
+            }
+        }
+
+        /// <summary>
+        /// Hosts with characters a browser may map to ASCII punctuation (full-width @, /, #, ?, small @, one-dot
+        /// leader, digit full stop, squared and letterlike symbols) or that the IDN host cannot be computed for.
+        /// </summary>
+        [Theory]
+        [InlineData("https://photos.google.com\uFF20evil.com/")]
+        [InlineData("https://evil.com\uFF0Fphotos.google.com")]
+        [InlineData("https://evil.com\uFF03.google.com")]
+        [InlineData("https://evil.com\uFE6Bphotos.google.com/")]
+        [InlineData("https://evil\u2488com/")]
+        [InlineData("https://photos.google.co\u33C2/")]
+        [InlineData("https://evil\uFE52com/")]
+        [InlineData("https://evil\u2024com/")]
+        [InlineData("https://a\u2100b/")]
+        [InlineData("https://evil.com\uFF1Fx/")]
+        [InlineData("https://evil.com\u2047/")]
+        [InlineData("https://evil.com\\photos.google.com/")]
+        [InlineData("https://evil_host.example/")]
+        [InlineData("https://evil.example:/")]
+        [InlineData("https://evil.example:443:1/")]
+        [InlineData("https://evil.example:12a/")]
+        [InlineData("https://[::1]/")]
+        [InlineData("https://:443/")]
+        public void AHostACharacterCouldDisguise_IsRefused(string url)
+        {
+            Assert.NotNull(ExternalLinkRules.UrlError(url));
+            Assert.Null(ExternalLinkRules.DisplayHost(url));
+            Assert.Null(ExternalLinkRules.LaunchUri(url));
+        }
+
+        [Theory]
+        [InlineData("https://photos.example.org/\u202Egpj.exe")]
+        [InlineData("https://photos.example.org/\u202Da")]
+        [InlineData("https://photos.example.org/\u200Ea")]
+        [InlineData("https://photos\u200B.example.org/a")]
+        [InlineData("https://photos.example.org/a\uFEFF")]
+        [InlineData("https://photos.example.org/\u2066a\u2069")]
+        [InlineData("https://photos.example.org/a\u00ADb")]
+        [InlineData("https://photos.example.org/a\u0085b")]
+        [InlineData("https://photos.example.org/a\u007F")]
+        public void AnInvisibleOrControlCharacter_InALink_IsRefused(string url)
+        {
+            Assert.NotNull(ExternalLinkRules.UrlError(url));
+            Assert.Null(ExternalLinkRules.DisplayHost(url));
+            Assert.Null(ExternalLinkRules.LaunchUri(url));
+        }
+
+        [Fact]
+        public void ANulCharacter_IsRefused_InALinkAndALabel()
+        {
+            // Not as InlineData: a NUL does not survive the test runner's serialisation of theory data.
+            Assert.NotNull(ExternalLinkRules.UrlError("https://photos.example.org/a" + '\0'));
+            Assert.NotNull(ExternalLinkRules.UrlError("https://photos.example.org" + '\0' + ".evil.example/a"));
+            Assert.NotNull(ExternalLinkRules.LabelError("Day" + '\0' + "1"));
+        }
+
+        [Theory]
+        [InlineData("Day\n1")]
+        [InlineData("Day\r\n1")]
+        [InlineData("Day\t1")]
+        [InlineData("\u202EDay 1")]
+        [InlineData("Day\u200B1")]
+        [InlineData("Day 1\uFEFFx")]
+        public void AnInvisibleOrControlCharacter_InALabel_IsRefused(string label)
+        {
+            Assert.NotNull(ExternalLinkRules.LabelError(label));
+            Assert.NotNull(ExternalLinkRules.LabelError(ExternalLinkRules.NormaliseLabel(label)));
+        }
+
+        [Fact]
+        public void LaunchUri_IsTheAbsoluteForm_WithALowerCaseSchemeAndPunycodeHost()
+        {
+            Assert.Equal("https://photos.google.com/x", ExternalLinkRules.LaunchUri("HTTPS://PHOTOS.GOOGLE.COM/x"));
+            Assert.Equal("https://photos.example.org/A?B=C#D", ExternalLinkRules.LaunchUri("  https://Photos.Example.org/A?B=C#D "));
+            Assert.Equal("https://photos.example.org/", ExternalLinkRules.LaunchUri("https://photos.example.org"));
+            Assert.Equal("https://photos.example.org:8443/a", ExternalLinkRules.LaunchUri("https://photos.example.org:8443/a"));
+            Assert.Equal("https://photos.example.org/a", ExternalLinkRules.LaunchUri("https://photos.example.org:443/a"));
+            Assert.Equal("https://xn--pple-43d.example/album", ExternalLinkRules.LaunchUri("https://\u0430pple.example/album"));
+
+            Assert.Null(ExternalLinkRules.LaunchUri(null));
+            Assert.Null(ExternalLinkRules.LaunchUri("http://photos.example.org/a"));
+            Assert.Null(ExternalLinkRules.LaunchUri("javascript:alert(1)"));
+            Assert.Null(ExternalLinkRules.LaunchUri("https://someone@photos.example.org/a"));
         }
 
         [Theory]
