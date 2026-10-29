@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- System picker dialogs (CH-47): the time picker (Settings, noted-date notification time) and the date
+     picker (jump to a day) are the platform's dialogs, whose buttons took a dark colour in dark mode
+     (nearly invisible on the dark dialog). MainActivity merges Chatcheology.DialogThemes into its theme
+     (OnApplyThemeResource), so both dialogs use Chatcheology.PickerDialog: the platform's own dialog overlay
+     with dialogAccent for the accent and the button text. dialogAccent is #1F4A41 in light mode and #7FD1B9
+     in dark mode (values-night). DisplayAlert dialogs use MAUI's own alert theme (colorOnSurface) and are
+     not changed. -->
+<resources>
+    <style name="Chatcheology.DialogThemes" parent="">
+        <item name="android:timePickerDialogTheme">@style/Chatcheology.PickerDialog</item>
+        <item name="android:datePickerDialogTheme">@style/Chatcheology.PickerDialog</item>
+    </style>
+
+    <style name="Chatcheology.PickerDialog" parent="@android:style/ThemeOverlay.Material.Dialog">
+        <item name="android:colorAccent">@color/dialogAccent</item>
+        <item name="android:buttonBarButtonStyle">@style/Chatcheology.DialogButton</item>
+        <item name="android:buttonBarPositiveButtonStyle">@style/Chatcheology.DialogButton</item>
+        <item name="android:buttonBarNegativeButtonStyle">@style/Chatcheology.DialogButton</item>
+        <item name="android:buttonBarNeutralButtonStyle">@style/Chatcheology.DialogButton</item>
+    </style>
+
+    <style name="Chatcheology.DialogButton" parent="@android:style/Widget.Material.Button.Borderless.Colored">
+        <item name="android:textColor">@color/dialogAccent</item>
+    </style>
+</resources>

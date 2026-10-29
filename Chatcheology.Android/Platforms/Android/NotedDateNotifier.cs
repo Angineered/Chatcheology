@@ -232,13 +232,13 @@ namespace Chatcheology.Android
 
             // Nothing sensitive is in it (no title, no conversation), so the public version says the same.
             var publicBuilder = new NotificationCompat.Builder(Context, ChannelId);
-            publicBuilder.SetSmallIcon(Resource.Drawable.toolbar_onthisday);
+            publicBuilder.SetSmallIcon(Resource.Drawable.ic_stat_chatcheology);
             publicBuilder.SetContentTitle(due.Text);
             publicBuilder.SetContentIntent(tap);
             publicBuilder.SetAutoCancel(true);
 
             var builder = new NotificationCompat.Builder(Context, ChannelId);
-            builder.SetSmallIcon(Resource.Drawable.toolbar_onthisday);
+            builder.SetSmallIcon(Resource.Drawable.ic_stat_chatcheology);
             builder.SetContentTitle(due.Text);
             builder.SetContentIntent(tap);
             builder.SetAutoCancel(true);

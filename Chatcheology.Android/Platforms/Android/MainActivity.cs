@@ -69,6 +69,17 @@ namespace Chatcheology.Android
             _pickFolder = RegisterForActivityResult(new ActivityResultContracts.OpenDocumentTree(), new FolderPicked(this));
         }
 
+        /// <summary>
+        /// Every theme the activity takes (the splash theme, then MAUI's main theme) gets the app's dialog themes
+        /// merged in, so the system time and date pickers have readable buttons in light and dark mode
+        /// (Resources/values/styles.xml).
+        /// </summary>
+        protected override void OnApplyThemeResource(global::Android.Content.Res.Resources.Theme? theme, int resid, bool first)
+        {
+            base.OnApplyThemeResource(theme, resid, first);
+            theme?.ApplyStyle(Resource.Style.Chatcheology_DialogThemes, force: true);
+        }
+
         /// <summary>A noted-date notification was tapped while the app was running: open that archive.</summary>
         protected override void OnNewIntent(Intent? intent)
         {
