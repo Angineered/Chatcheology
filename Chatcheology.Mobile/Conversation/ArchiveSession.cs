@@ -25,6 +25,15 @@ namespace Chatcheology.Mobile.Conversation
     /// <param name="Label">The name, marked when it is the archive's own choice.</param>
     public sealed record MeChoice(long ParticipantID, string Label);
 
+    /// <summary>The outcome of saving one of the phone's own noted dates with its gallery links (CH-48).</summary>
+    /// <param name="Errors">The date's broken rules, by field.</param>
+    /// <param name="Links">The links' problems, by row, and the links stored.</param>
+    public sealed record OwnNotedDateSave(IReadOnlyDictionary<NotedDateField, string> Errors, GalleryLinkCheck Links)
+    {
+        /// <summary>Whether the date was stored.</summary>
+        public bool Saved => Errors.Count == 0 && Links.IsValid;
+    }
+
     /// <summary>
     /// One opened archive: its reader, who "me" is, where the reader last was, and its search index.
     /// </summary>
@@ -46,6 +55,7 @@ namespace Chatcheology.Mobile.Conversation
         private readonly ArchiveSettings _settings;
         private readonly string _identity;
         private readonly IReadOnlyList<ArchiveNotedDate> _giftedNotedDates;
+        private readonly IReadOnlyDictionary<long, IReadOnlyList<GalleryLink>> _giftedNotedDateLinks;
         private readonly CancellationTokenSource _closing = new();
         private readonly object _searchLock = new();
         private Task<ConversationSearch>? _search;
@@ -65,6 +75,13 @@ namespace Chatcheology.Mobile.Conversation
             Stars = new Stars(settings, identity);
             Memories = MemoryIndex.Build(reader, _closing.Token);
             _giftedNotedDates = reader.ReadNotedDates();
+
+            // The gifted dates' gallery links (CH-48), read once like the dates; a row that breaks a rule is left out.
+            _giftedNotedDateLinks = _giftedNotedDates.Count == 0
+                ? new Dictionary<long, IReadOnlyList<GalleryLink>>()
+                : GalleryLinks.GroupFromArchive(reader.ReadAllExternalLinks())
+                    .Where(pair => pair.Key.Kind == ExternalLinkOwnerKind.NotedDate)
+                    .ToDictionary(pair => pair.Key.OwnerID, pair => pair.Value);
         }
 
         /// <summary>The archive's memories (CH-42), read at open; empty for an archive without any.</summary>
@@ -357,13 +374,14 @@ namespace Chatcheology.Mobile.Conversation
 
         /// <summary>On this day (CH-39) for <paramref name="days"/> (from <see cref="ReadDays"/>) on <paramref name="today"/>.</summary>
         public OnThisDay OnThisDayFor(IEnumerable<DateOnly> days, DateOnly today) =>
-            OnThisDay.For(_settings, _identity, days, today, _giftedNotedDates);
+            OnThisDay.For(_settings, _identity, days, today, _giftedNotedDates, _giftedNotedDateLinks);
 
         /// <summary>
         /// Every noted date (CH-47) for Settings: the archive's gifted ones, which can only be muted, then the
         /// phone's own. Read from the settings each time, so a change shows at once.
         /// </summary>
-        public IReadOnlyList<NotedDateListing> NotedDateListings => NotedDates.List(_settings, _identity, _giftedNotedDates);
+        public IReadOnlyList<NotedDateListing> NotedDateListings =>
+            NotedDates.List(_settings, _identity, _giftedNotedDates, _giftedNotedDateLinks);
 
         /// <summary>Mutes or unmutes a gifted noted date (it stays on the card; muting only stops its notification).</summary>
         public void SetNotedDateMuted(long notedDateID, bool muted)
@@ -389,20 +407,47 @@ namespace Chatcheology.Mobile.Conversation
         /// <param name="year">The year, or none.</param>
         /// <param name="note">The note, or none (blank is none).</param>
         /// <param name="today">The phone's date; a year after it is refused.</param>
+        /// <remarks>An existing date keeps its gallery links (CH-48); a new one has none.</remarks>
         public IReadOnlyDictionary<NotedDateField, string> SaveOwnNotedDate(
             string? id, string? title, int month, int day, int? year, string? note, DateOnly today)
         {
+            var links = id is null
+                ? []
+                : _settings.GetOwnNotedDates(_identity).FirstOrDefault(date => date.Id == id)?.Links ?? [];
+
+            return SaveOwnNotedDate(id, title, month, day, year, note, links.Select(link => ((string?)link.Url, link.Label)).ToList(), today).Errors;
+        }
+
+        /// <summary>
+        /// Adds or replaces a date of the phone's own with its ordered gallery links (CH-48). Nothing is stored when
+        /// a rule of <see cref="NotedDateRules"/> or <see cref="ExternalLinkRules"/> is broken; every broken rule
+        /// is returned at once. Rows with neither address nor label are left out.
+        /// </summary>
+        /// <param name="id">As for the overload without links.</param>
+        /// <param name="title">The title.</param>
+        /// <param name="month">The month.</param>
+        /// <param name="day">The day.</param>
+        /// <param name="year">The year, or none.</param>
+        /// <param name="note">The note, or none (blank is none).</param>
+        /// <param name="links">The edited links, in order: address and optional label.</param>
+        /// <param name="today">The phone's date; a year after it is refused.</param>
+        public OwnNotedDateSave SaveOwnNotedDate(
+            string? id, string? title, int month, int day, int? year, string? note, IReadOnlyList<(string? Url, string? Label)> links, DateOnly today)
+        {
+            ArgumentNullException.ThrowIfNull(links);
+
             var stored = NotedDateRules.NormaliseNote(note);
             var errors = NotedDateRules.Validate(title, month, day, year, stored, today.Year);
+            var check = GalleryLinks.Check(links);
 
-            if (errors.Count > 0)
+            if (errors.Count > 0 || !check.IsValid)
             {
-                return errors;
+                return new OwnNotedDateSave(errors, check);
             }
 
             var own = _settings.GetOwnNotedDates(_identity).ToList();
             var existing = id is null ? -1 : own.FindIndex(date => date.Id == id);
-            var date = new OwnNotedDate(id ?? Guid.NewGuid().ToString("N"), title!.Trim(), month, day, year, stored);
+            var date = new OwnNotedDate(id ?? Guid.NewGuid().ToString("N"), title!.Trim(), month, day, year, stored) { Links = check.Links };
 
             if (existing >= 0)
             {
@@ -415,7 +460,7 @@ namespace Chatcheology.Mobile.Conversation
 
             _settings.SetOwnNotedDates(_identity, own);
 
-            return errors;
+            return new OwnNotedDateSave(errors, check);
         }
 
         /// <summary>Deletes one of the phone's own noted dates; a gifted one cannot be deleted here.</summary>
