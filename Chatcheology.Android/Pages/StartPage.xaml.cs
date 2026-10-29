@@ -291,20 +291,20 @@ namespace Chatcheology.Android.Pages
         {
             DevelopmentTools.Children.Add(new Label { Text = "Development (Debug build only)", FontAttributes = FontAttributes.Bold });
 
+            // Every button writes the current archive format with the three invented noted dates (CH-47); the
+            // options are SyntheticDebugInstalls, which the tests check.
             var install = new Button { Text = "Install synthetic archive" };
-            install.Clicked += async (_, _) => await InstallSyntheticAsync(new SyntheticArchiveOptions(
-                Audio: 2, Documents: 1, BrokenImages: 1, LowQualityCopies: 3, Forwarded: 30, Links: 20));
+            install.Clicked += async (_, _) => await InstallSyntheticAsync(SyntheticDebugInstalls.Standard);
             DevelopmentTools.Children.Add(install);
 
             // 130 days for 3,000 messages: about 23 a day, so 150-message pages join inside a day.
             var midDay = new Button { Text = "Install synthetic archive (mid-day joins)" };
-            midDay.Clicked += async (_, _) => await InstallSyntheticAsync(new SyntheticArchiveOptions(Days: 130));
+            midDay.Clicked += async (_, _) => await InstallSyntheticAsync(SyntheticDebugInstalls.MidDay);
             DevelopmentTools.Children.Add(midDay);
 
             // CH-42: Shared gaming (off until switched on in Settings) and Holidays memory layers.
             var memories = new Button { Text = "Install synthetic archive with memories" };
-            memories.Clicked += async (_, _) => await InstallSyntheticAsync(new SyntheticArchiveOptions(
-                Audio: 1, Documents: 1, LowQualityCopies: 2, Forwarded: 10, Links: 10, Memories: true));
+            memories.Clicked += async (_, _) => await InstallSyntheticAsync(SyntheticDebugInstalls.WithMemories);
             DevelopmentTools.Children.Add(memories);
 
             var validate = new Button { Text = "Validate installed archives" };
