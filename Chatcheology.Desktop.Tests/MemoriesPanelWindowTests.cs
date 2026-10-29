@@ -95,6 +95,78 @@ namespace Chatcheology.Desktop.Tests
             });
         }
 
+        [Fact]
+        public void TheNotedDatesList_AndItsForm_BindWithoutErrors()
+        {
+            StaRunner.Run(() =>
+            {
+                SynchronizationContext.SetSynchronizationContext(
+                    new DispatcherSynchronizationContext(Dispatcher.CurrentDispatcher));
+
+                using var workspace = new ArchiveTestWorkspace();
+
+                var notedStore = NotedDateStore.Beside(workspace.DatabasePath);
+                var now = new DateTime(2026, 10, 28, 9, 0, 0, DateTimeKind.Utc);
+                notedStore.Add(new NotedDateDraft { Title = "Our anniversary", Month = 2, Day = 14, Year = 2019, Note = "Invented." }, true, now);
+                notedStore.Add(new NotedDateDraft { Title = "Winter day", Month = 12, Day = 25 }, false, now);
+                SqliteConnection.ClearAllPools();
+
+                var errors = new BindingErrors();
+                PresentationTraceSources.Refresh();
+                PresentationTraceSources.DataBindingSource.Listeners.Add(errors);
+                PresentationTraceSources.DataBindingSource.Switch.Level = SourceLevels.Warning;
+
+                var window = new MainWindow(() => workspace.DatabasePath)
+                {
+                    ShowActivated = false,
+                    ShowInTaskbar = false,
+                    WindowStartupLocation = WindowStartupLocation.Manual,
+                    Left = -32000,
+                    Top = -32000,
+                };
+
+                try
+                {
+                    window.Show();
+
+                    var viewModel = (MainViewModel)window.DataContext;
+                    viewModel.OpenWorkspaceCommand.Execute(null);
+                    PumpUntil(() => viewModel.Messages.Count > 0 && !viewModel.IsBusy);
+
+                    var memories = viewModel.Memories;
+                    memories.OpenCommand.Execute(null);
+                    PumpUntil(() => memories.IsOpen && !memories.IsBusy && memories.NotedDates.Count == 2);
+                    Settle(window);
+
+                    memories.SelectedNotedDate = memories.NotedDates[0];
+                    Settle(window);
+
+                    memories.EditNotedDateCommand.Execute(null);
+                    PumpUntil(() => memories.NotedForm is not null);
+
+                    // Touch every field so each error binding is evaluated.
+                    memories.NotedForm!.Title = string.Empty;
+                    memories.NotedForm.DayText = "31";
+                    memories.NotedForm.SelectedMonth = memories.NotedForm.Months[3];
+                    memories.NotedForm.YearText = "x";
+                    memories.NotedForm.Note = new string('n', 501);
+                    Settle(window);
+
+                    Assert.True(memories.NotedForm.SaveCommand.CanExecute(null));
+                    memories.NotedForm.SaveCommand.Execute(null);
+                    Settle(window);
+                    Assert.Equal("14 Feb", memories.NotedDates[0].DateText);
+                    Assert.Empty(errors.Messages);
+                }
+                finally
+                {
+                    PresentationTraceSources.DataBindingSource.Listeners.Remove(errors);
+                    window.Close();
+                    SqliteConnection.ClearAllPools();
+                }
+            });
+        }
+
         private static void Settle(Window window)
         {
             for (var pass = 0; pass < 4; pass++)
@@ -134,6 +206,8 @@ namespace Chatcheology.Desktop.Tests
                 nameof(ImportedCollectionRow),
                 nameof(PersonalEntrySummary),
                 nameof(MemoryFormPhotoViewModel),
+                nameof(NotedDateRow),
+                nameof(NotedDateFormViewModel),
             ];
 
 

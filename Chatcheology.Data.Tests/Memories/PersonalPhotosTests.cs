@@ -33,11 +33,11 @@ namespace Chatcheology.Data.Tests.Memories
         // ---------------------------------------------------------------------------------------
 
         [Fact]
-        public void ANewFile_IsFormatThree_WithTheEntryImageTable()
+        public void ANewFile_IsTheCurrentFormat_WithTheEntryImageTable()
         {
             _folder.CreateMemories();
 
-            Assert.Equal(3, _folder.Scalar("SELECT FormatVersion FROM MemoriesInfo;"));
+            Assert.Equal(MemoriesDatabase.CurrentFormatVersion, _folder.Scalar("SELECT FormatVersion FROM MemoriesInfo;"));
             Assert.Equal(1, _folder.Scalar("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'EntryImage';"));
         }
 
@@ -61,7 +61,7 @@ namespace Chatcheology.Data.Tests.Memories
             // The first write upgrades, in the same transaction, keeping every row.
             _store.RenameCollection(collection, "Renamed");
 
-            Assert.Equal(3, _folder.Scalar("SELECT FormatVersion FROM MemoriesInfo;"));
+            Assert.Equal(MemoriesDatabase.CurrentFormatVersion, _folder.Scalar("SELECT FormatVersion FROM MemoriesInfo;"));
             Assert.Equal(1, _folder.Scalar("SELECT COUNT(*) FROM sqlite_master WHERE name = 'EntryImage';"));
             Assert.Equal(1, _folder.Scalar("SELECT COUNT(*) FROM sqlite_master WHERE name = 'ItemDefinition';"));
             Assert.Equal(before.Where(r => !r.StartsWith("Collection", StringComparison.Ordinal)),
@@ -309,7 +309,7 @@ namespace Chatcheology.Data.Tests.Memories
             SqliteConnection.ClearAllPools();
 
             Assert.Equal(photos, _folder.Strings("SELECT EntryID || '|' || Ordinal || '|' || Sha256 || '|' || Caption FROM EntryImage;"));
-            Assert.Equal(3, _folder.Scalar("SELECT FormatVersion FROM MemoriesInfo;"));
+            Assert.Equal(MemoriesDatabase.CurrentFormatVersion, _folder.Scalar("SELECT FormatVersion FROM MemoriesInfo;"));
         }
 
         // ---------------------------------------------------------------------------------------

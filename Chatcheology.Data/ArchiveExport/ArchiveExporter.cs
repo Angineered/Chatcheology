@@ -402,6 +402,11 @@ namespace Chatcheology.Data.ArchiveExport
                 writer.WriteItemDefinition(definition);
             }
 
+            foreach (var notedDate in combined.ToArchiveNotedDates())
+            {
+                writer.WriteNotedDate(notedDate);
+            }
+
             return (writer.Complete(), linksOutside);
         }
 

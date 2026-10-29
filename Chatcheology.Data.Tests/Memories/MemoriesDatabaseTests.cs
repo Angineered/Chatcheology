@@ -17,8 +17,8 @@ namespace Chatcheology.Data.Tests.Memories
             var tables = WorkspaceDatabase.ReadApplicationTableNames(connection);
 
             Assert.Equal(MemoriesDatabase.TableNames.OrderBy(n => n, StringComparer.Ordinal), tables);
-            Assert.Equal(1, folder.Scalar("SELECT COUNT(*) FROM MemoriesInfo WHERE FormatVersion = 3 AND Purpose = 'Memories';"));
-            Assert.Equal(3, MemoriesDatabase.ReadFormatVersion(connection));
+            Assert.Equal(1, folder.Scalar("SELECT COUNT(*) FROM MemoriesInfo WHERE FormatVersion = 4 AND Purpose = 'Memories';"));
+            Assert.Equal(4, MemoriesDatabase.ReadFormatVersion(connection));
         }
 
         [Fact]

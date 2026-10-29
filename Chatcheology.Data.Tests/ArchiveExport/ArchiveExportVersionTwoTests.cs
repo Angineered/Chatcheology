@@ -156,7 +156,7 @@ namespace Chatcheology.Data.Tests.ArchiveExport
         /// An imported collection with two entries sharing one image (periods and items), and a
         /// personal collection with one entry linking to an imported entry and to workspace message 2.
         /// </summary>
-        private void Memories(int linkedSequence = 2, bool formatOne = false, bool formatTwo = false)
+        private void Memories(int linkedSequence = 2, bool formatOne = false, bool formatTwo = false, bool formatThree = false)
         {
             if (formatOne)
             {
@@ -165,6 +165,10 @@ namespace Chatcheology.Data.Tests.ArchiveExport
             else if (formatTwo)
             {
                 MemoriesDatabase.CreateFormatVersionTwo(MemoriesPath, Now);
+            }
+            else if (formatThree)
+            {
+                MemoriesDatabase.CreateFormatVersionThree(MemoriesPath, Now);
             }
             else
             {
@@ -267,6 +271,26 @@ namespace Chatcheology.Data.Tests.ArchiveExport
                 INSERT INTO EntryImage VALUES (20, 2, '{ImageSha}', 'png', NULL);
                 """;
             command.ExecuteNonQuery();
+        }
+
+        /// <summary>CH-47: three invented noted dates (one with a year and a note, 29 February without a year, one at the year's end).</summary>
+        private void NotedDates() => ExecuteMemories(
+            """
+            INSERT INTO NotedDate VALUES (1, 'Invented anniversary', 2, 14, 2019, 'An invented note');
+            INSERT INTO NotedDate VALUES (2, 'Leap day', 2, 29, NULL, NULL);
+            INSERT INTO NotedDate VALUES (5, 'Year end', 12, 31, 2000, NULL);
+            """);
+
+        private void ExecuteMemories(string sql)
+        {
+            using (var connection = MemoriesDatabase.OpenConnection(MemoriesPath))
+            using (var command = connection.CreateCommand())
+            {
+                command.CommandText = sql;
+                command.ExecuteNonQuery();
+            }
+
+            SqliteConnection.ClearAllPools();
         }
 
         private ArchiveExportResult Export(string output) =>
@@ -737,6 +761,129 @@ namespace Chatcheology.Data.Tests.ArchiveExport
             Assert.Equal(1, comparison.MismatchCounts[ArchiveMismatchKind.EntryDiffers]);
             Assert.Equal(1, comparison.MismatchCounts[ArchiveMismatchKind.EntryLinkDiffers]);
             Assert.Equal(0, comparison.MismatchCounts[ArchiveMismatchKind.CollectionCountsDiffer]);
+        }
+
+        // ---------------------------------------------------------------------------------------
+        // Noted dates (CH-47).
+        // ---------------------------------------------------------------------------------------
+
+        [Fact]
+        public void NotedDates_RoundTrip_AsStored_WithTheirIdentifiers_AndValidate()
+        {
+            Workspace();
+            Memories();
+            NotedDates();
+            var output = _fixture.Output();
+
+            var result = Export(output);
+
+            Assert.Equal(3, result.Counts.NotedDates);
+            Assert.Contains("\"notedDates\": 3", File.ReadAllText(Path.Combine(output, ArchiveFormat.ManifestFileName)), StringComparison.Ordinal);
+
+            var validation = ArchiveValidator.Validate(output);
+            Assert.True(validation.Passed, string.Join(", ", validation.FirstProblems));
+
+            using (var reader = ArchiveReader.Open(output))
+            {
+                Assert.True(reader.HasNotedDates);
+                Assert.Equal(
+                    [
+                        (1L, "Invented anniversary", 2, 14, (int?)2019, (string?)"An invented note"),
+                        (2L, "Leap day", 2, 29, null, null),
+                        (5L, "Year end", 12, 31, 2000, null),
+                    ],
+                    reader.ReadNotedDates().Select(d => (d.NotedDateID, d.Title, d.Month, d.Day, d.Year, d.Note)));
+
+                // Not memories: no collection, entry or link was added for them.
+                Assert.Equal(2, reader.ReadCollections().Count);
+                Assert.Equal(3, reader.ReadAllEntries().Count);
+                Assert.Equal(2, reader.ReadAllLinks().Count);
+            }
+
+            var comparison = Compare(output);
+            Assert.True(comparison.Passed, string.Join(", ", comparison.FirstMismatches));
+            Assert.Equal(3, comparison.NotedDates);
+        }
+
+        [Fact]
+        public void TheComparer_FindsAChangedNotedDate_AMissingOne_AndAnExtraOne()
+        {
+            Workspace();
+            Memories();
+            NotedDates();
+            var output = _fixture.Output();
+            Export(output);
+
+            // Each field on its own is a difference.
+            foreach (var change in new[]
+                     {
+                         "UPDATE NotedDate SET Title = 'Renamed' WHERE NotedDateID = 1;",
+                         "UPDATE NotedDate SET Month = 3 WHERE NotedDateID = 1;",
+                         "UPDATE NotedDate SET Day = 15 WHERE NotedDateID = 1;",
+                         "UPDATE NotedDate SET Year = 2018 WHERE NotedDateID = 1;",
+                         "UPDATE NotedDate SET Year = NULL WHERE NotedDateID = 1;",
+                         "UPDATE NotedDate SET Note = 'Another note' WHERE NotedDateID = 1;",
+                         "UPDATE NotedDate SET Note = NULL WHERE NotedDateID = 1;",
+                     })
+            {
+                ExecuteMemories(change);
+                Assert.Equal(1, Compare(output).MismatchCounts[ArchiveMismatchKind.NotedDateDiffers]);
+                ExecuteMemories("UPDATE NotedDate SET Title = 'Invented anniversary', Month = 2, Day = 14, Year = 2019, Note = 'An invented note' WHERE NotedDateID = 1;");
+                Assert.True(Compare(output).Passed);
+            }
+
+            // Missing from the archive (added since), and extra in it (deleted since).
+            ExecuteMemories("INSERT INTO NotedDate VALUES (7, 'Added later', 6, 1, NULL, NULL); DELETE FROM NotedDate WHERE NotedDateID = 2;");
+
+            var comparison = Compare(output);
+
+            Assert.Equal(2, comparison.MismatchCounts[ArchiveMismatchKind.NotedDateDiffers]);
+            Assert.Equal(0, comparison.MismatchCounts[ArchiveMismatchKind.EntryDiffers]);
+            Assert.Equal(0, comparison.MismatchCounts[ArchiveMismatchKind.CollectionCountsDiffer]);
+        }
+
+        [Fact]
+        public void AFormatThreeMemoriesFile_HasNoNotedDates()
+        {
+            Workspace();
+            Memories(formatThree: true);
+            var output = _fixture.Output();
+
+            var result = Export(output);
+
+            Assert.Equal(0, result.Counts.NotedDates);
+            Assert.True(ArchiveValidator.Validate(output).Passed);
+
+            using (var reader = ArchiveReader.Open(output))
+            {
+                Assert.True(reader.HasNotedDates);
+                Assert.Empty(reader.ReadNotedDates());
+            }
+
+            var comparison = Compare(output);
+            Assert.True(comparison.Passed);
+            Assert.Equal(0, comparison.NotedDates);
+
+            // The export only read the file: it is still format 3.
+            using var connection = MemoriesDatabase.OpenReadOnlyConnection(MemoriesPath);
+            Assert.Equal(3, MemoriesDatabase.ReadFormatVersion(connection));
+        }
+
+        [Fact]
+        public void ANotedDateWithAYearAfterTheExport_StopsTheExport()
+        {
+            Workspace();
+            Memories();
+
+            // The schema cannot know the current year; the archive writer refuses it.
+            ExecuteMemories("INSERT INTO NotedDate VALUES (1, 'Invented future', 5, 1, 2999, NULL);");
+            var output = _fixture.Output();
+
+            var stop = Assert.Throws<ArchiveExportStoppedException>(() => Export(output));
+
+            Assert.Contains("noted date", stop.Message, StringComparison.Ordinal);
+            Assert.DoesNotContain("Invented future", stop.Message, StringComparison.Ordinal);
+            Assert.Empty(_fixture.ExportsContent());
         }
 
         [Fact]

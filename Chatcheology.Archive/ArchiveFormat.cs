@@ -80,6 +80,12 @@ namespace Chatcheology.Archive
         /// </summary>
         public const string EntryImageTableName = "EntryImage";
 
+        /// <summary>
+        /// The table of noted dates (CH-47). Written into every version 2 archive, but not required, like
+        /// <see cref="EntryImageTableName"/>: a version 2 archive without it reads as having no noted dates.
+        /// </summary>
+        public const string NotedDateTableName = "NotedDate";
+
         /// <summary>The tables of the given format version a reader requires.</summary>
         /// <exception cref="ArgumentOutOfRangeException">Not a version this build knows.</exception>
         public static IReadOnlyList<string> TableNamesOf(int formatVersion) => formatVersion switch

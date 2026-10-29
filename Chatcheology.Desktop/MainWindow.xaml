@@ -659,6 +659,36 @@
                                 </ItemsControl.ItemTemplate>
                             </ItemsControl>
 
+                            <!-- Noted dates (CH-47): days that matter to the two of you, by month then day. -->
+                            <TextBlock Text="Noted dates" FontWeight="SemiBold" Margin="0,12,0,0" />
+                            <ListBox x:Name="NotedDatesList" ItemsSource="{Binding NotedDates}"
+                                     SelectedItem="{Binding SelectedNotedDate}"
+                                     Height="110" Margin="0,4,0,0"
+                                     HorizontalContentAlignment="Stretch"
+                                     ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                                <ListBox.ItemTemplate>
+                                    <DataTemplate>
+                                        <DockPanel>
+                                            <TextBlock Text="{Binding DateText}" Width="70"
+                                                       Foreground="#FF5A5A5A" />
+                                            <TextBlock Text="{Binding SinceText}" Width="80"
+                                                       DockPanel.Dock="Right" Foreground="#FF5A5A5A"
+                                                       TextAlignment="Right" />
+                                            <TextBlock Text="{Binding Title}"
+                                                       TextTrimming="CharacterEllipsis" />
+                                        </DockPanel>
+                                    </DataTemplate>
+                                </ListBox.ItemTemplate>
+                            </ListBox>
+                            <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
+                                <Button Content="New noted date…" Padding="8,2"
+                                        Command="{Binding NewNotedDateCommand}" />
+                                <Button Content="Edit…" Padding="8,2" Margin="6,0,0,0"
+                                        Command="{Binding EditNotedDateCommand}" />
+                                <Button Content="Delete…" Padding="8,2" Margin="6,0,0,0"
+                                        Command="{Binding DeleteNotedDateCommand}" />
+                            </StackPanel>
+
                             <Button Content="Tidy up images…" Padding="8,2" Margin="0,12,0,0"
                                     HorizontalAlignment="Left"
                                     Command="{Binding TidyImagesCommand}"
@@ -809,6 +839,61 @@
                                 <Button Content="Link this memory" Padding="8,2" Margin="0,4,0,0"
                                         HorizontalAlignment="Left"
                                         Command="{Binding AddEntryLinkCommand}" />
+
+                                <TextBlock Text="{Binding FormError}" Style="{StaticResource FieldError}"
+                                           Margin="0,10,0,0" />
+                                <StackPanel Orientation="Horizontal" Margin="0,10,0,4">
+                                    <Button Content="Save" Padding="12,3"
+                                            Command="{Binding SaveCommand}" />
+                                    <Button Content="Cancel" Padding="12,3" Margin="8,0,0,0"
+                                            Command="{Binding CancelCommand}" />
+                                </StackPanel>
+                            </StackPanel>
+                        </ScrollViewer>
+                    </Border>
+
+                    <!-- The noted-date form (CH-47). -->
+                    <Border Visibility="{Binding IsNotedFormOpen,
+                                Converter={StaticResource BoolToVisibility}}">
+                        <ScrollViewer DataContext="{Binding NotedForm}"
+                                      VerticalScrollBarVisibility="Auto"
+                                      HorizontalScrollBarVisibility="Disabled">
+                            <StackPanel>
+                                <TextBlock Text="{Binding Heading}" FontWeight="SemiBold" />
+
+                                <TextBlock Text="Title" FontSize="11" Margin="0,8,0,0" />
+                                <TextBox Text="{Binding Title, UpdateSourceTrigger=PropertyChanged}"
+                                         Margin="0,2,0,0" />
+                                <TextBlock Text="{Binding TitleError}" Style="{StaticResource FieldError}" />
+
+                                <Grid Margin="0,6,0,0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="80" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Grid.Column="0" Margin="0,0,6,0">
+                                        <TextBlock Text="Day" FontSize="11" />
+                                        <TextBox Text="{Binding DayText, UpdateSourceTrigger=PropertyChanged}"
+                                                 Margin="0,2,0,0" />
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="1">
+                                        <TextBlock Text="Month" FontSize="11" />
+                                        <ComboBox ItemsSource="{Binding Months}"
+                                                  SelectedItem="{Binding SelectedMonth}" Margin="0,2,0,0" />
+                                    </StackPanel>
+                                </Grid>
+                                <TextBlock Text="{Binding DateError}" Style="{StaticResource FieldError}" />
+
+                                <TextBlock Text="Year it started (optional)" FontSize="11" Margin="0,6,0,0" />
+                                <TextBox Text="{Binding YearText, UpdateSourceTrigger=PropertyChanged}"
+                                         Width="100" HorizontalAlignment="Left" Margin="0,2,0,0" />
+                                <TextBlock Text="{Binding YearError}" Style="{StaticResource FieldError}" />
+
+                                <TextBlock Text="Note (optional)" FontSize="11" Margin="0,6,0,0" />
+                                <TextBox Text="{Binding Note, UpdateSourceTrigger=PropertyChanged}"
+                                         AcceptsReturn="True" TextWrapping="Wrap" Height="60"
+                                         Margin="0,2,0,0" />
+                                <TextBlock Text="{Binding NoteError}" Style="{StaticResource FieldError}" />
 
                                 <TextBlock Text="{Binding FormError}" Style="{StaticResource FieldError}"
                                            Margin="0,10,0,0" />

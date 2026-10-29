@@ -16,8 +16,9 @@ namespace Chatcheology.Data.ArchiveExport
     /// memories file (its marker) or the export is refused.</para>
     /// <para>Read: collections, entries, periods, items and links, with each entry image's hash and
     /// extension, from a format 2 file the item definitions (CH-43) that some item uses, with each
-    /// icon's hash and extension (a format 1 file has none), and from a format 3 file each personal
-    /// entry's extra photos with their captions (CH-46; older files have none). Not read at all: image and icon source
+    /// icon's hash and extension (a format 1 file has none), from a format 3 file each personal
+    /// entry's extra photos with their captions (CH-46; older files have none), and from a format 4 file the
+    /// noted dates as they are (CH-47; older files have none). Not read at all: image and icon source
     /// URLs, definitions no item uses, and nothing naming a source account is in the file to read.
     /// Items carry their role; the combined source maps it onto an archive participant.</para>
     /// </remarks>
@@ -36,6 +37,9 @@ namespace Chatcheology.Data.ArchiveExport
 
         /// <summary>The item definitions some item uses, ordered by set and item; each icon's extension is the memories file's own.</summary>
         internal required IReadOnlyList<ArchiveItemDefinition> Definitions { get; init; }
+
+        /// <summary>The noted dates (CH-47, format 4; none before), ordered by identifier, as stored.</summary>
+        internal IReadOnlyList<ArchiveNotedDate> NotedDates { get; init; } = [];
 
         /// <summary>Each entry image's and used item icon's file in the memories media folder, by hash.</summary>
         internal required IReadOnlyDictionary<string, MemoryImage> Images { get; init; }
@@ -84,6 +88,7 @@ namespace Chatcheology.Data.ArchiveExport
                 var entries = ReadEntries(connection, images, photos, cancellationToken);
                 var links = ReadLinks(connection);
                 var definitions = hasDefinitions ? ReadDefinitions(connection, images) : [];
+                var notedDates = formatVersion >= MemoriesDatabase.FirstFormatWithNotedDates ? ReadNotedDates(connection) : [];
 
                 return new MemoriesArchiveSource
                 {
@@ -91,6 +96,7 @@ namespace Chatcheology.Data.ArchiveExport
                     Entries = entries,
                     Links = links,
                     Definitions = definitions,
+                    NotedDates = notedDates,
                     Images = images,
                     MediaFolder = mediaFolder,
                 };
@@ -412,6 +418,32 @@ namespace Chatcheology.Data.ArchiveExport
             }
 
             return definitions;
+        }
+
+        /// <summary>Every noted date (format 4), ordered by identifier, exactly as stored.</summary>
+        private static List<ArchiveNotedDate> ReadNotedDates(SqliteConnection connection)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = "SELECT NotedDateID, Title, Month, Day, Year, Note FROM NotedDate ORDER BY NotedDateID;";
+
+            var dates = new List<ArchiveNotedDate>();
+
+            using var reader = command.ExecuteReader();
+
+            while (reader.Read())
+            {
+                dates.Add(new ArchiveNotedDate
+                {
+                    NotedDateID = reader.GetInt64(0),
+                    Title = reader.GetString(1),
+                    Month = reader.GetInt32(2),
+                    Day = reader.GetInt32(3),
+                    Year = reader.IsDBNull(4) ? null : reader.GetInt32(4),
+                    Note = Nullable(reader, 5),
+                });
+            }
+
+            return dates;
         }
 
         private static List<ArchiveEntryLink> ReadLinks(SqliteConnection connection)

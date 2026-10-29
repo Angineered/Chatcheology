@@ -346,7 +346,7 @@ namespace Chatcheology.Tools.MemoryImport.Tests
             Assert.Equal(string.Empty, error);
             Assert.Equal(
                 "Dry run: nothing is written.\n" +
-                "Memories file format: 3\n" +
+                "Memories file format: 4\n" +
                 "Sets: 2\n" +
                 "Definitions: 4\n" +
                 "  hidden: 1\n" +
@@ -420,6 +420,7 @@ namespace Chatcheology.Tools.MemoryImport.Tests
                     ALTER TABLE MemoriesInfoOld RENAME TO MemoriesInfo;
                     DROP TABLE ItemDefinition;
                     DROP TABLE EntryImage;
+                    DROP TABLE NotedDate;
                     """;
                 command.ExecuteNonQuery();
             }
@@ -427,15 +428,33 @@ namespace Chatcheology.Tools.MemoryImport.Tests
             SqliteConnection.ClearAllPools();
 
             var (_, dry, _) = Run("psn-enrich-dry-run", "--workspace-folder", _workspace, DefinitionsFile());
-            Assert.Contains("The memories file is format 1; psn-enrich upgrades it to 3.\n", Lines(dry), StringComparison.Ordinal);
+            Assert.Contains("The memories file is format 1; psn-enrich upgrades it to 4.\n", Lines(dry), StringComparison.Ordinal);
             Assert.Contains("Changes: 5\n", Lines(dry), StringComparison.Ordinal);
 
             var (code, output, _) = Run("psn-enrich", "--workspace-folder", _workspace, DefinitionsFile());
 
             Assert.Equal(0, code);
-            Assert.Contains("Upgraded the memories file from format 1 to 3.\n", Lines(output), StringComparison.Ordinal);
+            Assert.Contains("Upgraded the memories file from format 1 to 4.\n", Lines(output), StringComparison.Ordinal);
             Assert.Contains("Changes: 5\n", Lines(output), StringComparison.Ordinal);
-            Assert.Equal(3, Scalar("SELECT FormatVersion FROM MemoriesInfo;"));
+            Assert.Equal(4, Scalar("SELECT FormatVersion FROM MemoriesInfo;"));
+        }
+
+        [Fact]
+        public void ImportEnrichAndFetch_OnAFormatFourFile_KeepTheNotedDates()
+        {
+            ImportStandard();
+            var store = new Chatcheology.Data.Memories.Personal.NotedDateStore(MemoriesPath);
+            store.Add(new() { Title = "Invented anniversary", Month = 2, Day = 14, Year = 2019, Note = "An invented note" }, false, Now);
+            store.Add(new() { Title = "Leap day", Month = 2, Day = 29 }, false, Now);
+            var before = store.List();
+
+            Assert.Equal(0, Run("psn-import", _psnFile, "--workspace-folder", _workspace, "--local", "alpha", "--other", "beta", "--pair-a", "alpha").Code);
+            Assert.Equal(0, Run("psn-enrich", "--workspace-folder", _workspace, DefinitionsFile()).Code);
+            RunWith(new FakeSource(new() { [Quest.Icon!] = Png, [Racer.Icon!] = Png }), "fetch-images", "--workspace-folder", _workspace);
+
+            Assert.Equal(before, store.List());
+            Assert.Equal(2, before.Count);
+            Assert.Equal(4, Scalar("SELECT FormatVersion FROM MemoriesInfo;"));
         }
 
         [Fact]

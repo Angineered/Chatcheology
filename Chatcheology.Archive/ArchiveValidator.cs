@@ -69,7 +69,11 @@ namespace Chatcheology.Archive
                 or ArchiveProblemKind.LinkNotFromPersonal
                 or ArchiveProblemKind.PeriodCountsDiffer
                 or ArchiveProblemKind.ItemDefinitionUnused
-                or ArchiveProblemKind.ExtraPhotoMisplaced => ArchiveCheck.LinksAndBasis,
+                or ArchiveProblemKind.ExtraPhotoMisplaced
+                or ArchiveProblemKind.NotedDateTitleInvalid
+                or ArchiveProblemKind.NotedDateDateInvalid
+                or ArchiveProblemKind.NotedDateYearInvalid
+                or ArchiveProblemKind.NotedDateNoteInvalid => ArchiveCheck.LinksAndBasis,
 
             ArchiveProblemKind.SequenceNumberInvalid
                 or ArchiveProblemKind.SequenceGap
@@ -209,6 +213,7 @@ namespace Chatcheology.Archive
                     (counted.EntryLinks, reader.ReadCount("SELECT COUNT(*) FROM EntryLink;")),
                     (counted.ItemDefinitions, reader.ReadCount("SELECT COUNT(*) FROM ItemDefinition;")),
                     (counted.EntryImages, reader.HasEntryImages ? reader.ReadCount("SELECT COUNT(*) FROM EntryImage;") : 0),
+                    (counted.NotedDates, reader.HasNotedDates ? reader.ReadCount("SELECT COUNT(*) FROM NotedDate;") : 0),
                 };
 
                 var actual = reader.ReadCollectionCounts();
@@ -377,6 +382,7 @@ namespace Chatcheology.Archive
                 + (reader.HasMemories
                     ? (int)reader.ReadCount("SELECT COUNT(*) FROM Entry;") + (int)reader.ReadCount("SELECT COUNT(*) FROM ItemDefinition;")
                       + (reader.HasEntryImages ? (int)reader.ReadCount("SELECT COUNT(*) FROM EntryImage;") : 0)
+                      + (reader.HasNotedDates ? (int)reader.ReadCount("SELECT COUNT(*) FROM NotedDate;") : 0)
                     : 0));
             record.Examined(ArchiveCheck.SequenceAndSenders, messages);
 
@@ -580,7 +586,32 @@ namespace Chatcheology.Archive
             record.AddCount(ArchiveProblemKind.LinkNotFromPersonal, (int)reader.ReadCount(ArchiveMemoryRules.LinksNotFromPersonal));
             record.AddCount(ArchiveProblemKind.PeriodCountsDiffer, (int)reader.ReadPeriodCountsDiffer());
 
+            CheckNotedDates(reader, record);
+
             return images;
+        }
+
+        /// <summary>
+        /// Noted dates (CH-47): each row against <see cref="NotedDateRules"/>, the latest year being the year the
+        /// archive was created. One problem per broken field. None in an archive without the table.
+        /// </summary>
+        private static void CheckNotedDates(ArchiveReader reader, Recorder record)
+        {
+            var latestYear = NotedDateRules.LatestYearAt(reader.Info.CreatedUtc);
+
+            foreach (var date in reader.ReadNotedDates())
+            {
+                foreach (var field in NotedDateRules.Validate(date.Title, date.Month, date.Day, date.Year, date.Note, latestYear).Keys)
+                {
+                    record.Add(field switch
+                    {
+                        NotedDateField.Title => ArchiveProblemKind.NotedDateTitleInvalid,
+                        NotedDateField.Date => ArchiveProblemKind.NotedDateDateInvalid,
+                        NotedDateField.Year => ArchiveProblemKind.NotedDateYearInvalid,
+                        _ => ArchiveProblemKind.NotedDateNoteInvalid,
+                    });
+                }
+            }
         }
 
         /// <summary>The file's hash, or <see langword="null"/> when it is not there or cannot be read.</summary>
@@ -788,6 +819,21 @@ namespace Chatcheology.Archive
         /// repeats its entry's cover.
         /// </summary>
         ExtraPhotoMisplaced,
+
+        /// <summary>Version 2 (CH-47): a noted date's title is blank or longer than 80 characters.</summary>
+        NotedDateTitleInvalid,
+
+        /// <summary>
+        /// Version 2 (CH-47): a noted date's month is not 1 to 12, its day is not in the month, or it is
+        /// 29 February with a year that is not a leap year.
+        /// </summary>
+        NotedDateDateInvalid,
+
+        /// <summary>Version 2 (CH-47): a noted date's year is before 1900 or after the year the archive was created.</summary>
+        NotedDateYearInvalid,
+
+        /// <summary>Version 2 (CH-47): a noted date's note is blank or longer than 500 characters.</summary>
+        NotedDateNoteInvalid,
     }
 
     /// <summary>

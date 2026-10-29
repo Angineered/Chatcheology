@@ -44,6 +44,9 @@ namespace Chatcheology.Desktop.ViewModels
         /// <summary>Asks before unused images are deleted from the memories folder (CH-46). True to delete them.</summary>
         public Func<string, bool> ConfirmTidyImages { get; init; } = _ => false;
 
+        /// <summary>Asks before a noted date is deleted (CH-47). True to delete it.</summary>
+        public Func<string, bool> ConfirmDeleteNotedDate { get; init; } = _ => false;
+
         /// <summary>The files to add, from <see cref="ChooseImages"/> or else <see cref="ChooseImage"/>.</summary>
         internal IReadOnlyList<string> ChooseImageFiles() =>
             ChooseImages is { } many ? many() ?? [] : ChooseImage() is { } one ? [one] : [];
@@ -55,6 +58,9 @@ namespace Chatcheology.Desktop.ViewModels
     /// <summary>The memories file and the conversation's messages, for one context.</summary>
     internal sealed record MemoriesBackend(PersonalMemoryStore Store, IMessageLinkTargets Messages)
     {
+        /// <summary>The noted dates (CH-47) in the same memories file.</summary>
+        internal NotedDateStore NotedDates => new(Store.MemoriesPath);
+
         /// <summary>The real backend: the memories file beside the workspace, and the workspace read-only.</summary>
         internal static MemoriesBackend For(MemoriesContext context)
         {
@@ -105,7 +111,7 @@ namespace Chatcheology.Desktop.ViewModels
     /// <para><strong>One conversation.</strong> Message links name the selected conversation's messages; the
     /// area is closed when the workspace or the conversation changes.</para>
     /// </remarks>
-    public sealed class MemoriesViewModel : ObservableObject
+    public sealed partial class MemoriesViewModel : ObservableObject
     {
         private readonly MemoriesDialogs _dialogs;
         private readonly Func<MemoriesContext?> _context;
@@ -145,7 +151,7 @@ namespace Chatcheology.Desktop.ViewModels
             _utcNow = utcNow ?? (() => DateTime.UtcNow);
 
             OpenCommand = new AsyncRelayCommand(OpenAsync, () => _context() is not null);
-            CloseCommand = new RelayCommand(Close, () => !IsBusy && Form?.IsSaving != true);
+            CloseCommand = new RelayCommand(Close, () => !IsBusy && Form?.IsSaving != true && NotedForm?.IsSaving != true);
             AddCollectionCommand = new AsyncRelayCommand(AddCollectionAsync, CanWrite);
             RenameCollectionCommand = new AsyncRelayCommand(RenameCollectionAsync, () => CanWrite() && SelectedCollection is not null);
             NewEntryCommand = new RelayCommand(NewEntry, () => CanWrite() && SelectedCollection is not null);
@@ -153,6 +159,9 @@ namespace Chatcheology.Desktop.ViewModels
             DeleteEntryCommand = new AsyncRelayCommand(DeleteEntryAsync, () => CanWrite() && SelectedEntry is not null);
             DeleteCollectionCommand = new AsyncRelayCommand(DeleteCollectionAsync, () => CanWrite() && SelectedCollection is not null);
             TidyImagesCommand = new AsyncRelayCommand(TidyImagesAsync, () => CanWrite() && FileExists);
+            NewNotedDateCommand = new RelayCommand(NewNotedDate, CanWrite);
+            EditNotedDateCommand = new RelayCommand(EditNotedDate, () => CanWrite() && SelectedNotedDate is not null);
+            DeleteNotedDateCommand = new AsyncRelayCommand(DeleteNotedDateAsync, () => CanWrite() && SelectedNotedDate is not null);
         }
 
         // -----------------------------------------------------------------------------------
@@ -350,7 +359,7 @@ namespace Chatcheology.Desktop.ViewModels
         public bool IsFormOpen => Form is not null;
 
         /// <summary>Whether the list is showing.</summary>
-        public bool IsListShown => Form is null;
+        public bool IsListShown => Form is null && NotedForm is null;
 
         /// <summary>Asks every command again (the shell calls it when an export or decision starts or ends).</summary>
         public void RaiseCommandStates()
@@ -364,7 +373,11 @@ namespace Chatcheology.Desktop.ViewModels
             DeleteEntryCommand.RaiseCanExecuteChanged();
             DeleteCollectionCommand.RaiseCanExecuteChanged();
             TidyImagesCommand.RaiseCanExecuteChanged();
+            NewNotedDateCommand.RaiseCanExecuteChanged();
+            EditNotedDateCommand.RaiseCanExecuteChanged();
+            DeleteNotedDateCommand.RaiseCanExecuteChanged();
             Form?.RaiseCommandStates();
+            NotedForm?.RaiseCommandStates();
         }
 
         /// <summary>Closes the area and forgets the workspace (the workspace or conversation changed).</summary>
@@ -376,6 +389,10 @@ namespace Chatcheology.Desktop.ViewModels
         {
             _generation++;
             Form = null;
+            NotedForm = null;
+            NotedDates.Clear();
+            _selectedNotedDate = null;
+            OnPropertyChanged(nameof(SelectedNotedDate));
             IsOpen = false;
             _backend = null;
             Collections.Clear();
@@ -394,7 +411,7 @@ namespace Chatcheology.Desktop.ViewModels
         // Actions.
         // -----------------------------------------------------------------------------------
 
-        private bool CanWrite() => IsOpen && _backend is not null && !IsBusy && Form is null && !_blocked();
+        private bool CanWrite() => IsOpen && _backend is not null && !IsBusy && Form is null && NotedForm is null && !_blocked();
 
         private async Task OpenAsync()
         {
@@ -405,6 +422,7 @@ namespace Chatcheology.Desktop.ViewModels
 
             _generation++;
             Form = null;
+            NotedForm = null;
             _backend = _backendFor(context);
             IsOpen = true;
 
@@ -421,13 +439,14 @@ namespace Chatcheology.Desktop.ViewModels
 
             collectionID ??= SelectedCollection?.CollectionID;
             entryID ??= SelectedEntry?.EntryID;
+            var notedID = SelectedNotedDate?.NotedDateID;
 
             var generation = _generation;
             ChangeBusy(+1);
 
             try
             {
-                var overview = await Task.Run(backend.Store.ReadOverview).ConfigureAwait(true);
+                var (overview, notedDates) = await Task.Run(() => (backend.Store.ReadOverview(), backend.NotedDates.List())).ConfigureAwait(true);
 
                 // Closed or reopened meanwhile: this read belongs to a context that is gone.
                 if (generation != _generation)
@@ -443,6 +462,7 @@ namespace Chatcheology.Desktop.ViewModels
                     Collections.Add(new PersonalCollectionViewModel(collection));
                 }
 
+                ShowNotedDates(notedDates, notedID);
                 ImportedCollections.Clear();
 
                 foreach (var imported in overview.Imported)
@@ -853,7 +873,7 @@ namespace Chatcheology.Desktop.ViewModels
             {
                 await OpenAsync().ConfigureAwait(true);
             }
-            else if (Form is not null)
+            else if (Form is not null || NotedForm is not null)
             {
                 StatusText = "Finish or cancel the open memory first.";
                 return;
