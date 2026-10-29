@@ -156,7 +156,8 @@ namespace Chatcheology.Data.Tests.ArchiveExport
         /// An imported collection with two entries sharing one image (periods and items), and a
         /// personal collection with one entry linking to an imported entry and to workspace message 2.
         /// </summary>
-        private void Memories(int linkedSequence = 2, bool formatOne = false, bool formatTwo = false, bool formatThree = false)
+        private void Memories(
+            int linkedSequence = 2, bool formatOne = false, bool formatTwo = false, bool formatThree = false, bool formatFour = false)
         {
             if (formatOne)
             {
@@ -169,6 +170,10 @@ namespace Chatcheology.Data.Tests.ArchiveExport
             else if (formatThree)
             {
                 MemoriesDatabase.CreateFormatVersionThree(MemoriesPath, Now);
+            }
+            else if (formatFour)
+            {
+                MemoriesDatabase.CreateFormatVersionFour(MemoriesPath, Now);
             }
             else
             {
@@ -279,6 +284,17 @@ namespace Chatcheology.Data.Tests.ArchiveExport
             INSERT INTO NotedDate VALUES (1, 'Invented anniversary', 2, 14, 2019, 'An invented note');
             INSERT INTO NotedDate VALUES (2, 'Leap day', 2, 29, NULL, NULL);
             INSERT INTO NotedDate VALUES (5, 'Year end', 12, 31, 2000, NULL);
+            """);
+
+        /// <summary>
+        /// CH-48: two links on the personal entry 20 (one labelled) and one on noted date 5, with identifiers that
+        /// are not 1..n. Invented addresses.
+        /// </summary>
+        private void ExternalLinks() => ExecuteMemories(
+            """
+            INSERT INTO ExternalLink VALUES (4, 'Entry', 20, 2, 'https://photos.example.org/album/b', NULL);
+            INSERT INTO ExternalLink VALUES (2, 'Entry', 20, 1, 'https://photos.example.org/album/a', 'Day 1');
+            INSERT INTO ExternalLink VALUES (9, 'NotedDate', 5, 1, 'https://photos.example.org/album/c?key=x', 'Invented album');
             """);
 
         private void ExecuteMemories(string sql)
@@ -883,6 +899,146 @@ namespace Chatcheology.Data.Tests.ArchiveExport
 
             Assert.Contains("noted date", stop.Message, StringComparison.Ordinal);
             Assert.DoesNotContain("Invented future", stop.Message, StringComparison.Ordinal);
+            Assert.Empty(_fixture.ExportsContent());
+        }
+
+        // ---------------------------------------------------------------------------------------
+        // External links (CH-48).
+        // ---------------------------------------------------------------------------------------
+
+        [Fact]
+        public void ExternalLinks_RoundTrip_AsStored_WithTheirIdentifiers_AndValidate()
+        {
+            Workspace();
+            Memories();
+            NotedDates();
+            ExternalLinks();
+            var output = _fixture.Output();
+
+            var result = Export(output);
+
+            Assert.Equal(3, result.Counts.ExternalLinks);
+            Assert.Contains("\"externalLinks\": 3", File.ReadAllText(Path.Combine(output, ArchiveFormat.ManifestFileName)), StringComparison.Ordinal);
+
+            var validation = ArchiveValidator.Validate(output);
+            Assert.True(validation.Passed, string.Join(", ", validation.FirstProblems));
+
+            using (var reader = ArchiveReader.Open(output))
+            {
+                Assert.True(reader.HasExternalLinks);
+                Assert.Equal(
+                    [
+                        (2L, ExternalLinkOwnerKind.Entry, 20L, 1, "https://photos.example.org/album/a", (string?)"Day 1"),
+                        (4L, ExternalLinkOwnerKind.Entry, 20L, 2, "https://photos.example.org/album/b", null),
+                        (9L, ExternalLinkOwnerKind.NotedDate, 5L, 1, "https://photos.example.org/album/c?key=x", "Invented album"),
+                    ],
+                    reader.ReadAllExternalLinks().Select(l => (l.ExternalLinkID, l.OwnerKind, l.OwnerID, l.Ordinal, l.Url, l.Label)));
+                Assert.Equal([2L, 4L], reader.ReadExternalLinks(ExternalLinkOwnerKind.Entry, 20).Select(l => l.ExternalLinkID));
+                Assert.Equal([9L], reader.ReadExternalLinks(ExternalLinkOwnerKind.NotedDate, 5).Select(l => l.ExternalLinkID));
+
+                // Not memory links: the memory-to-message and memory-to-memory links are unchanged.
+                Assert.Equal(2, reader.ReadAllLinks().Count);
+            }
+
+            var comparison = Compare(output);
+            Assert.True(comparison.Passed, string.Join(", ", comparison.FirstMismatches));
+            Assert.Equal(3, comparison.ExternalLinks);
+        }
+
+        [Fact]
+        public void TheComparer_FindsAChangedExternalLink_AMissingOne_AndAnExtraOne()
+        {
+            Workspace();
+            Memories();
+            NotedDates();
+            ExternalLinks();
+            var output = _fixture.Output();
+            Export(output);
+
+            const string Restore =
+                "UPDATE ExternalLink SET OwnerKind = 'Entry', OwnerID = 20, Ordinal = 1, Url = 'https://photos.example.org/album/a', Label = 'Day 1' WHERE ExternalLinkID = 2;";
+
+            // Each field on its own is a difference.
+            foreach (var change in new[]
+                     {
+                         "UPDATE ExternalLink SET Url = 'https://photos.example.org/album/z' WHERE ExternalLinkID = 2;",
+                         "UPDATE ExternalLink SET Label = 'Day 2' WHERE ExternalLinkID = 2;",
+                         "UPDATE ExternalLink SET Label = NULL WHERE ExternalLinkID = 2;",
+                         "UPDATE ExternalLink SET Ordinal = 3 WHERE ExternalLinkID = 2;",
+                         "UPDATE ExternalLink SET OwnerKind = 'NotedDate', OwnerID = 1 WHERE ExternalLinkID = 2;",
+                         "UPDATE ExternalLink SET OwnerKind = 'NotedDate', OwnerID = 20 WHERE ExternalLinkID = 2;",
+                     })
+            {
+                if (change.Contains("OwnerID = 20", StringComparison.Ordinal))
+                {
+                    // Same identifier, other kind: needs a noted date 20 to be allowed.
+                    ExecuteMemories("INSERT INTO NotedDate VALUES (20, 'Invented twenty', 1, 20, NULL, NULL);");
+                }
+
+                ExecuteMemories(change);
+                Assert.Equal(1, Compare(output).MismatchCounts[ArchiveMismatchKind.ExternalLinkDiffers]);
+                ExecuteMemories(Restore);
+                ExecuteMemories("DELETE FROM NotedDate WHERE NotedDateID = 20;");
+                Assert.True(Compare(output).Passed);
+            }
+
+            // Missing from the archive (added since), and extra in it (removed since).
+            ExecuteMemories(
+                """
+                INSERT INTO ExternalLink VALUES (11, 'NotedDate', 1, 1, 'https://photos.example.org/album/new', NULL);
+                DELETE FROM ExternalLink WHERE ExternalLinkID = 9;
+                """);
+
+            var comparison = Compare(output);
+
+            Assert.Equal(2, comparison.MismatchCounts[ArchiveMismatchKind.ExternalLinkDiffers]);
+            Assert.Equal(0, comparison.MismatchCounts[ArchiveMismatchKind.NotedDateDiffers]);
+            Assert.Equal(0, comparison.MismatchCounts[ArchiveMismatchKind.EntryDiffers]);
+        }
+
+        [Fact]
+        public void AFormatFourMemoriesFile_HasNoExternalLinks()
+        {
+            Workspace();
+            Memories(formatFour: true);
+            NotedDates();
+            var output = _fixture.Output();
+
+            var result = Export(output);
+
+            Assert.Equal(0, result.Counts.ExternalLinks);
+            Assert.Equal(3, result.Counts.NotedDates);
+            Assert.True(ArchiveValidator.Validate(output).Passed);
+
+            using (var reader = ArchiveReader.Open(output))
+            {
+                Assert.True(reader.HasExternalLinks);
+                Assert.Empty(reader.ReadAllExternalLinks());
+            }
+
+            var comparison = Compare(output);
+            Assert.True(comparison.Passed);
+            Assert.Equal(0, comparison.ExternalLinks);
+
+            // The export only read the file: it is still format 4.
+            using var connection = MemoriesDatabase.OpenReadOnlyConnection(MemoriesPath);
+            Assert.Equal(4, MemoriesDatabase.ReadFormatVersion(connection));
+        }
+
+        [Fact]
+        public void AnExternalLinkTheWriterRefuses_StopsTheExport_WithoutNamingIt()
+        {
+            Workspace();
+            Memories();
+
+            // The schema checks the scheme and lengths; a user-info part is the rules' to refuse.
+            ExecuteMemories("INSERT INTO ExternalLink VALUES (1, 'Entry', 20, 1, 'https://photos.example.org@invented.example/a', NULL);");
+            var output = _fixture.Output();
+
+            var stop = Assert.Throws<ArchiveExportStoppedException>(() => Export(output));
+
+            Assert.Contains("external link", stop.Message, StringComparison.Ordinal);
+            Assert.DoesNotContain("invented.example", stop.Message, StringComparison.Ordinal);
             Assert.Empty(_fixture.ExportsContent());
         }
 

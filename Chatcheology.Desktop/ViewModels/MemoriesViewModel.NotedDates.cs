@@ -78,13 +78,13 @@ namespace Chatcheology.Desktop.ViewModels
             }
         }
 
-        private void ShowNotedDates(IReadOnlyList<NotedDate> dates, long? keep)
+        private void ShowNotedDates(IReadOnlyList<NotedDate> dates, IReadOnlyDictionary<long, IReadOnlyList<ExternalLink>> galleries, long? keep)
         {
             NotedDates.Clear();
 
             foreach (var date in dates)
             {
-                NotedDates.Add(new NotedDateRow(date));
+                NotedDates.Add(new NotedDateRow(date, galleries.GetValueOrDefault(date.NotedDateID)));
             }
 
             _selectedNotedDate = null;
@@ -113,6 +113,7 @@ namespace Chatcheology.Desktop.ViewModels
 
             NotedForm = new NotedDateFormViewModel(
                 backend.NotedDates,
+                backend.ExternalLinks,
                 _dialogs,
                 existing,
                 _blocked,

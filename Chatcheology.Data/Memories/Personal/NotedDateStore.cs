@@ -40,9 +40,9 @@ namespace Chatcheology.Data.Memories.Personal
     /// <c>NotedDate</c> table is written. The workspace is never opened.</para>
     /// <para><strong>One set of rules.</strong> Every field is checked with <see cref="NotedDateRules"/>, the
     /// same rules the archive writer and validator use, before anything is opened for writing.</para>
-    /// <para><strong>One transaction per save.</strong> An older memories file (format 1 to 3) is upgraded to
-    /// format 4 inside the save's transaction, so a failed save leaves it as it was. Read-only opens of an
-    /// older file list no noted dates.</para>
+    /// <para><strong>One transaction per save.</strong> An older memories file (format 1 to 4) is upgraded to
+    /// the current format inside the save's transaction, so a failed save leaves it as it was. Read-only opens
+    /// of a file before format 4 list no noted dates.</para>
     /// <para><strong>The file is created only when asked.</strong> A write to a missing file is refused, except
     /// <see cref="Add"/> with <c>createFileIfMissing</c>, which the caller passes only after the operator
     /// confirmed (the same rule as the first collection). If that first save fails, the new file is removed.</para>
@@ -214,11 +214,13 @@ namespace Chatcheology.Data.Memories.Personal
             });
         }
 
-        /// <summary>Deletes a noted date.</summary>
+        /// <summary>Deletes a noted date and its external links (CH-48).</summary>
         /// <exception cref="PersonalMemoryValidationException">The date is gone. Nothing was written.</exception>
         /// <exception cref="FileNotFoundException">There is no memories file.</exception>
         public void Delete(long notedDateID) => Write(transaction =>
         {
+            ExternalLinkStore.DeleteFor(transaction, ExternalLinkOwnerKind.NotedDate, notedDateID);
+
             using var command = Command(transaction, "DELETE FROM NotedDate WHERE NotedDateID = $id;");
             command.Parameters.AddWithValue("$id", notedDateID);
 

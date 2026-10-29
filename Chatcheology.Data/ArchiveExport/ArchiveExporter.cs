@@ -407,6 +407,11 @@ namespace Chatcheology.Data.ArchiveExport
                 writer.WriteNotedDate(notedDate);
             }
 
+            foreach (var externalLink in combined.ToArchiveExternalLinks())
+            {
+                writer.WriteExternalLink(externalLink);
+            }
+
             return (writer.Complete(), linksOutside);
         }
 

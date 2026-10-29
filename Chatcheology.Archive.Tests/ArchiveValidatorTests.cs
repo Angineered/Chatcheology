@@ -65,12 +65,12 @@ namespace Chatcheology.Archive.Tests
 
             var examined = result.Checks.ToDictionary(c => c.Check, c => c.Examined);
 
-            // Four listed files; the database; two header, seven count and seven version 2 count
+            // Four listed files; the database; two header, seven count and eight version 2 count
             // fields (no collections); three Restored attachments and two media files; five
             // attachments; six messages.
             Assert.Equal(4, examined[ArchiveCheck.Contents]);
             Assert.Equal(1, examined[ArchiveCheck.Database]);
-            Assert.Equal(16, examined[ArchiveCheck.Manifest]);
+            Assert.Equal(17, examined[ArchiveCheck.Manifest]);
             Assert.Equal(5, examined[ArchiveCheck.Media]);
             Assert.Equal(5, examined[ArchiveCheck.LinksAndBasis]);
             Assert.Equal(6, examined[ArchiveCheck.SequenceAndSenders]);

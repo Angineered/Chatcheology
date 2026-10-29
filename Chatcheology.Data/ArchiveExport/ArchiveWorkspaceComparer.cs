@@ -219,6 +219,7 @@ namespace Chatcheology.Data.ArchiveExport
             CompareMemories(combined, reader, actualEntries, record);
             CompareDefinitions(combined, actualDefinitions, record);
             CompareNotedDates(combined, reader.ReadNotedDates(), record);
+            CompareExternalLinks(combined, reader.ReadAllExternalLinks(), record);
 
             var attachments = expectedAttachments.Values.ToList();
 
@@ -236,7 +237,8 @@ namespace Chatcheology.Data.ArchiveExport
                     .ToList() ?? [],
                 collections: expectedCollections,
                 definitions: combined.Memories?.Definitions.Count ?? 0,
-                notedDates: combined.ToArchiveNotedDates().Count);
+                notedDates: combined.ToArchiveNotedDates().Count,
+                externalLinks: combined.ToArchiveExternalLinks().Count);
         }
 
         // -------------------------------------------------------------------------------------
@@ -371,6 +373,29 @@ namespace Chatcheology.Data.ArchiveExport
                     || a.Day != e.Day
                     || a.Year != e.Year
                     || !string.Equals(a.Note, e.Note, StringComparison.Ordinal))
+                + actualByID.Keys.Count(id => !expected.ContainsKey(id)));
+        }
+
+        /// <summary>
+        /// External links (CH-48): row by row on the identifier, every field compared (owner, ordinal, address,
+        /// label); a link on one side only (missing from the archive, or not in the memories file) is a
+        /// difference too. An archive without the table holds none.
+        /// </summary>
+        private static void CompareExternalLinks(
+            ArchiveCombinedSource combined, IReadOnlyList<ArchiveExternalLink> actual, Recorder record)
+        {
+            var expected = combined.ToArchiveExternalLinks().ToDictionary(l => l.ExternalLinkID);
+            var actualByID = actual.ToDictionary(l => l.ExternalLinkID);
+
+            record.AddCount(
+                ArchiveMismatchKind.ExternalLinkDiffers,
+                expected.Values.Count(e =>
+                    !actualByID.TryGetValue(e.ExternalLinkID, out var a)
+                    || a.OwnerKind != e.OwnerKind
+                    || a.OwnerID != e.OwnerID
+                    || a.Ordinal != e.Ordinal
+                    || !string.Equals(a.Url, e.Url, StringComparison.Ordinal)
+                    || !string.Equals(a.Label, e.Label, StringComparison.Ordinal))
                 + actualByID.Keys.Count(id => !expected.ContainsKey(id)));
         }
 
@@ -602,7 +627,8 @@ namespace Chatcheology.Data.ArchiveExport
                 IReadOnlyList<ArchiveComparisonExportCounts> exports,
                 IReadOnlyList<ArchiveCollectionCounts> collections,
                 int definitions,
-                int notedDates) => new()
+                int notedDates,
+                int externalLinks) => new()
             {
                 ParticipantsCompared = participants,
                 MessagesCompared = messages,
@@ -618,6 +644,7 @@ namespace Chatcheology.Data.ArchiveExport
                 Collections = collections,
                 ItemDefinitions = definitions,
                 NotedDates = notedDates,
+                ExternalLinks = externalLinks,
             };
         }
     }
@@ -724,6 +751,9 @@ namespace Chatcheology.Data.ArchiveExport
 
         /// <summary>Version 2 (CH-47): a noted date is on one side only (missing from the archive, or extra in it), or a field differs.</summary>
         NotedDateDiffers,
+
+        /// <summary>Version 2 (CH-48): an external link is on one side only (missing from the archive, or extra in it), or a field differs.</summary>
+        ExternalLinkDiffers,
     }
 
     /// <summary>One older export's messages as the older-exports file holds them. Counts only.</summary>
@@ -791,6 +821,9 @@ namespace Chatcheology.Data.ArchiveExport
 
         /// <summary>Version 2 (CH-47): noted dates in the memories file. 0 with no memories file or one before format 4.</summary>
         public int NotedDates { get; init; }
+
+        /// <summary>Version 2 (CH-48): external links in the memories file. 0 with no memories file or one before format 5.</summary>
+        public int ExternalLinks { get; init; }
 
         /// <summary>The archive says exactly what the workspace says.</summary>
         public bool Passed => MismatchCounts.Values.All(count => count == 0);

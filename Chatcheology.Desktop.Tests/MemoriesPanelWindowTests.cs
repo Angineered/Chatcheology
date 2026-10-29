@@ -32,7 +32,7 @@ namespace Chatcheology.Desktop.Tests
                 Directory.CreateDirectory(chosen);
                 File.WriteAllBytes(Path.Combine(chosen, "a.png"), MemoryLayersTests.Png(2));
                 File.WriteAllBytes(Path.Combine(chosen, "b.png"), MemoryLayersTests.Png(3));
-                store.AddEntry(new PersonalEntryDraft
+                var beach = store.AddEntry(new PersonalEntryDraft
                 {
                     CollectionID = holidays,
                     Title = "Beach week",
@@ -45,6 +45,9 @@ namespace Chatcheology.Desktop.Tests
                     Image = PersonalImageChoice.FromFile(Path.Combine(chosen, "a.png")),
                     ExtraPhotos = [new PersonalPhotoDraft(PersonalImageChoice.FromFile(Path.Combine(chosen, "b.png")), "Invented dunes")],
                 });
+                ExternalLinkStore.Beside(workspace.DatabasePath).ReplaceForEntry(beach, [
+                    new ExternalLinkDraft("https://photos.example.org/album/one", "Day 1"),
+                    new ExternalLinkDraft("https://albums.example.net/two")]);
                 SqliteConnection.ClearAllPools();
 
                 var errors = new BindingErrors();
@@ -82,6 +85,18 @@ namespace Chatcheology.Desktop.Tests
                     PumpUntil(() => memories.Form.PickerMessages.Count == 5);
                     Settle(window);
 
+                    // CH-48: the gallery rows bind, show a problem on a row, and a Save attempt writes nothing.
+                    Assert.Equal(2, memories.Form.GalleryLinks.Rows.Count);
+                    memories.Form.GalleryLinks.AddCommand.Execute(null);
+                    memories.Form.GalleryLinks.Rows[2].Url = "http://bad.example.org";
+                    memories.Form.GalleryLinks.Rows[2].Label = "x";
+                    memories.Form.SaveCommand.Execute(null);
+                    Settle(window);
+                    Assert.NotEmpty(memories.Form.GalleryLinks.Rows[2].UrlError);
+                    memories.Form.GalleryLinks.Rows[2].MoveUpCommand.Execute(null);
+                    memories.Form.GalleryLinks.Rows[0].RemoveCommand.Execute(null);
+                    Settle(window);
+
                     Assert.Single(memories.Form.Links);
                     Assert.Equal(2, memories.Form.Photos.Count);
                     Assert.Empty(errors.Messages);
@@ -107,7 +122,9 @@ namespace Chatcheology.Desktop.Tests
 
                 var notedStore = NotedDateStore.Beside(workspace.DatabasePath);
                 var now = new DateTime(2026, 10, 28, 9, 0, 0, DateTimeKind.Utc);
-                notedStore.Add(new NotedDateDraft { Title = "Our anniversary", Month = 2, Day = 14, Year = 2019, Note = "Invented." }, true, now);
+                var anniversary = notedStore.Add(new NotedDateDraft { Title = "Our anniversary", Month = 2, Day = 14, Year = 2019, Note = "Invented." }, true, now);
+                ExternalLinkStore.Beside(workspace.DatabasePath).ReplaceForNotedDate(anniversary, [
+                    new ExternalLinkDraft("https://photos.example.org/album/one", "Day 1")]);
                 notedStore.Add(new NotedDateDraft { Title = "Winter day", Month = 12, Day = 25 }, false, now);
                 SqliteConnection.ClearAllPools();
 
@@ -145,7 +162,10 @@ namespace Chatcheology.Desktop.Tests
                     PumpUntil(() => memories.NotedForm is not null);
 
                     // Touch every field so each error binding is evaluated.
-                    memories.NotedForm!.Title = string.Empty;
+                    Assert.Single(memories.NotedForm!.GalleryLinks.Rows);
+                    memories.NotedForm.GalleryLinks.AddCommand.Execute(null);
+                    memories.NotedForm.GalleryLinks.Rows[1].Url = "nope";
+                    memories.NotedForm.Title = string.Empty;
                     memories.NotedForm.DayText = "31";
                     memories.NotedForm.SelectedMonth = memories.NotedForm.Months[3];
                     memories.NotedForm.YearText = "x";
@@ -156,6 +176,7 @@ namespace Chatcheology.Desktop.Tests
                     memories.NotedForm.SaveCommand.Execute(null);
                     Settle(window);
                     Assert.Equal("14 Feb", memories.NotedDates[0].DateText);
+                    Assert.Equal("Gallery · photos.example.org", memories.NotedDates[0].GalleryText);
                     Assert.Empty(errors.Messages);
                 }
                 finally
@@ -208,6 +229,8 @@ namespace Chatcheology.Desktop.Tests
                 nameof(MemoryFormPhotoViewModel),
                 nameof(NotedDateRow),
                 nameof(NotedDateFormViewModel),
+                nameof(GalleryLinksEditor),
+                nameof(GalleryLinkRowViewModel),
             ];
 
 

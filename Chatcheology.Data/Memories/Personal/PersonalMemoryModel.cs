@@ -128,7 +128,11 @@ namespace Chatcheology.Data.Memories.Personal
         /// <summary>The image.</summary>
         public const string Image = "Image";
 
-        /// <summary>The links.</summary>
+        /// <summary>
+        /// The links: a memory's links to messages and memories, or, from <see cref="ExternalLinkStore"/>, the
+        /// external links of an entry or a noted date (CH-48; the bad one's index in
+        /// <see cref="PersonalMemoryValidationException.LinkIndex"/>).
+        /// </summary>
         public const string Links = "Links";
 
         /// <summary>The memory as a whole (for example: it is imported).</summary>
@@ -165,6 +169,12 @@ namespace Chatcheology.Data.Memories.Personal
 
         /// <summary>One message per field (see <see cref="PersonalFields"/>).</summary>
         public IReadOnlyDictionary<string, string> Errors { get; }
+
+        /// <summary>
+        /// For a refused list of external links (CH-48): the index (0-based) of the first bad link, or
+        /// <see langword="null"/> when the refusal is about the whole list (too many links) or not about links.
+        /// </summary>
+        public int? LinkIndex { get; init; }
     }
 
     /// <summary>A personal collection with its entries, date order.</summary>

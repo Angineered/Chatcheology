@@ -427,7 +427,10 @@ namespace Chatcheology.Data.Memories.Personal
         /// <exception cref="PersonalMemoryValidationException">Anything wrong with the draft, or the entry is imported or gone.</exception>
         public void UpdateEntry(long entryID, PersonalEntryDraft draft) => Save(entryID, draft);
 
-        /// <summary>Deletes a personal memory, every link from or to it, and its extra-photo rows (stored files are kept).</summary>
+        /// <summary>
+        /// Deletes a personal memory, every link from or to it, its external links (CH-48) and its extra-photo rows
+        /// (stored files are kept).
+        /// </summary>
         /// <returns>The number of links removed.</returns>
         /// <exception cref="PersonalMemoryValidationException">The entry is imported or gone.</exception>
         public int DeleteEntry(long entryID) => Write(transaction =>
@@ -441,6 +444,8 @@ namespace Chatcheology.Data.Memories.Personal
             command.CommandText = "DELETE FROM EntryImage WHERE EntryID = $id;";
             command.ExecuteNonQuery();
 
+            ExternalLinkStore.DeleteFor(transaction, ExternalLinkOwnerKind.Entry, entryID);
+
             command.CommandText = "DELETE FROM Entry WHERE EntryID = $id;";
             command.ExecuteNonQuery();
 
@@ -448,8 +453,8 @@ namespace Chatcheology.Data.Memories.Personal
         });
 
         /// <summary>
-        /// Deletes a personal collection with its memories, every link from or to them, and their
-        /// extra-photo rows, in one transaction. Stored image files are kept.
+        /// Deletes a personal collection with its memories, every link from or to them, their external links
+        /// (CH-48) and their extra-photo rows, in one transaction. Stored image files are kept.
         /// </summary>
         /// <param name="collectionID">A personal collection.</param>
         /// <param name="expectedEntries">
@@ -483,6 +488,14 @@ namespace Chatcheology.Data.Memories.Personal
 
             command.CommandText = "DELETE FROM EntryImage WHERE EntryID IN (SELECT EntryID FROM Entry WHERE CollectionID = $id);";
             var photos = command.ExecuteNonQuery();
+
+            command.CommandText =
+                $"""
+                DELETE FROM ExternalLink
+                WHERE OwnerKind = '{ExternalLinkRules.OwnerEntry}'
+                  AND OwnerID IN (SELECT EntryID FROM Entry WHERE CollectionID = $id);
+                """;
+            command.ExecuteNonQuery();
 
             command.CommandText = "DELETE FROM Entry WHERE CollectionID = $id;";
             var entries = command.ExecuteNonQuery();
@@ -947,8 +960,9 @@ namespace Chatcheology.Data.Memories.Personal
                 using var connection = MemoriesDatabase.OpenConnection(MemoriesPath);
                 using var transaction = connection.BeginTransaction();
 
-                // An older file is upgraded on the first write (CH-46: format 3 adds extra photos), inside
-                // the same transaction, so a failed save leaves the file as it was.
+                // An older file is upgraded on the first write (CH-46: format 3 adds extra photos; CH-48:
+                // format 5 adds external links), inside the same transaction, so a failed save leaves the
+                // file as it was.
                 MemoriesDatabase.UpgradeToCurrent(connection, transaction);
 
                 var result = write(transaction);

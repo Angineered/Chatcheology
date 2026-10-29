@@ -483,6 +483,56 @@ namespace Chatcheology.Archive
         }
 
         /// <summary>
+        /// Writes one external link (format version 2, CH-48) as the memories file holds it. Its address and
+        /// label must keep <see cref="ExternalLinkRules"/>; its owner (a personal entry or a noted date of the
+        /// archive), the numbering 1..n of its owner's links and their count are checked in <see cref="Complete"/>.
+        /// </summary>
+        /// <exception cref="InvalidOperationException">The row breaks a format rule, or the archive is version 1.</exception>
+        public void WriteExternalLink(ArchiveExternalLink link)
+        {
+            ArgumentNullException.ThrowIfNull(link);
+            var transaction = RequireMemories();
+
+            // Each message names the rule, never the value.
+            if (!Enum.IsDefined(link.OwnerKind))
+            {
+                throw new InvalidOperationException("An external link must belong to an entry or a noted date.");
+            }
+
+            if (link.Ordinal < 1)
+            {
+                throw new InvalidOperationException("An external link's ordinal must be 1 or more.");
+            }
+
+            if (ExternalLinkRules.UrlError(link.Url) is not null)
+            {
+                throw new InvalidOperationException(
+                    "An external link's address breaks a rule (an absolute https link with a host, no user-info part, " +
+                    "no space, at most 2,000 characters).");
+            }
+
+            if (ExternalLinkRules.LabelError(link.Label) is not null)
+            {
+                throw new InvalidOperationException(
+                    "An external link's label must be null, or not blank and at most 60 characters.");
+            }
+
+            using var command = Command(
+                transaction,
+                """
+                INSERT INTO ExternalLink (ExternalLinkID, OwnerKind, OwnerID, Ordinal, Url, Label)
+                VALUES ($id, $kind, $owner, $ordinal, $url, $label);
+                """);
+            command.Parameters.AddWithValue("$id", link.ExternalLinkID);
+            command.Parameters.AddWithValue("$kind", ExternalLinkRules.OwnerKindText(link.OwnerKind));
+            command.Parameters.AddWithValue("$owner", link.OwnerID);
+            command.Parameters.AddWithValue("$ordinal", link.Ordinal);
+            command.Parameters.AddWithValue("$url", link.Url);
+            command.Parameters.AddWithValue("$label", (object?)link.Label ?? DBNull.Value);
+            command.ExecuteNonQuery();
+        }
+
+        /// <summary>
         /// Checks the cross-row rules, stamps the format version, commits, and compacts the file.
         /// </summary>
         /// <returns>What was written.</returns>
@@ -527,6 +577,15 @@ namespace Chatcheology.Archive
                 RequireCount(transaction, ArchiveMemoryRules.DefinitionsUnused, 0,
                     "Only item definitions that an item of the archive uses may be written.");
 
+                RequireCount(transaction, ArchiveMemoryRules.ExternalLinksOwnerInvalid(hasNotedDates: true), 0,
+                    "An external link must belong to a personal entry or a noted date of the archive.");
+
+                RequireCount(transaction, ArchiveMemoryRules.ExternalLinkOwnersOrdinalsInvalid, 0,
+                    "The external links of an entry or a noted date must be numbered 1, 2, ... without a gap.");
+
+                RequireCount(transaction, ArchiveMemoryRules.ExternalLinkOwnersTooMany, 0,
+                    "An entry or a noted date has at most 10 external links.");
+
                 using (var command = Command(transaction, ArchiveMemoryRules.PeriodCountsDiffer))
                 {
                     command.Parameters.AddWithValue("$local", _info.LocalParticipantID);
@@ -567,6 +626,7 @@ namespace Chatcheology.Archive
                     ItemDefinitions = (int)Count(transaction, "SELECT COUNT(*) FROM ItemDefinition;"),
                     EntryImages = (int)Count(transaction, "SELECT COUNT(*) FROM EntryImage;"),
                     NotedDates = (int)Count(transaction, "SELECT COUNT(*) FROM NotedDate;"),
+                    ExternalLinks = (int)Count(transaction, "SELECT COUNT(*) FROM ExternalLink;"),
                     Collections = ReadCollectionCounts(transaction),
                 };
             }
@@ -926,6 +986,12 @@ namespace Chatcheology.Archive
         /// </summary>
         public int NotedDates { get; init; }
 
+        /// <summary>
+        /// Version 2 (CH-48): external links on personal entries and noted dates. A manifest written before CH-48
+        /// has none and reads as 0, matching an archive without the <c>ExternalLink</c> table.
+        /// </summary>
+        public int ExternalLinks { get; init; }
+
         /// <summary>Version 2: entries, periods and items of each collection, ordered by collection.</summary>
         public IReadOnlyList<ArchiveCollectionCounts> Collections { get; init; } = [];
 
@@ -946,6 +1012,7 @@ namespace Chatcheology.Archive
             && ItemDefinitions == other.ItemDefinitions
             && EntryImages == other.EntryImages
             && NotedDates == other.NotedDates
+            && ExternalLinks == other.ExternalLinks
             && (Collections ?? []).SequenceEqual(other.Collections ?? []);
 
         /// <inheritdoc />
@@ -956,7 +1023,7 @@ namespace Chatcheology.Archive
                 ExportMessages,
                 ExportPeriods,
                 EntryLinks,
-                HashCode.Combine(ItemDefinitions, EntryImages, NotedDates, (Collections ?? []).Count));
+                HashCode.Combine(ItemDefinitions, EntryImages, NotedDates, ExternalLinks, (Collections ?? []).Count));
     }
 
     /// <summary>Version 2: how many rows one collection holds.</summary>

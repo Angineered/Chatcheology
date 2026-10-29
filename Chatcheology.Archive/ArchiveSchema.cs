@@ -418,6 +418,26 @@ namespace Chatcheology.Archive
                 {NotedDateRules.TableChecks}
             );
             """,
+
+            // CH-48: external links (web addresses for photos kept elsewhere) on personal entries and noted
+            // dates, copied from the memories file as they are (same identifiers, same checks). The owner is
+            // an entry or a noted date by kind and identifier, so no foreign key can state it; the writer and
+            // the validator check it. Added to version 2 without a version bump: a reader treats a version 2
+            // archive without this table as one with none.
+            $"""
+            CREATE TABLE ExternalLink (
+                ExternalLinkID INTEGER PRIMARY KEY,
+                OwnerKind      TEXT NOT NULL,
+                OwnerID        INTEGER NOT NULL,
+                Ordinal        INTEGER NOT NULL,
+                Url            TEXT NOT NULL,
+                Label          TEXT NULL,
+
+                UNIQUE (OwnerKind, OwnerID, Ordinal),
+
+                {ExternalLinkRules.TableChecks}
+            );
+            """,
         ];
     }
 }

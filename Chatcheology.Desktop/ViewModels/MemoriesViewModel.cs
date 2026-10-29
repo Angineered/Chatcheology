@@ -61,6 +61,9 @@ namespace Chatcheology.Desktop.ViewModels
         /// <summary>The noted dates (CH-47) in the same memories file.</summary>
         internal NotedDateStore NotedDates => new(Store.MemoriesPath);
 
+        /// <summary>The gallery links (CH-48) in the same memories file.</summary>
+        internal ExternalLinkStore ExternalLinks => new(Store.MemoriesPath);
+
         /// <summary>The real backend: the memories file beside the workspace, and the workspace read-only.</summary>
         internal static MemoriesBackend For(MemoriesContext context)
         {
@@ -126,6 +129,7 @@ namespace Chatcheology.Desktop.ViewModels
         private int _generation;
         private bool _fileExists;
         private string _statusText = string.Empty;
+        private string _selectedEntryGalleryText = string.Empty;
         private string _collectionName = string.Empty;
         private string _collectionNameError = string.Empty;
         private PersonalCollectionViewModel? _selectedCollection;
@@ -318,7 +322,42 @@ namespace Chatcheology.Desktop.ViewModels
                 if (SetProperty(ref _selectedEntry, value))
                 {
                     RaiseCommandStates();
+                    SelectedEntryGalleryRead = ReadSelectedGalleryAsync(value);
                 }
+            }
+        }
+
+        /// <summary>"Gallery · host" or "N galleries" for the selected memory (CH-48), or empty.</summary>
+        public string SelectedEntryGalleryText
+        {
+            get => _selectedEntryGalleryText;
+            private set => SetProperty(ref _selectedEntryGalleryText, value);
+        }
+
+        /// <summary>The last read of the selected memory's gallery links (for tests to wait on).</summary>
+        internal Task SelectedEntryGalleryRead { get; private set; } = Task.CompletedTask;
+
+        private async Task ReadSelectedGalleryAsync(PersonalEntrySummary? entry)
+        {
+            SelectedEntryGalleryText = string.Empty;
+
+            if (entry is null || _backend is not { } backend)
+            {
+                return;
+            }
+
+            try
+            {
+                var links = await Task.Run(() => backend.ExternalLinks.ReadForEntry(entry.EntryID)).ConfigureAwait(true);
+
+                if (SelectedEntry == entry)
+                {
+                    SelectedEntryGalleryText = GalleryWording.For(links);
+                }
+            }
+            catch (Exception exception) when (IsExpected(exception))
+            {
+                // A line of detail only; the list itself reports a file that cannot be read.
             }
         }
 
@@ -446,7 +485,14 @@ namespace Chatcheology.Desktop.ViewModels
 
             try
             {
-                var (overview, notedDates) = await Task.Run(() => (backend.Store.ReadOverview(), backend.NotedDates.List())).ConfigureAwait(true);
+                var (overview, notedDates, notedGalleries) = await Task.Run(() =>
+                {
+                    var dates = backend.NotedDates.List();
+                    var links = backend.ExternalLinks;
+
+                    return (backend.Store.ReadOverview(), dates,
+                        dates.ToDictionary(d => d.NotedDateID, d => links.ReadForNotedDate(d.NotedDateID)));
+                }).ConfigureAwait(true);
 
                 // Closed or reopened meanwhile: this read belongs to a context that is gone.
                 if (generation != _generation)
@@ -462,7 +508,7 @@ namespace Chatcheology.Desktop.ViewModels
                     Collections.Add(new PersonalCollectionViewModel(collection));
                 }
 
-                ShowNotedDates(notedDates, notedID);
+                ShowNotedDates(notedDates, notedGalleries, notedID);
                 ImportedCollections.Clear();
 
                 foreach (var imported in overview.Imported)
@@ -560,7 +606,7 @@ namespace Chatcheology.Desktop.ViewModels
             }
 
             StatusText = string.Empty;
-            Form = CreateForm(backend, collection.CollectionID, null, null);
+            Form = CreateForm(backend, collection.CollectionID, null, null, null);
         }
 
         private async Task EditEntryAsync()
@@ -575,7 +621,7 @@ namespace Chatcheology.Desktop.ViewModels
 
             try
             {
-                var (details, messages) = await Task.Run(() =>
+                var (details, messages, gallery) = await Task.Run(() =>
                 {
                     var read = backend.Store.ReadEntry(entry.EntryID);
                     var described = read.Links
@@ -584,7 +630,7 @@ namespace Chatcheology.Desktop.ViewModels
                         .Distinct()
                         .ToDictionary(s => s, backend.Messages.Read);
 
-                    return (read, described);
+                    return (read, described, backend.ExternalLinks.ReadForEntry(entry.EntryID));
                 }).ConfigureAwait(true);
 
                 // Closed or reopened meanwhile: no form for a context that is gone.
@@ -594,7 +640,7 @@ namespace Chatcheology.Desktop.ViewModels
                 }
 
                 StatusText = string.Empty;
-                Form = CreateForm(backend, details.CollectionID, details, messages);
+                Form = CreateForm(backend, details.CollectionID, details, messages, gallery);
             }
             catch (PersonalMemoryValidationException exception)
             {
@@ -812,7 +858,8 @@ namespace Chatcheology.Desktop.ViewModels
 
         /// <summary>A form for the current context; what it reports back is dropped once the context has moved on.</summary>
         private MemoryEntryFormViewModel CreateForm(
-            MemoriesBackend backend, long collectionID, PersonalEntryDetails? details, IReadOnlyDictionary<int, MessageLinkCandidate?>? messages)
+            MemoriesBackend backend, long collectionID, PersonalEntryDetails? details, IReadOnlyDictionary<int, MessageLinkCandidate?>? messages,
+            IReadOnlyList<ExternalLink>? gallery)
         {
             var generation = _generation;
 
@@ -825,7 +872,8 @@ namespace Chatcheology.Desktop.ViewModels
                 messages,
                 _blocked,
                 (saved, collection) => OnFormClosed(generation, saved, collection),
-                OnSaving);
+                OnSaving,
+                gallery);
         }
 
         /// <summary>The list's re-read after the last save from the form (for tests to wait on).</summary>

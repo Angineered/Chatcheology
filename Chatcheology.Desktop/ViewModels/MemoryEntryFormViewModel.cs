@@ -149,7 +149,8 @@ namespace Chatcheology.Desktop.ViewModels
         /// meanwhile: the area counts saves still writing the memories file, not open forms.
         /// </summary>
         private readonly Action<bool> _saving;
-        private readonly long? _entryID;
+        private long? _entryID;
+        private bool _itemSaved;
 
         private PersonalCollectionViewModel? _collection;
         private string _title = string.Empty;
@@ -184,7 +185,8 @@ namespace Chatcheology.Desktop.ViewModels
             IReadOnlyDictionary<int, MessageLinkCandidate?>? messages,
             Func<bool> blocked,
             Action<long?, long?> closed,
-            Action<bool> saving)
+            Action<bool> saving,
+            IReadOnlyList<ExternalLink>? galleryLinks = null)
         {
             _backend = backend ?? throw new ArgumentNullException(nameof(backend));
             _dialogs = dialogs ?? throw new ArgumentNullException(nameof(dialogs));
@@ -193,10 +195,13 @@ namespace Chatcheology.Desktop.ViewModels
             _saving = saving ?? throw new ArgumentNullException(nameof(saving));
 
             Collections = collections;
+            GalleryLinks = new GalleryLinksEditor(galleryLinks, () => !IsSaving);
             _collection = collections.FirstOrDefault(c => c.CollectionID == collectionID);
 
             SaveCommand = new AsyncRelayCommand(SaveAsync, () => !IsSaving && !_isChoosingImage && !_blocked());
-            CancelCommand = new RelayCommand(() => _closed(null, null), () => !IsSaving);
+            CancelCommand = new RelayCommand(
+                () => _closed(_itemSaved ? _entryID : null, _itemSaved ? SelectedCollection?.CollectionID : null),
+                () => !IsSaving);
             ChooseImageCommand = new AsyncRelayCommand(ChooseImageAsync, () => !IsSaving);
             RemoveImageCommand = new RelayCommand(RemoveImage, () => !IsSaving && HasImage);
             Photos.CollectionChanged += (_, _) => OnPhotosChanged();
@@ -402,6 +407,9 @@ namespace Chatcheology.Desktop.ViewModels
         /// <summary>Whether photos can be moved, made the cover or removed now.</summary>
         internal bool CanEditPhotos => !IsSaving && !_isChoosingImage;
 
+        /// <summary>The gallery links (CH-48): web addresses for photos kept elsewhere, up to 10, in order.</summary>
+        public GalleryLinksEditor GalleryLinks { get; }
+
         /// <summary>The memory's links.</summary>
         public ObservableCollection<MemoryLinkViewModel> Links { get; } = [];
 
@@ -517,6 +525,7 @@ namespace Chatcheology.Desktop.ViewModels
             RemoveImageCommand.RaiseCanExecuteChanged();
             AddMessageLinkCommand.RaiseCanExecuteChanged();
             AddEntryLinkCommand.RaiseCanExecuteChanged();
+            GalleryLinks.RaiseCommandStates();
 
             foreach (var photo in Photos)
             {
@@ -555,20 +564,29 @@ namespace Chatcheology.Desktop.ViewModels
                 errors[PersonalFields.Collection] = "Choose one of your own collections.";
             }
 
-            if (errors.Count > 0)
+            // Every problem shows at once, the gallery rows included; nothing is written.
+            var galleryOk = GalleryLinks.Validate();
+
+            if (errors.Count > 0 || !galleryOk)
             {
                 ShowErrors(errors);
                 return;
             }
 
+            var galleryDrafts = GalleryLinks.Drafts();
+
             IsSaving = true;
             _saving(true);
 
             long? saved = null;
+            var itemSaved = false;
+            string? linkFailure = null;
 
             try
             {
                 var store = _backend.Store;
+                var links = _backend.ExternalLinks;
+
                 saved = _entryID is { } existing
                     ? await Task.Run(() =>
                     {
@@ -576,6 +594,25 @@ namespace Chatcheology.Desktop.ViewModels
                         return existing;
                     }).ConfigureAwait(true)
                     : await Task.Run(() => store.AddEntry(draft)).ConfigureAwait(true);
+                itemSaved = true;
+
+                // The memory and its links are two transactions: the links were checked before the memory
+                // was saved, and a failure here is shown, not hidden.
+                var id = saved.Value;
+
+                try
+                {
+                    await Task.Run(() => links.ReplaceForEntry(id, galleryDrafts)).ConfigureAwait(true);
+                }
+                catch (PersonalMemoryValidationException exception)
+                {
+                    GalleryLinks.ShowStoreError(exception);
+                    linkFailure = "The memory was saved, but its gallery links were not.";
+                }
+                catch (Exception exception) when (MemoriesViewModel.IsExpected(exception))
+                {
+                    linkFailure = MemoriesViewModel.Describe(exception, "The memory was saved, but its gallery links were not.");
+                }
             }
             catch (PersonalMemoryValidationException exception)
             {
@@ -592,9 +629,24 @@ namespace Chatcheology.Desktop.ViewModels
                 _saving(false);
             }
 
-            if (saved is { } id)
+            if (itemSaved && saved is { } savedID)
             {
-                _closed(id, draft.CollectionID);
+                // From here a Save updates this memory instead of adding another.
+                _entryID = savedID;
+                _itemSaved = true;
+                OnPropertyChanged(nameof(IsNew));
+                OnPropertyChanged(nameof(Heading));
+            }
+
+            if (linkFailure is not null)
+            {
+                FormError = linkFailure + " Fix the problem and save again, or cancel to keep the memory without them.";
+                return;
+            }
+
+            if (saved is { } id2)
+            {
+                _closed(id2, draft.CollectionID);
             }
         }
 
@@ -859,6 +911,7 @@ namespace Chatcheology.Desktop.ViewModels
 
         private void ClearErrors()
         {
+            GalleryLinks.ClearErrors();
             CollectionError = TitleError = StartError = EndError = SourceError = SummaryError = ImageError = LinksError = FormError = string.Empty;
         }
 
