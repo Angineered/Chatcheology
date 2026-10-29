@@ -153,7 +153,7 @@ namespace Chatcheology.Desktop.ViewModels
                     ok = false;
                 }
 
-                if (row.Label.Length > 0 && ExternalLinkRules.LabelError(ExternalLinkRules.NormaliseLabel(row.Label) ?? row.Label) is { } label)
+                if (ExternalLinkRules.LabelError(ExternalLinkRules.NormaliseLabel(row.Label)) is { } label)
                 {
                     row.LabelError = label;
                     ok = false;
@@ -163,7 +163,7 @@ namespace Chatcheology.Desktop.ViewModels
             // The store's own check, once more: it is the rule the save applies.
             if (ok && ExternalLinkStore.Validate(Drafts()) is { } error)
             {
-                Show(error.Index, error.Message);
+                Show(error.Index, error.Message, error.Field == ExternalLinkField.Label);
                 ok = false;
             }
 
@@ -173,7 +173,9 @@ namespace Chatcheology.Desktop.ViewModels
         /// <summary>Shows a refusal from the link store on its row (or on the list, when it has no index).</summary>
         internal void ShowStoreError(PersonalMemoryValidationException exception)
         {
-            Show(exception.LinkIndex, exception.Errors.TryGetValue(PersonalFields.Links, out var text) ? text : string.Join(" ", exception.Errors.Values));
+            // The exception carries the index but not the field, so the message decides row field here.
+            var message = exception.Errors.TryGetValue(PersonalFields.Links, out var text) ? text : string.Join(" ", exception.Errors.Values);
+            Show(exception.LinkIndex, message, message.Contains("label", StringComparison.OrdinalIgnoreCase));
         }
 
         internal void ShowListError(string message) => ListError = message;
@@ -239,7 +241,7 @@ namespace Chatcheology.Desktop.ViewModels
             }
         }
 
-        private void Show(int? index, string message)
+        private void Show(int? index, string message, bool isLabel)
         {
             // The store's message starts "Link n: "; on a row the row's own heading says which.
             var prefix = index is { } i ? "Link " + (i + 1).ToString(CultureInfo.CurrentCulture) + ": " : string.Empty;
@@ -247,7 +249,7 @@ namespace Chatcheology.Desktop.ViewModels
 
             if (index is { } at && at >= 0 && at < Rows.Count)
             {
-                if (text.Contains("label", StringComparison.OrdinalIgnoreCase))
+                if (isLabel)
                 {
                     Rows[at].LabelError = text;
                 }

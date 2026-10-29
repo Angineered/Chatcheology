@@ -401,7 +401,7 @@ namespace Chatcheology.Desktop.Tests
             var memories = await OpenAsync();
             var form = NewNoted(memories);
             var bad = AddRow(form.GalleryLinks, "javascript:alert(1)");
-            var badLabel = AddRow(form.GalleryLinks, One, " ");
+            var badLabel = AddRow(form.GalleryLinks, One, "Day\n1");
             form.Title = string.Empty;
 
             form.SaveCommand.Execute(null);
@@ -418,6 +418,21 @@ namespace Chatcheology.Desktop.Tests
             form.SaveCommand.Execute(null);
             await MemoriesViewModelTests.WaitUntil(() => !form.SaveCommand.IsRunning);
             Assert.Empty(memories.NotedDates);
+        }
+
+        [Fact]
+        public async Task AWhitespaceOnlyLabel_IsNoLabel_AndSaves()
+        {
+            var memories = await OpenAsync();
+            var form = NewForm(memories);
+            var row = AddRow(form.GalleryLinks, One, "   ");
+
+            await SaveFormAsync(memories, form);
+
+            Assert.Equal(string.Empty, row.LabelError);
+            Assert.Null(memories.Form);
+            var saved = Assert.Single(Links.ReadForEntry(memories.Entries.Single().EntryID));
+            Assert.Null(saved.Label);
         }
 
         [Fact]
