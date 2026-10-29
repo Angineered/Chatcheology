@@ -236,13 +236,14 @@ namespace Chatcheology.Android.Pages
             {
                 Placeholder = "https://…",
                 Keyboard = Keyboard.Url,
-                MaxLength = ExternalLinkRules.MaxUrlLength,
+
+                // No MaxLength: Android would silently cut a longer paste, and a cut link usually still passes
+                // the rules. The shared rule reports a link that is too long instead; the label likewise.
             };
 
             internal Entry Label { get; } = new()
             {
                 Placeholder = "Label (optional)",
-                MaxLength = ExternalLinkRules.MaxLabelLength,
             };
 
             internal Label Error { get; } = NotedDatePage.Error();
