@@ -1,4 +1,5 @@
 using System.Globalization;
+using Chatcheology.Archive;
 using Chatcheology.Mobile.Settings;
 
 namespace Chatcheology.Mobile.Conversation
@@ -31,13 +32,21 @@ namespace Chatcheology.Mobile.Conversation
         private readonly ArchiveSettings _settings;
         private readonly string _identity;
 
-        private OnThisDay(ArchiveSettings settings, string identity, DateOnly today, IReadOnlyList<OnThisDayYear> years)
+        private OnThisDay(
+            ArchiveSettings settings, string identity, DateOnly today, IReadOnlyList<OnThisDayYear> years, IReadOnlyList<NotedToday> noted)
         {
             _settings = settings;
             _identity = identity;
             Today = today;
             Years = years;
+            Noted = noted;
         }
+
+        /// <summary>
+        /// Today's noted dates (CH-47), gifted and own, by title; they come before the message years and
+        /// turn the card on even when no year has messages.
+        /// </summary>
+        public IReadOnlyList<NotedToday> Noted { get; }
 
         /// <summary>The phone's date the years were found for.</summary>
         public DateOnly Today { get; }
@@ -48,8 +57,8 @@ namespace Chatcheology.Mobile.Conversation
         /// <summary>Whether On this day is on for the archive (Settings).</summary>
         public bool IsEnabled => _settings.GetOnThisDayEnabled(_identity);
 
-        /// <summary>Whether the top-bar icon is shown: on, and at least one year matches.</summary>
-        public bool ShowsIcon => IsEnabled && Years.Count > 0;
+        /// <summary>Whether the top-bar icon is shown: on, and a noted date or at least one year matches.</summary>
+        public bool ShowsIcon => IsEnabled && (Years.Count > 0 || Noted.Count > 0);
 
         /// <summary>Whether the card opens by itself now: the icon is shown and it has not been shown today.</summary>
         public bool OpensByItself => ShowsIcon && _settings.GetOnThisDayShown(_identity) != Today;
@@ -57,13 +66,24 @@ namespace Chatcheology.Mobile.Conversation
         /// <summary>The card's line: "On this day: 2016 · 2019 · 2021".</summary>
         public string Text => "On this day: " + string.Join(" · ", Years.Select(year => year.Text));
 
-        /// <summary>The years for the archive <paramref name="contentsSha256"/> on <paramref name="today"/>.</summary>
-        public static OnThisDay For(ArchiveSettings settings, string contentsSha256, IEnumerable<DateOnly> days, DateOnly today)
+        /// <summary>
+        /// The years and noted dates for the archive <paramref name="contentsSha256"/> on <paramref name="today"/>.
+        /// <paramref name="gifted"/> are the archive's own noted dates (none for an archive without any); the
+        /// phone's own are read from <paramref name="settings"/>.
+        /// </summary>
+        public static OnThisDay For(
+            ArchiveSettings settings, string contentsSha256, IEnumerable<DateOnly> days, DateOnly today, IEnumerable<ArchiveNotedDate>? gifted = null)
         {
             ArgumentNullException.ThrowIfNull(settings);
             ArgumentException.ThrowIfNullOrWhiteSpace(contentsSha256);
 
-            return new OnThisDay(settings, contentsSha256, today, Find(days, today));
+            var dayList = days as IReadOnlyCollection<DateOnly> ?? days.ToList();
+            var noted = NotedDates.For(
+                NotedDates.List(settings, contentsSha256, gifted ?? []),
+                dayList.ToHashSet(),
+                today);
+
+            return new OnThisDay(settings, contentsSha256, today, Find(dayList, today), noted);
         }
 
         /// <summary>Records that the card was shown today, so it does not open by itself again until tomorrow.</summary>

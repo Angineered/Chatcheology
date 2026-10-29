@@ -216,7 +216,11 @@
                 <Shadow Radius="6" Opacity="0.25" Offset="0,2" Brush="Black" />
             </Border.Shadow>
             <Grid ColumnDefinitions="*,Auto" ColumnSpacing="4">
-                <FlexLayout x:Name="OnThisDayYears" Wrap="Wrap" AlignItems="Center" />
+                <VerticalStackLayout Spacing="2">
+                    <!-- CH-47: today's noted dates, one row each, before the message years. -->
+                    <VerticalStackLayout x:Name="OnThisDayNoted" Spacing="0" />
+                    <FlexLayout x:Name="OnThisDayYears" Wrap="Wrap" AlignItems="Center" />
+                </VerticalStackLayout>
                 <Label x:Name="OnThisDayClose" Grid.Column="1" Text="✕" FontSize="16" Padding="10,4"
                        VerticalOptions="Center" SemanticProperties.Description="Dismiss until tomorrow"
                        TextColor="{AppThemeBinding Light={StaticResource MutedTextLight}, Dark={StaticResource MutedTextDark}}" />

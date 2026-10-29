@@ -41,21 +41,58 @@ namespace Chatcheology.Android.Pages
             var starting = !_started;
             _started = true;
 
-            // Only when the app starts: coming back from the conversation shows this screen.
-            if (starting && opening is { Screen: StartScreen.OpenConversation, Archive: { IsReadable: true } only })
+            if (!starting)
+            {
+                // Coming back from the conversation shows this screen.
+                return;
+            }
+
+            // Noted-date notifications (CH-47): scheduled again on every start.
+            _ = NotedDateNotifier.UpdateAsync();
+
+            // Started from a noted-date notification: that archive, with its On this day card.
+            if (MainActivity.TakePendingArchive() is { } pending
+                && opening?.Archives.FirstOrDefault(archive => archive.Id == pending) is { IsReadable: true } notified)
+            {
+                await OpenAsync(notified, showOnThisDay: true);
+            }
+            else if (opening is { Screen: StartScreen.OpenConversation, Archive: { IsReadable: true } only })
             {
                 await OpenAsync(only);
             }
         }
 
         /// <summary>Opens the installed archive with folder name <paramref name="id"/>, after an import.</summary>
-        internal async Task OpenByIdAsync(string id)
+        internal async Task OpenByIdAsync(string id, bool showOnThisDay = false)
         {
             var opening = await RefreshAsync();
 
             if (opening?.Archives.FirstOrDefault(archive => archive.Id == id) is { IsReadable: true } archive)
             {
-                await OpenAsync(archive);
+                await OpenAsync(archive, showOnThisDay);
+            }
+        }
+
+        /// <summary>
+        /// A noted-date notification was tapped while the app was running: back to this screen, then that archive
+        /// with its On this day card. Ignored during an import. Never throws.
+        /// </summary>
+        internal async Task OpenFromNotificationAsync()
+        {
+            try
+            {
+                // Taken first, so an ignored tap does not open later from a launcher start.
+                if (MainActivity.TakePendingArchive() is not { } id || !_started || _state.Importing)
+                {
+                    return;
+                }
+
+                await Navigation.PopToRootAsync(animated: false);
+                await OpenByIdAsync(id, showOnThisDay: true);
+            }
+            catch (Exception)
+            {
+                // The start screen shows what it can; nothing here may end the app.
             }
         }
 
@@ -134,7 +171,7 @@ namespace Chatcheology.Android.Pages
             return item;
         }
 
-        private async Task OpenAsync(InstalledArchive archive)
+        private async Task OpenAsync(InstalledArchive archive, bool showOnThisDay = false)
         {
             if (_opening)
             {
@@ -172,7 +209,7 @@ namespace Chatcheology.Android.Pages
 
                 try
                 {
-                    await Navigation.PushAsync(new ConversationPage(_state, opened, watch));
+                    await Navigation.PushAsync(new ConversationPage(_state, opened, watch, showOnThisDay));
                 }
                 catch (Exception)
                 {
@@ -238,6 +275,10 @@ namespace Chatcheology.Android.Pages
                 Status.Text = "The archive could not be removed.";
             }
 
+            // Its noted dates no longer notify (CH-47).
+            NotedDateNotifier.Cancel(archive.Id);
+            _ = NotedDateNotifier.UpdateAsync();
+
             await RefreshAsync();
         }
 
@@ -250,20 +291,20 @@ namespace Chatcheology.Android.Pages
         {
             DevelopmentTools.Children.Add(new Label { Text = "Development (Debug build only)", FontAttributes = FontAttributes.Bold });
 
+            // Every button writes the current archive format with the three invented noted dates (CH-47); the
+            // options are SyntheticDebugInstalls, which the tests check.
             var install = new Button { Text = "Install synthetic archive" };
-            install.Clicked += async (_, _) => await InstallSyntheticAsync(new SyntheticArchiveOptions(
-                Audio: 2, Documents: 1, BrokenImages: 1, LowQualityCopies: 3, Forwarded: 30, Links: 20));
+            install.Clicked += async (_, _) => await InstallSyntheticAsync(SyntheticDebugInstalls.Standard);
             DevelopmentTools.Children.Add(install);
 
             // 130 days for 3,000 messages: about 23 a day, so 150-message pages join inside a day.
             var midDay = new Button { Text = "Install synthetic archive (mid-day joins)" };
-            midDay.Clicked += async (_, _) => await InstallSyntheticAsync(new SyntheticArchiveOptions(Days: 130));
+            midDay.Clicked += async (_, _) => await InstallSyntheticAsync(SyntheticDebugInstalls.MidDay);
             DevelopmentTools.Children.Add(midDay);
 
             // CH-42: Shared gaming (off until switched on in Settings) and Holidays memory layers.
             var memories = new Button { Text = "Install synthetic archive with memories" };
-            memories.Clicked += async (_, _) => await InstallSyntheticAsync(new SyntheticArchiveOptions(
-                Audio: 1, Documents: 1, LowQualityCopies: 2, Forwarded: 10, Links: 10, Memories: true));
+            memories.Clicked += async (_, _) => await InstallSyntheticAsync(SyntheticDebugInstalls.WithMemories);
             DevelopmentTools.Children.Add(memories);
 
             var validate = new Button { Text = "Validate installed archives" };
@@ -305,6 +346,8 @@ namespace Chatcheology.Android.Pages
 
                 return (installed, watch.Elapsed.TotalSeconds);
             });
+
+            _ = NotedDateNotifier.UpdateAsync();
 
             var text = $"{(outcome.Installed ? "Installed" : "Not installed")} in {seconds:F1} s. {DescribeValidation(outcome.Validation)}";
             Status.Text = text;

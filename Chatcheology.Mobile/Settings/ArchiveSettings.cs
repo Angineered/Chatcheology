@@ -1,4 +1,7 @@
 using System.Globalization;
+using System.Text.Json;
+using Chatcheology.Archive;
+using Chatcheology.Mobile.Conversation;
 
 namespace Chatcheology.Mobile.Settings
 {
@@ -28,7 +31,11 @@ namespace Chatcheology.Mobile.Settings
     /// conversation), <c>.onThisDay</c> ("off" when turned off), <c>.onThisDayShown</c> (the last
     /// day the card was shown), <c>.layers</c> (collection ids switched away from their default, each
     /// <c>id:on</c> or <c>id:off</c>) and <c>.memoryFilters</c> (filters turned off, each
-    /// <c>id:filter</c>; CH-42).</para>
+    /// <c>id:filter</c>; CH-42), <c>.ownNotedDates</c> (a JSON list of the dates the phone's user added; CH-47)
+    /// <c>.mutedNotedDates</c> (gifted noted-date ids that do not notify, comma separated) and
+    /// <c>.notedDatesPosted</c> (the last day its noted-date notification was posted, so it is posted once a
+    /// day; CH-47 step 3). Own noted dates
+    /// are private to the phone, never written into the archive, and forgotten with the rest on remove.</para>
     /// <para>Stars (CH-38) are private to the phone and never written into the archive. They are the one
     /// thing removing the archive keeps (Angie, 2026-10-22): the same archive (same hash) imported again
     /// has its stars back. A re-exported archive has a new hash and starts with none.</para>
@@ -41,7 +48,7 @@ namespace Chatcheology.Mobile.Settings
         private static readonly string[] Names =
         [
             "me", "position", "lastOpenedUtc", "validatedUtc", "validation", "onThisDay", "onThisDayShown",
-            "layers", "memoryFilters",
+            "layers", "memoryFilters", "ownNotedDates", "mutedNotedDates", "notedDatesPosted",
         ];
 
         private readonly ISettingsStore _store;
@@ -186,6 +193,115 @@ namespace Chatcheology.Mobile.Settings
         /// <summary>Stores the day the On this day card was shown.</summary>
         public void SetOnThisDayShown(string contentsSha256, DateOnly day) =>
             Set(contentsSha256, "onThisDayShown", day.ToString("yyyy'-'MM'-'dd", CultureInfo.InvariantCulture));
+
+        /// <summary>
+        /// The noted dates added on the phone (CH-47), by title. An entry that breaks <see cref="NotedDateRules"/>
+        /// is dropped, and a value that cannot be read as the list reads as empty; this never throws.
+        /// </summary>
+        public IReadOnlyList<OwnNotedDate> GetOwnNotedDates(string contentsSha256)
+        {
+            var text = Get(contentsSha256, "ownNotedDates");
+
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                return [];
+            }
+
+            try
+            {
+                var stored = JsonSerializer.Deserialize<List<StoredNotedDate?>>(text);
+                var dates = new List<OwnNotedDate>();
+                var ids = new HashSet<string>(StringComparer.Ordinal);
+
+                foreach (var item in stored ?? [])
+                {
+                    // The year limit is checked when a date is saved; a stored one stays as it was.
+                    if (item is { Id: { Length: > 0 } id, Title: { } title, Month: { } month, Day: { } day }
+                        && ids.Add(id)
+                        && NotedDateRules.Validate(title, month, day, item.Year, item.Note, int.MaxValue).Count == 0)
+                    {
+                        dates.Add(new OwnNotedDate(id, title.Trim(), month, day, item.Year, NotedDateRules.NormaliseNote(item.Note)));
+                    }
+                }
+
+                return dates.OrderBy(date => date.Title, StringComparer.CurrentCultureIgnoreCase).ThenBy(date => date.Id, StringComparer.Ordinal).ToList();
+            }
+            catch (Exception exception) when (exception is JsonException or NotSupportedException or InvalidOperationException)
+            {
+                return [];
+            }
+        }
+
+        /// <summary>Stores the phone's own noted dates; none removes the key.</summary>
+        public void SetOwnNotedDates(string contentsSha256, IEnumerable<OwnNotedDate> dates)
+        {
+            ArgumentNullException.ThrowIfNull(dates);
+
+            var list = dates.Select(date => new StoredNotedDate
+            {
+                Id = date.Id,
+                Title = date.Title,
+                Month = date.Month,
+                Day = date.Day,
+                Year = date.Year,
+                Note = date.Note,
+            }).ToList();
+
+            Set(contentsSha256, "ownNotedDates", list.Count == 0 ? null : JsonSerializer.Serialize(list));
+        }
+
+        /// <summary>The gifted noted dates (by the archive's identifier) that are muted: they do not notify.</summary>
+        public IReadOnlySet<long> GetMutedNotedDates(string contentsSha256) =>
+            (Get(contentsSha256, "mutedNotedDates") ?? string.Empty)
+                .Split(',', StringSplitOptions.RemoveEmptyEntries)
+                .Select(part => Long(part))
+                .OfType<long>()
+                .ToHashSet();
+
+        /// <summary>Mutes or unmutes a gifted noted date.</summary>
+        public void SetNotedDateMuted(string contentsSha256, long notedDateID, bool muted)
+        {
+            var ids = GetMutedNotedDates(contentsSha256).ToHashSet();
+
+            if (muted)
+            {
+                ids.Add(notedDateID);
+            }
+            else
+            {
+                ids.Remove(notedDateID);
+            }
+
+            Set(
+                contentsSha256,
+                "mutedNotedDates",
+                ids.Count == 0 ? null : string.Join(',', ids.Order().Select(id => id.ToString(CultureInfo.InvariantCulture))));
+        }
+
+        /// <summary>The last day (by the phone's date) this archive's noted-date notification was posted, or <see langword="null"/>.</summary>
+        public DateOnly? GetNotedDatesPostedThrough(string contentsSha256) =>
+            DateOnly.TryParseExact(Get(contentsSha256, "notedDatesPosted"), "yyyy'-'MM'-'dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var day)
+                ? day
+                : null;
+
+        /// <summary>Records the day this archive's noted-date notification was posted.</summary>
+        public void SetNotedDatesPostedThrough(string contentsSha256, DateOnly day) =>
+            Set(contentsSha256, "notedDatesPosted", day.ToString("yyyy'-'MM'-'dd", CultureInfo.InvariantCulture));
+
+        private sealed class StoredNotedDate
+        {
+            public string? Id { get; set; }
+
+            public string? Title { get; set; }
+
+            public int? Month { get; set; }
+
+            public int? Day { get; set; }
+
+            public int? Year { get; set; }
+
+            public string? Note { get; set; }
+        }
 
         /// <summary>
         /// Whether the memory layer of collection <paramref name="collectionID"/> is shown (CH-42): the

@@ -5,8 +5,8 @@ using Chatcheology.Mobile.Synthetic;
 namespace Chatcheology.Mobile.Tests
 {
     /// <summary>
-    /// The synthetic archive the scrolling trial and the Debug app use: a valid v1 archive with
-    /// everything the conversation screen has to show.
+    /// The synthetic archive the scrolling trial and the Debug app use: a valid archive of the current format
+    /// with everything the conversation screen has to show.
     /// </summary>
     public sealed class SyntheticArchiveTests
     {
@@ -22,6 +22,27 @@ namespace Chatcheology.Mobile.Tests
 
             Assert.True(result.Passed);
             Assert.All(result.Checks, check => Assert.True(check.Passed));
+        }
+
+        [Fact]
+        public void Every_Debug_install_writes_the_current_format_with_its_noted_dates_and_validates()
+        {
+            foreach (var options in new[] { SyntheticDebugInstalls.Standard, SyntheticDebugInstalls.MidDay, SyntheticDebugInstalls.WithMemories })
+            {
+                using var folder = new TemporaryFolder();
+                var counts = SyntheticArchive.Write(folder.Path, options);
+
+                Assert.Equal(3, counts.NotedDates);
+                Assert.True(ArchiveValidator.Validate(folder.Path).Passed);
+
+                using var reader = ArchiveReader.Open(folder.Path);
+                Assert.Equal(ArchiveFormat.FormatVersion, reader.Info.FormatVersion);
+                Assert.Equal(2, reader.Info.FormatVersion);
+                Assert.True(reader.HasNotedDates);
+                Assert.Equal(["Our synthetic anniversary", "Invented birthday", "Invented leap day"], reader.ReadNotedDates().Select(d => d.Title).ToList());
+            }
+
+            Assert.True(SyntheticDebugInstalls.WithMemories.Memories);
         }
 
         [Fact]

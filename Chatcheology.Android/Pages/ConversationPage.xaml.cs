@@ -46,6 +46,7 @@ namespace Chatcheology.Android.Pages
         private OnThisDay? _onThisDay;
         private ToolbarItem? _onThisDayIcon;
         private int _layersVersion;
+        private readonly bool _showOnThisDay;
 
         /// <summary>Whether the page has begun closing its archive: nothing more is read.</summary>
         private bool _closed => _gate.IsClosed;
@@ -54,11 +55,19 @@ namespace Chatcheology.Android.Pages
         /// A page over a conversation the caller opened off the UI thread. The page owns the session from
         /// here on and closes it when it is closed.
         /// </summary>
-        internal ConversationPage(AppState state, OpenedConversation opened, Stopwatch? openWatch = null)
+        /// <param name="state">The app's shared state.</param>
+        /// <param name="opened">The opened conversation; the page owns its session.</param>
+        /// <param name="openWatch">The open timing, for the log.</param>
+        /// <param name="showOnThisDay">
+        /// Opened from a noted-date notification (CH-47): the On this day card opens even when it was already shown
+        /// today. An archive with no messages has no card.
+        /// </param>
+        internal ConversationPage(AppState state, OpenedConversation opened, Stopwatch? openWatch = null, bool showOnThisDay = false)
         {
             InitializeComponent();
 
             _state = state;
+            _showOnThisDay = showOnThisDay;
             _session = opened.Session;
             _timeline = opened.Timeline;
             _openedAt = opened.At;
@@ -577,6 +586,11 @@ namespace Chatcheology.Android.Pages
 
             _onThisDay = _session.OnThisDayFor(days, OnThisDay.TodayFrom(TimeProvider.System));
             UpdateOnThisDay(openByItself: true);
+
+            if (_showOnThisDay && !OnThisDayCard.IsVisible)
+            {
+                ShowOnThisDayCard();
+            }
         }
 
         /// <summary>Shows or hides the icon (and the card) as the setting and the years say.</summary>
@@ -616,8 +630,14 @@ namespace Chatcheology.Android.Pages
                 return;
             }
 
+            ShowNotedDates(onThisDay);
             OnThisDayYears.Children.Clear();
-            OnThisDayYears.Children.Add(new Label { Text = "On this day:", FontSize = 14, Padding = new Thickness(0, 4, 6, 4) });
+            OnThisDayYears.IsVisible = onThisDay.Years.Count > 0;
+
+            if (onThisDay.Years.Count > 0)
+            {
+                OnThisDayYears.Children.Add(new Label { Text = "On this day:", FontSize = 14, Padding = new Thickness(0, 4, 6, 4) });
+            }
 
             for (var i = 0; i < onThisDay.Years.Count; i++)
             {
@@ -657,8 +677,91 @@ namespace Chatcheology.Android.Pages
             onThisDay.MarkShown();
         }
 
-        /// <summary>On this day was turned on or off in Settings.</summary>
-        private void OnThisDayChanged() => UpdateOnThisDay(openByItself: false);
+        /// <summary>
+        /// Noted dates (CH-47), one row each above the years: the title and "· N years"; a tap shows the note
+        /// when there is one and goes to the noted year's day when it has messages.
+        /// </summary>
+        private void ShowNotedDates(OnThisDay onThisDay)
+        {
+            OnThisDayNoted.Children.Clear();
+            OnThisDayNoted.IsVisible = onThisDay.Noted.Count > 0;
+
+            foreach (var noted in onThisDay.Noted)
+            {
+                var tappable = noted.Note is not null || noted.JumpDay is not null;
+                var row = new Label { Text = noted.Text, FontSize = 14, FontAttributes = FontAttributes.Bold, Padding = new Thickness(0, 4) };
+
+                if (tappable)
+                {
+                    row.TextDecorations = TextDecorations.Underline;
+                    row.TextIn("LinkText");
+                }
+
+                var tap = new TapGestureRecognizer();
+                tap.Tapped += async (_, _) =>
+                {
+                    try
+                    {
+                        await OnNotedTappedAsync(noted);
+                    }
+                    catch (Exception)
+                    {
+                        // A tap handler: nothing here may end the app.
+                    }
+                };
+
+                row.GestureRecognizers.Add(tap);
+                OnThisDayNoted.Children.Add(row);
+            }
+        }
+
+        private async Task OnNotedTappedAsync(NotedToday noted)
+        {
+            if (_closed)
+            {
+                return;
+            }
+
+            if (noted.Note is { } note)
+            {
+                if (noted.JumpDay is { } day)
+                {
+                    if (!await DisplayAlertAsync(noted.Title, note, "Go to " + DateSeparatorRow.DayText(day), "Close"))
+                    {
+                        return;
+                    }
+                }
+                else
+                {
+                    await DisplayAlertAsync(noted.Title, note, "OK");
+                    return;
+                }
+            }
+
+            if (noted.JumpDay is { } jump && await GoToDayAsync(jump))
+            {
+                OnThisDayCard.IsVisible = false;
+            }
+        }
+
+        /// <summary>
+        /// On this day, or a noted date, was changed in Settings: today's noted dates are found again (an own
+        /// date may have been added, edited or deleted) and the icon and an open card follow.
+        /// </summary>
+        private void OnThisDayChanged()
+        {
+            if (_days is { } days && !_closed)
+            {
+                _onThisDay = _session.OnThisDayFor(days, OnThisDay.TodayFrom(TimeProvider.System));
+            }
+
+            UpdateOnThisDay(openByItself: false);
+
+            if (OnThisDayCard.IsVisible && _onThisDay is { ShowsIcon: true })
+            {
+                ShowOnThisDayCard();
+            }
+        }
 
         // -----------------------------------------------------------------------------------------
         // Gallery and stars (CH-37, CH-38).
@@ -785,6 +888,10 @@ namespace Chatcheology.Android.Pages
             {
                 await DisplayAlertAsync("Remove archive", "The archive could not be removed completely. Try again from the start screen.", "OK");
             }
+
+            // Its noted dates no longer notify (CH-47).
+            NotedDateNotifier.Cancel(archive.Id);
+            _ = NotedDateNotifier.UpdateAsync();
 
             await Navigation.PopToRootAsync();
         }

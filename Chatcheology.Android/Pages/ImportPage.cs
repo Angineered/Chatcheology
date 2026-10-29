@@ -153,6 +153,12 @@ namespace Chatcheology.Android.Pages
                 }
             }
 
+            if (result is { Outcome: ImportOutcome.Installed })
+            {
+                // Its noted dates notify from now on (CH-47).
+                _ = NotedDateNotifier.UpdateAsync();
+            }
+
             if (result is { Outcome: ImportOutcome.Installed or ImportOutcome.AlreadyInstalled, ArchiveId: { } id })
             {
                 var open = new Button { Text = "Open the archive", TextColor = Colors.White }.Themed(VisualElement.BackgroundColorProperty, "Primary");

@@ -38,7 +38,7 @@ namespace Chatcheology.Android
         /// The app's private preferences (Android SharedPreferences), which the backup and
         /// device-transfer rules exclude with everything else.
         /// </summary>
-        private sealed class PreferencesStore : ISettingsStore
+        internal sealed class PreferencesStore : ISettingsStore
         {
             public string? Get(string key) => Preferences.Default.Get<string?>(key, null);
 

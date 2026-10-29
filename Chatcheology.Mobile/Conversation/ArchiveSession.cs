@@ -45,6 +45,7 @@ namespace Chatcheology.Mobile.Conversation
     {
         private readonly ArchiveSettings _settings;
         private readonly string _identity;
+        private readonly IReadOnlyList<ArchiveNotedDate> _giftedNotedDates;
         private readonly CancellationTokenSource _closing = new();
         private readonly object _searchLock = new();
         private Task<ConversationSearch>? _search;
@@ -63,6 +64,7 @@ namespace Chatcheology.Mobile.Conversation
             LowQuality = LowQualityIndex.Build(reader, _closing.Token);
             Stars = new Stars(settings, identity);
             Memories = MemoryIndex.Build(reader, _closing.Token);
+            _giftedNotedDates = reader.ReadNotedDates();
         }
 
         /// <summary>The archive's memories (CH-42), read at open; empty for an archive without any.</summary>
@@ -354,7 +356,71 @@ namespace Chatcheology.Mobile.Conversation
         }
 
         /// <summary>On this day (CH-39) for <paramref name="days"/> (from <see cref="ReadDays"/>) on <paramref name="today"/>.</summary>
-        public OnThisDay OnThisDayFor(IEnumerable<DateOnly> days, DateOnly today) => OnThisDay.For(_settings, _identity, days, today);
+        public OnThisDay OnThisDayFor(IEnumerable<DateOnly> days, DateOnly today) =>
+            OnThisDay.For(_settings, _identity, days, today, _giftedNotedDates);
+
+        /// <summary>
+        /// Every noted date (CH-47) for Settings: the archive's gifted ones, which can only be muted, then the
+        /// phone's own. Read from the settings each time, so a change shows at once.
+        /// </summary>
+        public IReadOnlyList<NotedDateListing> NotedDateListings => NotedDates.List(_settings, _identity, _giftedNotedDates);
+
+        /// <summary>Mutes or unmutes a gifted noted date (it stays on the card; muting only stops its notification).</summary>
+        public void SetNotedDateMuted(long notedDateID, bool muted)
+        {
+            if (_giftedNotedDates.Any(date => date.NotedDateID == notedDateID))
+            {
+                _settings.SetNotedDateMuted(_identity, notedDateID, muted);
+            }
+        }
+
+        /// <summary>
+        /// Adds a date of the phone's own, or replaces the one with <paramref name="id"/>. Nothing is stored
+        /// when a rule of <see cref="NotedDateRules"/> is broken; the broken rules are returned.
+        /// </summary>
+        /// <param name="id">
+        /// The own date to replace; when none has this id, a new one is added under it (so a repeated save of the
+        /// same new date, with an id chosen once, replaces rather than duplicates). <see langword="null"/> adds one
+        /// with a fresh id.
+        /// </param>
+        /// <param name="title">The title.</param>
+        /// <param name="month">The month.</param>
+        /// <param name="day">The day.</param>
+        /// <param name="year">The year, or none.</param>
+        /// <param name="note">The note, or none (blank is none).</param>
+        /// <param name="today">The phone's date; a year after it is refused.</param>
+        public IReadOnlyDictionary<NotedDateField, string> SaveOwnNotedDate(
+            string? id, string? title, int month, int day, int? year, string? note, DateOnly today)
+        {
+            var stored = NotedDateRules.NormaliseNote(note);
+            var errors = NotedDateRules.Validate(title, month, day, year, stored, today.Year);
+
+            if (errors.Count > 0)
+            {
+                return errors;
+            }
+
+            var own = _settings.GetOwnNotedDates(_identity).ToList();
+            var existing = id is null ? -1 : own.FindIndex(date => date.Id == id);
+            var date = new OwnNotedDate(id ?? Guid.NewGuid().ToString("N"), title!.Trim(), month, day, year, stored);
+
+            if (existing >= 0)
+            {
+                own[existing] = date;
+            }
+            else
+            {
+                own.Add(date);
+            }
+
+            _settings.SetOwnNotedDates(_identity, own);
+
+            return errors;
+        }
+
+        /// <summary>Deletes one of the phone's own noted dates; a gifted one cannot be deleted here.</summary>
+        public void DeleteOwnNotedDate(string id) =>
+            _settings.SetOwnNotedDates(_identity, _settings.GetOwnNotedDates(_identity).Where(date => date.Id != id));
 
         /// <summary>Whether On this day is on for this archive (Settings).</summary>
         public bool OnThisDayEnabled

@@ -3,4 +3,6 @@
     <color name="colorPrimary">#2E6B5E</color>
     <color name="colorPrimaryDark">#1F4A41</color>
     <color name="colorAccent">#1F4A41</color>
+    <!-- System picker dialog buttons and accents (CH-47): light: 9.9:1 on a white dialog. -->
+    <color name="dialogAccent">#1F4A41</color>
 </resources>
