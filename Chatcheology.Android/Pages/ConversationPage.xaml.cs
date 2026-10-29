@@ -712,6 +712,12 @@ namespace Chatcheology.Android.Pages
 
                 row.GestureRecognizers.Add(tap);
                 OnThisDayNoted.Children.Add(row);
+
+                // CH-48: the date's gallery links, opened only after a confirmation.
+                if (noted.Galleries.Count > 0)
+                {
+                    OnThisDayNoted.Children.Add(SettingsPage.GalleryLine(this, noted.GalleryText, noted.Galleries));
+                }
             }
         }
 

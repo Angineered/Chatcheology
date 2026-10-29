@@ -284,16 +284,54 @@ namespace Chatcheology.Android.Pages
             _noted.Add(add);
         }
 
-        private static View DateLabel(NotedDateListing date) => new VerticalStackLayout
+        /// <summary>The title and date and, with gallery links (CH-48), "Gallery · host" or "N galleries" to open them.</summary>
+        private View DateLabel(NotedDateListing date)
         {
-            Spacing = 0,
-            VerticalOptions = LayoutOptions.Center,
-            Children =
+            var label = new VerticalStackLayout
             {
-                new Label { Text = date.Title, FontSize = 15 },
-                new Label { Text = date.DateText, FontSize = 13 }.TextIn("MutedText"),
-            },
-        };
+                Spacing = 0,
+                VerticalOptions = LayoutOptions.Center,
+                Children =
+                {
+                    new Label { Text = date.Title, FontSize = 15 },
+                    new Label { Text = date.DateText, FontSize = 13 }.TextIn("MutedText"),
+                },
+            };
+
+            if (date.Galleries.Count > 0)
+            {
+                label.Add(GalleryLine(this, date.GalleryText, date.Galleries));
+            }
+
+            return label;
+        }
+
+        /// <summary>A tappable "Gallery · host" / "N galleries" line that opens the links (after a confirmation).</summary>
+        internal static Label GalleryLine(Page page, string text, IReadOnlyList<GalleryLink> galleries)
+        {
+            var line = new Label
+            {
+                Text = text,
+                FontSize = 13,
+                TextDecorations = TextDecorations.Underline,
+                Padding = new Thickness(0, 2),
+            }.TextIn("LinkText");
+
+            SemanticProperties.SetDescription(line, text + ", opens outside Chatcheology");
+
+            var tap = new TapGestureRecognizer();
+            tap.Tapped += async (_, _) =>
+            {
+                if (page.Navigation.NavigationStack.LastOrDefault() == page)
+                {
+                    await GalleryLinkOpener.ChooseAndOpenAsync(page, galleries);
+                }
+            };
+
+            line.GestureRecognizers.Add(tap);
+
+            return line;
+        }
 
         private int IndexOf(long participantID)
         {

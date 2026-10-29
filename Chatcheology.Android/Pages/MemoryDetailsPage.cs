@@ -7,7 +7,8 @@ namespace Chatcheology.Android.Pages
     /// The details of a memory row (CH-42): what <see cref="MemoryDetails"/> says, laid out. For a PSN
     /// period: its trophies with exact local times, names and icons (or "Bronze trophy #12"), then the day
     /// evidence and the day's other periods. For a personal memory: its photos (a strip with captions when
-    /// there is more than one, CH-46; a tap opens the full-screen viewer over them), description and links. Nothing to
+    /// there is more than one, CH-46; a tap opens the full-screen viewer over them), description, links and external
+    /// gallery links (CH-48; each opens in another app only after a confirmation). Nothing to
     /// share; everything was read when the archive opened.
     /// </summary>
     internal sealed class MemoryDetailsPage : ContentPage
@@ -96,6 +97,17 @@ namespace Chatcheology.Android.Pages
                 foreach (var link in details.Links)
                 {
                     body.Add(LinkView(link));
+                }
+            }
+
+            if (details.Galleries.Count > 0)
+            {
+                // CH-48: each external link as its label, or its host; a tap asks before leaving the app.
+                body.Add(Heading(details.Galleries.Count == 1 ? "Gallery" : "Galleries"));
+
+                foreach (var gallery in details.Galleries)
+                {
+                    body.Add(GalleryView(gallery));
                 }
             }
 
@@ -205,6 +217,32 @@ namespace Chatcheology.Android.Pages
                 catch (Exception)
                 {
                     // A tap handler: nothing here may end the app.
+                }
+            };
+
+            label.GestureRecognizers.Add(tap);
+
+            return label;
+        }
+
+        private View GalleryView(GalleryLink gallery)
+        {
+            var label = new Label
+            {
+                Text = gallery.Text,
+                FontSize = 15,
+                TextDecorations = TextDecorations.Underline,
+                Padding = new Thickness(0, 4),
+            }.TextIn("LinkText");
+
+            SemanticProperties.SetDescription(label, "Open gallery " + gallery.Text + " outside Chatcheology");
+
+            var tap = new TapGestureRecognizer();
+            tap.Tapped += async (_, _) =>
+            {
+                if (Navigation.NavigationStack.LastOrDefault() == this)
+                {
+                    await GalleryLinkOpener.OpenAsync(this, gallery);
                 }
             };
 
