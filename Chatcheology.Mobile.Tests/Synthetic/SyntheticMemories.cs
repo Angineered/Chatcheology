@@ -16,7 +16,7 @@ namespace Chatcheology.Mobile.Synthetic
     /// periods beside shared ones and alone; a record with no shared period (a "different times" line);
     /// records before the first and after the last message and on a day without messages; trophy
     /// definitions with icons (one hidden, and items without a definition); one personal memory with an
-    /// image and links to a message and to a game.</para>
+    /// image, three extra photos (one portrait, one without a caption) and links to a message and to a game.</para>
     /// </remarks>
     internal static class SyntheticMemories
     {
@@ -68,6 +68,9 @@ namespace Chatcheology.Mobile.Synthetic
             var kart = Picture(writer, mediaFolder, 320, 180, (200, 60, 60), (240, 180, 40));
             var tower = Picture(writer, mediaFolder, 320, 180, (40, 90, 200), (120, 200, 240));
             var seaside = Picture(writer, mediaFolder, 640, 360, (30, 120, 180), (240, 220, 160));
+            var ferry = Picture(writer, mediaFolder, 480, 320, (20, 60, 110), (200, 200, 210));
+            var lighthouse = Picture(writer, mediaFolder, 360, 640, (230, 230, 235), (190, 50, 50));
+            var sunset = Picture(writer, mediaFolder, 600, 300, (250, 140, 40), (90, 30, 120));
 
             // A busy day: strong, one account, same period. Day level strong.
             writer.WriteEntry(Game(1, "Invented Kart Rally", "strong", kart, busy,
@@ -107,6 +110,12 @@ namespace Chatcheology.Mobile.Synthetic
                 ImageExtension = seaside.Extension,
                 Source = null,
                 DayLevel = null,
+                Images =
+                [
+                    new ArchiveEntryImage { EntryID = 10, Ordinal = 1, Sha256 = ferry.Sha, Extension = ferry.Extension, Caption = "Invented ferry" },
+                    new ArchiveEntryImage { EntryID = 10, Ordinal = 2, Sha256 = lighthouse.Sha, Extension = lighthouse.Extension, Caption = null },
+                    new ArchiveEntryImage { EntryID = 10, Ordinal = 3, Sha256 = sunset.Sha, Extension = sunset.Extension, Caption = "Invented sunset over an invented sea" },
+                ],
             });
 
             writer.WriteEntryLink(new ArchiveEntryLink { EntryLinkID = 1, FromEntryID = 10, ToEntryID = null, ToMessageSequenceNumber = 61 });
