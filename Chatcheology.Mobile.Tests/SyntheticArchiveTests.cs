@@ -72,6 +72,13 @@ namespace Chatcheology.Mobile.Tests
             Assert.Equal(2, counts.EntryLinks);
 
             using var reader = ArchiveReader.Open(folder.Path);
+
+            var images = reader.ReadEntryImages(10);
+            Assert.Equal([1, 2, 3], images.Select(i => i.Ordinal));
+            Assert.Equal(["Invented ferry", null, "Invented sunset over an invented sea"], images.Select(i => i.Caption));
+            Assert.All(images, image => Assert.True(File.Exists(reader.EntryImageFullPath(image))));
+            Assert.Equal(3, counts.EntryImages);
+
             var memories = Memories.MemoryIndex.Build(reader);
             Assert.Equal(["Shared gaming", "Holidays"], memories.Collections.Select(c => c.Name));
             Assert.Equal([false, true], memories.Collections.Select(c => c.ShownByDefault));
