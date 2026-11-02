@@ -34,7 +34,8 @@ namespace Chatcheology.Mobile.Settings
     /// <c>id:on</c> or <c>id:off</c>) and <c>.memoryFilters</c> (filters turned off, each
     /// <c>id:filter</c>; CH-42), <c>.ownNotedDates</c> (a JSON list of the dates the phone's user added; CH-47;
     /// each with its ordered gallery links, address and label, CH-48)
-    /// <c>.mutedNotedDates</c> (gifted noted-date ids that do not notify, comma separated) and
+    /// <c>.mutedNotedDates</c> (gifted noted-date ids that do not notify, comma separated),
+    /// <c>.mutedYearlyMemories</c> (yearly memories' entry ids that do not notify, comma separated; CH-53) and
     /// <c>.notedDatesPosted</c> (the last day its noted-date notification was posted, so it is posted once a
     /// day; CH-47 step 3). Own noted dates
     /// are private to the phone, never written into the archive, and forgotten with the rest on remove.</para>
@@ -50,7 +51,7 @@ namespace Chatcheology.Mobile.Settings
         private static readonly string[] Names =
         [
             "me", "position", "lastOpenedUtc", "validatedUtc", "validation", "onThisDay", "onThisDayShown",
-            "layers", "memoryFilters", "ownNotedDates", "mutedNotedDates", "notedDatesPosted",
+            "layers", "memoryFilters", "ownNotedDates", "mutedNotedDates", "notedDatesPosted", "mutedYearlyMemories",
         ];
 
         private readonly ISettingsStore _store;
@@ -283,6 +284,37 @@ namespace Chatcheology.Mobile.Settings
             Set(
                 contentsSha256,
                 "mutedNotedDates",
+                ids.Count == 0 ? null : string.Join(',', ids.Order().Select(id => id.ToString(CultureInfo.InvariantCulture))));
+        }
+
+        /// <summary>
+        /// The yearly memories (CH-53, by the archive's entry identifier) that are muted: they do not notify. A key of
+        /// its own, never mixed with the noted-date mutes, so an entry identifier never reads as a noted date's.
+        /// </summary>
+        public IReadOnlySet<long> GetMutedYearlyMemories(string contentsSha256) =>
+            (Get(contentsSha256, "mutedYearlyMemories") ?? string.Empty)
+                .Split(',', StringSplitOptions.RemoveEmptyEntries)
+                .Select(part => Long(part))
+                .OfType<long>()
+                .ToHashSet();
+
+        /// <summary>Mutes or unmutes a yearly memory; none muted removes the key.</summary>
+        public void SetYearlyMemoryMuted(string contentsSha256, long entryID, bool muted)
+        {
+            var ids = GetMutedYearlyMemories(contentsSha256).ToHashSet();
+
+            if (muted)
+            {
+                ids.Add(entryID);
+            }
+            else
+            {
+                ids.Remove(entryID);
+            }
+
+            Set(
+                contentsSha256,
+                "mutedYearlyMemories",
                 ids.Count == 0 ? null : string.Join(',', ids.Order().Select(id => id.ToString(CultureInfo.InvariantCulture))));
         }
 

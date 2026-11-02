@@ -254,7 +254,7 @@ namespace Chatcheology.Archive
     /// <summary>
     /// One yearly entry (CH-53, version 3) as the phone's notification schedule needs it: no summary, image or
     /// period. Read as stored; whether it keeps the rule (a personal Day entry without an end) is the
-    /// validator's to count, and a viewer checks <see cref="CollectionKind"/> and <see cref="DatePrecision"/> itself.
+    /// validator's to count, and a viewer checks <see cref="CollectionKind"/>, <see cref="DatePrecision"/> and <see cref="EndLocal"/> itself.
     /// </summary>
     public sealed class ArchiveYearlyEntry
     {
@@ -269,6 +269,9 @@ namespace Chatcheology.Archive
 
         /// <summary><c>Second</c>, <c>Day</c> or <c>Month</c>.</summary>
         public required string DatePrecision { get; init; }
+
+        /// <summary>The end, local wall clock, or <see langword="null"/> (a valid yearly entry has none).</summary>
+        public DateTime? EndLocal { get; init; }
 
         /// <summary>The kind of its collection (<see cref="ArchiveMemoryVocabulary.KindPersonal"/> for a valid one), or <see langword="null"/> when it has none.</summary>
         public required string? CollectionKind { get; init; }

@@ -7,7 +7,7 @@ using Microsoft.Data.Sqlite;
 
 namespace Chatcheology.Mobile.Notifications
 {
-    /// <summary>One installed archive's noted dates, as the notification schedule sees them.</summary>
+    /// <summary>One installed archive's noted dates and yearly memories, as the notification schedule sees them.</summary>
     /// <param name="ArchiveId">The archive's folder name under <c>archives/</c> (what a tap opens).</param>
     /// <param name="ContentsSha256">The archive's identity.</param>
     /// <param name="OnThisDayEnabled">Whether On this day is on for the archive; off, it never notifies.</param>
@@ -16,8 +16,25 @@ namespace Chatcheology.Mobile.Notifications
     public sealed record ArchiveNotedDates(
         string ArchiveId, string ContentsSha256, bool OnThisDayEnabled, IReadOnlyList<NotedDateListing> Dates, DateOnly? PostedThrough = null)
     {
+        /// <summary>Its yearly memories (CH-53, version 3), each with whether it notifies (a muted one does not).</summary>
+        public IReadOnlyList<YearlyMemoryListing> Yearly { get; init; } = [];
+
         /// <summary>The dates that can notify: none when On this day is off, otherwise every date not muted.</summary>
         public IEnumerable<NotedDateListing> Notifying => OnThisDayEnabled ? Dates.Where(date => date.Notify) : [];
+
+        /// <summary>The yearly memories that can notify: none when On this day is off, otherwise every one not muted.</summary>
+        public IEnumerable<YearlyMemoryListing> NotifyingYearly => OnThisDayEnabled ? Yearly.Where(memory => memory.Notify) : [];
+
+        /// <summary>Whether anything of this archive can notify on some day.</summary>
+        public bool CanNotify => Notifying.Any() || NotifyingYearly.Any();
+
+        /// <summary>
+        /// How many of its noted dates and yearly memories notify on <paramref name="day"/>: a yearly memory only on
+        /// or after its own date (<see cref="YearlyMemories.ShowsOn"/>).
+        /// </summary>
+        public int CountOn(DateOnly day) =>
+            Notifying.Count(date => NotedDates.Matches(date.Month, date.Day, day))
+            + NotifyingYearly.Count(memory => YearlyMemories.ShowsOn(memory.Start, day));
     }
 
     /// <summary>The one notification an archive gets on a day.</summary>
@@ -41,7 +58,8 @@ namespace Chatcheology.Mobile.Notifications
     /// dates, mutes and On this day switch, and the app's notification time.
     /// </summary>
     /// <remarks>
-    /// <para>Only noted dates notify; message years never do. One notification per archive per day, at the
+    /// <para>Only noted dates and yearly memories (CH-53) notify; message years never do. A yearly memory
+    /// notifies on its day only on or after its own date and counts like a noted date in the same generic text. One notification per archive per day, at the
     /// app's time (default 09:00, local). A muted gifted date and every date of an archive with On this day
     /// off are left out. An archive with no messages still notifies for its noted dates. An archive already
     /// posted today (<see cref="ArchiveNotedDates.PostedThrough"/>) is not posted again that day.</para>
@@ -91,7 +109,7 @@ namespace Chatcheology.Mobile.Notifications
                     continue;
                 }
 
-                var count = archive.Notifying.Count(date => NotedDates.Matches(date.Month, date.Day, day));
+                var count = archive.CountOn(day);
 
                 if (count > 0)
                 {
@@ -117,7 +135,7 @@ namespace Chatcheology.Mobile.Notifications
 
             var list = archives.ToList();
 
-            if (!list.Any(archive => archive.Notifying.Any()))
+            if (!list.Any(archive => archive.CanNotify))
             {
                 return null;
             }
@@ -200,12 +218,16 @@ namespace Chatcheology.Mobile.Notifications
                 {
                     using var reader = ArchiveReader.Open(folder);
 
+                    // Yearly memories (CH-53) through the cheap reader method, never a whole memory index.
                     archives.Add(new ArchiveNotedDates(
                         Path.GetFileName(folder),
                         hash,
                         settings.GetOnThisDayEnabled(hash),
                         NotedDates.List(settings, hash, reader.ReadNotedDates()),
-                        settings.GetNotedDatesPostedThrough(hash)));
+                        settings.GetNotedDatesPostedThrough(hash))
+                    {
+                        Yearly = YearlyMemories.List(settings, hash, YearlyMemories.From(reader.ReadYearlyEntries())),
+                    });
                 }
                 catch (Exception exception) when (exception is ArchiveFormatException or SqliteException or IOException or UnauthorizedAccessException)
                 {
@@ -241,6 +263,6 @@ namespace Chatcheology.Mobile.Notifications
         public static string DescribeCounts(IReadOnlyCollection<ArchiveNotedDates> archives, NextNotification? next) =>
             string.Create(
                 CultureInfo.InvariantCulture,
-                $"archives={archives.Count} notedDates={archives.Sum(archive => archive.Dates.Count)} notifying={archives.Sum(archive => archive.Notifying.Count())} scheduled={(next is null ? "no" : "yes")}");
+                $"archives={archives.Count} notedDates={archives.Sum(archive => archive.Dates.Count)} yearly={archives.Sum(archive => archive.Yearly.Count)} notifying={archives.Sum(archive => archive.Notifying.Count() + archive.NotifyingYearly.Count())} scheduled={(next is null ? "no" : "yes")}");
     }
 }

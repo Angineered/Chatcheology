@@ -96,7 +96,7 @@ namespace Chatcheology.Android
 
                 AndroidLog.Info(AppState.LogTag, "noted-dates " + NotedDateSchedule.DescribeCounts(archives, next));
 
-                return archives.Any(archive => archive.Notifying.Any());
+                return archives.Any(archive => archive.CanNotify);
             }
         }
 

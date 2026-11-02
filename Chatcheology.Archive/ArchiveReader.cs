@@ -944,7 +944,7 @@ namespace Chatcheology.Archive
             """;
 
         /// <summary>
-        /// The yearly entries (CH-53, version 3), ordered by identifier: identifier, title, start, precision and
+        /// The yearly entries (CH-53, version 3), ordered by identifier: identifier, title, start, end, precision and
         /// collection kind only, for a schedule that must not build the whole memory index. None before version 3.
         /// Rows are as stored, rule or not; a value of the wrong kind is refused.
         /// </summary>
@@ -958,7 +958,7 @@ namespace Chatcheology.Archive
             using var command = _connection.CreateCommand();
             command.CommandText =
                 """
-                SELECT e.EntryID, e.Title, e.StartLocal, e.DatePrecision, c.Kind
+                SELECT e.EntryID, e.Title, e.StartLocal, e.DatePrecision, c.Kind, e.EndLocal
                 FROM Entry AS e LEFT JOIN Collection AS c ON c.CollectionID = e.CollectionID
                 WHERE e.EveryYear = 1
                 ORDER BY e.EntryID;
@@ -980,6 +980,7 @@ namespace Chatcheology.Archive
                         ArchiveMemoryVocabulary.DatePrecisions,
                         "An entry in the archive has a date precision the format does not define."),
                     CollectionKind = NullableText(reader, 4),
+                    EndLocal = NullableText(reader, 5) is { } end ? ArchiveFormat.ParseLocal(end) : null,
                 });
             }
 

@@ -565,6 +565,15 @@ namespace Chatcheology.Mobile.Memories
                 : null;
         }
 
+        /// <summary>
+        /// The image an entry's card draws (its first photo whose file is there, CH-46), or <see langword="null"/>;
+        /// whatever the layer switches say (CH-53: the On this day card's thumbnail).
+        /// </summary>
+        public string? CoverOf(long entryID) => _byID.GetValueOrDefault(entryID)?.ShownImagePath;
+
+        /// <summary>An entry's external gallery links (CH-48), in order; none for an imported one or an unknown entry.</summary>
+        public IReadOnlyList<GalleryLink> GalleriesOf(long entryID) => _byID.GetValueOrDefault(entryID)?.Galleries ?? [];
+
         internal MemoryEntry? Entry(long entryID) => _byID.GetValueOrDefault(entryID);
 
         /// <summary>The local time of a message, or <see langword="null"/> when there is no such message.</summary>

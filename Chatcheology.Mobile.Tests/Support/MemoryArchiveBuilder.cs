@@ -221,6 +221,36 @@ namespace Chatcheology.Mobile.Tests.Support
             });
         }
 
+        /// <summary>
+        /// Adds a yearly memory (CH-53, version 3) to the personal collection, as the desktop's move writes one: a
+        /// Day entry without an end, Every year on; with a cover photo and extra photos when asked.
+        /// </summary>
+        internal void Yearly(long entryID, string title, DateOnly day, bool image = false, params string?[] photoCaptions)
+        {
+            Memory(entryID, title, day.ToDateTime(TimeOnly.MinValue), image: image, photoCaptions: photoCaptions);
+
+            var memory = _entries[^1];
+            _entries[^1] = new ArchiveEntry
+            {
+                EntryID = memory.EntryID,
+                CollectionID = memory.CollectionID,
+                SourceKey = null,
+                Title = memory.Title,
+                StartLocal = memory.StartLocal,
+                EndLocal = null,
+                StartUtc = null,
+                EndUtc = null,
+                DatePrecision = "Day",
+                Summary = null,
+                ImageSha256 = memory.ImageSha256,
+                ImageExtension = memory.ImageExtension,
+                Source = "Noted date",
+                DayLevel = null,
+                Images = memory.Images,
+                EveryYear = true,
+            };
+        }
+
         /// <summary>Adds a definition for (set, item), with an icon when asked.</summary>
         internal void Definition(string setId, string itemId, string? name, bool hidden = false, bool icon = false, string? detail = null)
         {

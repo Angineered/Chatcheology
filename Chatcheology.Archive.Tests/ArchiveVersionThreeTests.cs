@@ -74,6 +74,7 @@ namespace Chatcheology.Archive.Tests
             Assert.Equal(new DateTime(2016, 3, 14), yearly.StartLocal);
             Assert.Equal("Day", yearly.DatePrecision);
             Assert.Equal(ArchiveMemoryVocabulary.KindPersonal, yearly.CollectionKind);
+            Assert.Null(yearly.EndLocal);
         }
 
         [Fact]

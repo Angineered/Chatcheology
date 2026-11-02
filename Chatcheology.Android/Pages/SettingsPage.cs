@@ -197,14 +197,54 @@ namespace Chatcheology.Android.Pages
         }
 
         /// <summary>
-        /// "Noted dates" (CH-47): the archive's gifted dates, each with a Notify switch (a gifted date cannot be
-        /// edited or deleted here), then the phone's own, each with Edit and Delete (after a confirmation), and Add.
+        /// "Noted dates" (CH-47): the archive's yearly memories (CH-53) and gifted dates, each with a Notify switch
+        /// (neither can be edited or deleted here), then the phone's own, each with Edit and Delete (after a
+        /// confirmation), and Add.
         /// </summary>
         private void RebuildNotedDates()
         {
             _noted.Children.Clear();
             _noted.Add(new Label { Text = "Noted dates", FontSize = 15, FontAttributes = FontAttributes.Bold, Margin = new Thickness(0, 6, 0, 0) });
             _noted.Add(new Label { Text = "Days that matter to you, shown on the card every year and notified that morning. Notify off: no notification.", FontSize = 13 }.TextIn("MutedText"));
+
+            // CH-53: the archive's yearly memories, each with a Notify switch of its own (its own settings key).
+            var yearly = _session.YearlyMemoryListings;
+
+            if (yearly.Count > 0)
+            {
+                _noted.Add(new Label { Text = "Yearly memories", FontSize = 13, FontAttributes = FontAttributes.Bold }.TextIn("MutedText"));
+            }
+
+            foreach (var memory in yearly)
+            {
+                var toggle = new Switch { IsToggled = memory.Notify, VerticalOptions = LayoutOptions.Center }.Themed(Switch.OnColorProperty, "Primary");
+                SemanticProperties.SetDescription(toggle, "Notify for " + memory.Title);
+                toggle.Toggled += (_, e) =>
+                {
+                    _session.SetYearlyMemoryMuted(memory.EntryID, !e.Value);
+                    _notedDatesChanged();
+                };
+
+                var row = new Grid
+                {
+                    ColumnDefinitions = { new ColumnDefinition(GridLength.Star), new ColumnDefinition(GridLength.Auto), new ColumnDefinition(GridLength.Auto) },
+                    ColumnSpacing = 8,
+                };
+
+                row.Add(new VerticalStackLayout
+                {
+                    Spacing = 0,
+                    VerticalOptions = LayoutOptions.Center,
+                    Children =
+                    {
+                        new Label { Text = memory.Title, FontSize = 15 },
+                        new Label { Text = memory.DateText, FontSize = 13 }.TextIn("MutedText"),
+                    },
+                }, 0);
+                row.Add(new Label { Text = "Notify", FontSize = 13, VerticalOptions = LayoutOptions.Center }.TextIn("MutedText"), 1);
+                row.Add(toggle, 2);
+                _noted.Add(row);
+            }
 
             var listings = _session.NotedDateListings;
             var gifted = listings.Where(date => date.IsGifted).ToList();
