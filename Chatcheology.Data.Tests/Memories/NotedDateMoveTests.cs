@@ -279,6 +279,71 @@ namespace Chatcheology.Data.Tests.Memories
         }
 
         [Fact]
+        public void ACopyThatFailsPartWay_IsDeleted_AndNothingIsMoved()
+        {
+            Seed();
+            var before = File.ReadAllBytes(_folder.MemoriesPath);
+            _store.AfterCopyCreatedForTests = () =>
+            {
+                Assert.True(File.Exists(Backup));
+                throw new IOException("Synthetic disk full.");
+            };
+
+            Assert.Throws<IOException>(() => _store.MoveToMemories(4));
+
+            Assert.False(File.Exists(Backup));
+            Assert.Equal(before, File.ReadAllBytes(_folder.MemoriesPath));
+            Assert.Equal(4, _store.List().Count);
+
+            _store.AfterCopyCreatedForTests = null;
+            Assert.Equal("memories.db.before-CH-53", _store.MoveToMemories(4).BackupFileName);
+        }
+
+        [Fact]
+        public void AFormatFiveFile_WithLinksOnNotedDates_KeepsTheLinks_AndIsUpgraded()
+        {
+            MemoriesDatabase.CreateFormatVersionFive(_folder.MemoriesPath, Now);
+            new SqliteCommandRunner(_folder.MemoriesPath).Run(
+                """
+                INSERT INTO NotedDate VALUES (3, 'Invented anniversary', 2, 14, 2019, 'An invented note');
+                INSERT INTO NotedDate VALUES (8, 'Invented birthday', 8, 2, NULL, NULL);
+                INSERT INTO ExternalLink VALUES (12, 'NotedDate', 3, 2, 'https://photos.example.org/album/b', NULL);
+                INSERT INTO ExternalLink VALUES (5, 'NotedDate', 3, 1, 'https://photos.example.org/album/a', 'Day 1');
+                INSERT INTO ExternalLink VALUES (7, 'NotedDate', 8, 1, 'https://photos.example.org/album/c', 'Kept');
+                """);
+            var before = File.ReadAllBytes(_folder.MemoriesPath);
+
+            var result = _store.MoveToMemories(2);
+
+            var entry = Assert.Single(result.Pairs).EntryID;
+            Assert.Equal(1, result.LeftWithoutYear);
+            Assert.Equal(before, File.ReadAllBytes(Backup));
+            Assert.Equal(6, _folder.Scalar("SELECT FormatVersion FROM MemoriesInfo;"));
+            Assert.Equal(1, _folder.Scalar($"SELECT EveryYear FROM Entry WHERE EntryID = {entry};"));
+            Assert.Equal(
+                [
+                    $"5|Entry|{entry}|1|https://photos.example.org/album/a|Day 1",
+                    "7|NotedDate|8|1|https://photos.example.org/album/c|Kept",
+                    $"12|Entry|{entry}|2|https://photos.example.org/album/b|-",
+                ],
+                LinkRows());
+        }
+
+        [Fact]
+        public void AFileInWalMode_IsRefused_BeforeAnythingIsCopied()
+        {
+            Seed();
+            new SqliteCommandRunner(_folder.MemoriesPath).Run("PRAGMA journal_mode = WAL;");
+
+            var refusal = Assert.Throws<PersonalMemoryValidationException>(() => _store.MoveToMemories(4));
+
+            Assert.Contains("WAL journal mode", refusal.Message, StringComparison.Ordinal);
+            Assert.False(File.Exists(Backup));
+            Assert.Equal(4, _store.List().Count);
+            Assert.Equal(0, _folder.Scalar("SELECT COUNT(*) FROM Entry;"));
+        }
+
+        [Fact]
         public void WithoutAFile_NothingIsCreated()
         {
             Assert.Throws<FileNotFoundException>(() => _store.MoveToMemories(0));
