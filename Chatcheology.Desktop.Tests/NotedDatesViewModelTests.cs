@@ -390,7 +390,7 @@ namespace Chatcheology.Desktop.Tests
             var question = Assert.Single(_moveAsked);
             Assert.StartsWith("Move 2 noted dates to memories?", question, StringComparison.Ordinal);
             Assert.Contains("\"Noted dates\"", question, StringComparison.Ordinal);
-            Assert.Contains("memories.db.before-CH-53", question, StringComparison.Ordinal);
+            Assert.Contains("memories.db.before-CH-53 (or the next free name after it)", question, StringComparison.Ordinal);
             Assert.Contains("1 noted date has no year and stays here.", question, StringComparison.Ordinal);
             Assert.Equal("Nothing was moved.", memories.StatusText);
             Assert.Equal(before, File.ReadAllBytes(MemoriesPath));
@@ -407,7 +407,7 @@ namespace Chatcheology.Desktop.Tests
 
             await RunAsync(memories.MoveNotedDatesCommand, memories);
 
-            Assert.Equal("Moved 2 noted dates to memories. 1 noted date has no year and stayed.", memories.StatusText);
+            Assert.Equal("Moved 2 noted dates to memories. The copy from before is memories.db.before-CH-53. 1 noted date has no year and stayed.", memories.StatusText);
             Assert.Equal(1, changed);
             Assert.True(File.Exists(Path.Combine(Path.GetDirectoryName(MemoriesPath)!, NotedDateStore.MoveBackupFileName)));
 
@@ -425,24 +425,17 @@ namespace Chatcheology.Desktop.Tests
             Assert.False(memories.MoveNotedDatesCommand.CanExecute(null));
             Assert.Contains("1 noted date has no year", memories.NotedDatesText, StringComparison.Ordinal);
 
-            // Given a year, it can be moved too; then the section is gone. The copy from the first move stays, so
-            // a second move is refused and says why.
+            // Given a year, it can be moved too; then the section is gone. The first copy stays; the second move
+            // makes the next one.
             var form = Edit(memories);
             form.YearText = "2001";
             await SaveAsync(memories);
             Assert.True(memories.MoveNotedDatesCommand.CanExecute(null));
 
             await RunAsync(memories.MoveNotedDatesCommand, memories);
-            Assert.Contains("memories.db.before-CH-53", memories.StatusText, StringComparison.Ordinal);
-            Assert.EndsWith("Nothing was written.", memories.StatusText, StringComparison.Ordinal);
-            Assert.Single(memories.NotedDates);
 
-            File.Move(
-                Path.Combine(Path.GetDirectoryName(MemoriesPath)!, NotedDateStore.MoveBackupFileName),
-                Path.Combine(Path.GetDirectoryName(MemoriesPath)!, "kept-elsewhere.db"));
-            await RunAsync(memories.MoveNotedDatesCommand, memories);
-
-            Assert.Equal("Moved 1 noted date to memories.", memories.StatusText);
+            Assert.Equal("Moved 1 noted date to memories. The copy from before is memories.db.before-CH-53-2.", memories.StatusText);
+            Assert.True(File.Exists(Path.Combine(Path.GetDirectoryName(MemoriesPath)!, NotedDateStore.MoveBackupFileName)));
             Assert.Empty(memories.NotedDates);
             Assert.False(memories.HasNotedDates);
             Assert.Equal(3, Assert.Single(memories.Collections).Entries.Count);

@@ -163,21 +163,47 @@ namespace Chatcheology.Data.Tests.Memories
         }
 
         [Fact]
-        public void AnExistingCopy_IsNeverOverwritten_AndTheMoveIsRefused()
+        public void AnExistingCopy_IsNeverOverwritten_TheNextFreeNameIsUsed()
         {
             Seed();
             File.WriteAllText(Backup, "an earlier copy");
+            File.WriteAllText(Backup + "-2", "another earlier copy");
             var before = File.ReadAllBytes(_folder.MemoriesPath);
 
-            var refusal = Assert.Throws<PersonalMemoryValidationException>(() => _store.MoveToMemories(4));
+            var result = _store.MoveToMemories(4);
 
-            Assert.Contains("memories.db.before-CH-53", refusal.Message, StringComparison.Ordinal);
-            Assert.DoesNotContain(_folder.Root, refusal.Message, StringComparison.OrdinalIgnoreCase);
+            Assert.Equal(3, result.Moved);
+            Assert.Equal("memories.db.before-CH-53-3", result.BackupFileName);
             Assert.Equal("an earlier copy", File.ReadAllText(Backup));
-            Assert.Equal(before, File.ReadAllBytes(_folder.MemoriesPath));
-            Assert.Equal(4, _store.List().Count);
+            Assert.Equal("another earlier copy", File.ReadAllText(Backup + "-2"));
+            Assert.Equal(before, File.ReadAllBytes(Backup + "-3"));
+            Assert.False(File.Exists(Backup + "-4"));
         }
 
+        [Fact]
+        public void ASecondMove_KeepsTheFirstCopy_AndMakesTheNextOne()
+        {
+            var (_, _, _, yearless) = Seed();
+            var first = _store.MoveToMemories(4);
+            Assert.Equal("memories.db.before-CH-53", first.BackupFileName);
+            var afterFirst = File.ReadAllBytes(Backup);
+
+            // The yearless date is given a year, then moved too.
+            _store.Update(yearless, new() { Title = "Invented birthday", Month = 8, Day = 2, Year = 2001 }, Now);
+            SqliteConnection.ClearAllPools();
+            var beforeSecond = File.ReadAllBytes(_folder.MemoriesPath);
+
+            var second = _store.MoveToMemories(1);
+
+            Assert.Equal(1, second.Moved);
+            Assert.False(second.CollectionCreated);
+            Assert.Equal(first.CollectionID, second.CollectionID);
+            Assert.Equal("memories.db.before-CH-53-2", second.BackupFileName);
+            Assert.Equal(afterFirst, File.ReadAllBytes(Backup));
+            Assert.Equal(beforeSecond, File.ReadAllBytes(Backup + "-2"));
+            Assert.Empty(_store.List());
+            Assert.Equal(4, _folder.Scalar("SELECT COUNT(*) FROM Entry WHERE EveryYear = 1;"));
+        }
         [Theory]
         [InlineData(false)]
         [InlineData(true)]
@@ -210,7 +236,7 @@ namespace Chatcheology.Data.Tests.Memories
             Assert.Equal(0, _folder.Scalar("SELECT COUNT(*) FROM Collection;"));
             Assert.False(File.Exists(Backup));
 
-            // So it can be tried again.
+            // So it can be tried again, under the first name.
             _store.BeforeCommit = null;
             _store.AfterEachMovedForTests = null;
             Assert.Equal(3, _store.MoveToMemories(4).Moved);

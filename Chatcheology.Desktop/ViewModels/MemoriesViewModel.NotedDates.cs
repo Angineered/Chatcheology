@@ -202,8 +202,8 @@ namespace Chatcheology.Desktop.ViewModels
             var question =
                 "Move " + (withYear == 1 ? "1 noted date" : withYear.ToString(CultureInfo.CurrentCulture) + " noted dates") +
                 " to memories? Each becomes a yearly memory, with its note and gallery links, in your collection \"" +
-                NotedDateStore.MovedCollectionName + "\". A copy of the memories file is kept first as " +
-                NotedDateStore.MoveBackupFileName + " beside it." +
+                NotedDateStore.MovedCollectionName + "\". A copy of the memories file is kept first beside it, as " +
+                NotedDateStore.MoveBackupFileName + " (or the next free name after it)." +
                 (without == 0
                     ? string.Empty
                     : " " + (without == 1 ? "1 noted date has" : without.ToString(CultureInfo.CurrentCulture) + " noted dates have") +
@@ -219,7 +219,7 @@ namespace Chatcheology.Desktop.ViewModels
                 () => backend.NotedDates.MoveToMemories(all),
                 result => (
                     "Moved " + (result.Moved == 1 ? "1 noted date" : result.Moved.ToString(CultureInfo.CurrentCulture) + " noted dates") +
-                    " to memories." +
+                    " to memories. The copy from before is " + result.BackupFileName + "." +
                     (result.LeftWithoutYear == 0
                         ? string.Empty
                         : " " + (result.LeftWithoutYear == 1

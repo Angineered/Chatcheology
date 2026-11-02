@@ -44,7 +44,11 @@ namespace Chatcheology.Data.Memories.Personal
     /// <param name="CollectionCreated">Whether that collection was made by the move (otherwise an existing one was reused).</param>
     /// <param name="Pairs">Each moved noted date and its memory, in noted-date order.</param>
     public sealed record NotedDateMoveResult(
-        int Moved, int LeftWithoutYear, long CollectionID, bool CollectionCreated, IReadOnlyList<NotedDateMoved> Pairs);
+        int Moved, int LeftWithoutYear, long CollectionID, bool CollectionCreated, IReadOnlyList<NotedDateMoved> Pairs)
+    {
+        /// <summary>The name (no folder) of the copy made before the move, such as <c>memories.db.before-CH-53-2</c>.</summary>
+        public string BackupFileName { get; init; } = NotedDateStore.MoveBackupFileName;
+    }
 
     /// <summary>
     /// Noted dates in the memories file beside the open workspace (CH-47): list, add, update, delete, and the
@@ -247,7 +251,10 @@ namespace Chatcheology.Data.Memories.Personal
         // Moving noted dates to memories (CH-53).
         // -----------------------------------------------------------------------------------
 
-        /// <summary>The name of the copy of the memories file kept beside it before the move (CH-53).</summary>
+        /// <summary>
+        /// The name of the copy of the memories file kept beside it before the move (CH-53). When it is taken, the
+        /// first free one of <c>-2</c>, <c>-3</c>, ... after it is used; an existing file is never overwritten.
+        /// </summary>
         public const string MoveBackupFileName = MemoriesDatabase.FileName + ".before-CH-53";
 
         /// <summary>The personal collection the moved noted dates go to (CH-53).</summary>
@@ -256,8 +263,27 @@ namespace Chatcheology.Data.Memories.Personal
         /// <summary>The source line of a moved noted date (CH-53).</summary>
         public const string MovedSource = "Noted date";
 
-        /// <summary>The copy kept beside the memories file before the move.</summary>
-        public string MoveBackupPath => Path.Combine(Path.GetDirectoryName(MemoriesPath)!, MoveBackupFileName);
+        /// <summary>
+        /// Where the next move's copy goes: <see cref="MoveBackupFileName"/> beside the memories file, or the first
+        /// free <c>-2</c>, <c>-3</c>, ... after it.
+        /// </summary>
+        public string NextMoveBackupPath()
+        {
+            var folder = Path.GetDirectoryName(MemoriesPath)!;
+
+            for (var number = 1; ; number++)
+            {
+                var name = number == 1
+                    ? MoveBackupFileName
+                    : MoveBackupFileName + "-" + number.ToString(CultureInfo.InvariantCulture);
+                var path = Path.Combine(folder, name);
+
+                if (!File.Exists(path) && !Directory.Exists(path))
+                {
+                    return path;
+                }
+            }
+        }
 
         /// <summary>For tests: runs inside the move's transaction after each noted date became a memory.</summary>
         internal Action<int>? AfterEachMovedForTests { get; set; }
@@ -269,8 +295,9 @@ namespace Chatcheology.Data.Memories.Personal
         /// </summary>
         /// <remarks>
         /// <para><strong>A copy first.</strong> Before anything is written the memories file is copied, byte for
-        /// byte, to <see cref="MoveBackupFileName"/> beside it, under the write lock, so the copy is exactly the
-        /// file before the move. An existing copy is never overwritten: the move is refused.</para>
+        /// byte, to <see cref="MoveBackupFileName"/> beside it (or the first free <c>-2</c>, <c>-3</c>, ... name
+        /// after it), under the write lock, so the copy is exactly the file before the move. An existing file is
+        /// never overwritten.</para>
         /// <para><strong>One transaction.</strong> An older file is upgraded to the current format; the number of
         /// noted dates must still be <paramref name="confirmedCount"/>; an existing personal collection of that name
         /// (ignoring case and outer spaces) is reused with its shown-by-default setting, otherwise one is created
@@ -282,7 +309,7 @@ namespace Chatcheology.Data.Memories.Personal
         /// </remarks>
         /// <param name="confirmedCount">How many noted dates the operator was told there are (all of them, with or without a year).</param>
         /// <exception cref="PersonalMemoryValidationException">
-        /// The count changed, no noted date has a year, or the copy already exists. Nothing was written.
+        /// The count changed, or no noted date has a year. Nothing was written.
         /// </exception>
         /// <exception cref="FileNotFoundException">There is no memories file.</exception>
         public NotedDateMoveResult MoveToMemories(int confirmedCount)
@@ -293,7 +320,7 @@ namespace Chatcheology.Data.Memories.Personal
                     "There is no memories file beside this workspace. Nothing has been created.");
             }
 
-            var backup = MoveBackupPath;
+            string? backup = null;
             var copied = false;
 
             try
@@ -322,14 +349,8 @@ namespace Chatcheology.Data.Memories.Personal
                         "No noted date has a year, so none can become a memory. Give them a year or delete them.");
                 }
 
-                if (File.Exists(backup) || Directory.Exists(backup))
-                {
-                    throw new PersonalMemoryValidationException(
-                        PersonalFields.NotedDate,
-                        $"A copy named {MoveBackupFileName} is already beside the memories file, and it is never " +
-                        "overwritten. Move it somewhere else first.");
-                }
-
+                // The first free name; CreateNew in CopyFile still refuses to overwrite one that appeared meanwhile.
+                backup = NextMoveBackupPath();
                 CopyFile(MemoriesPath, backup);
                 copied = true;
 
@@ -371,14 +392,17 @@ namespace Chatcheology.Data.Memories.Personal
                     all.Count - moving.Count,
                     collectionID,
                     created,
-                    moved.Select(pair => new NotedDateMoved(pair.NotedDateID, pair.EntryID)).ToList());
+                    moved.Select(pair => new NotedDateMoved(pair.NotedDateID, pair.EntryID)).ToList())
+                {
+                    BackupFileName = Path.GetFileName(backup),
+                };
             }
             catch
             {
                 // The transaction has rolled back: the copy this call made is of a file that did not change.
                 SqliteConnection.ClearAllPools();
 
-                if (copied && File.Exists(backup))
+                if (copied && backup is not null && File.Exists(backup))
                 {
                     File.Delete(backup);
                 }
