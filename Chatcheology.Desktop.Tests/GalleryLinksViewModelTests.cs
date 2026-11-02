@@ -359,22 +359,27 @@ namespace Chatcheology.Desktop.Tests
             await MemoriesViewModelTests.WaitUntil(() => !memories.IsBusy);
         }
 
-        private static NotedDateFormViewModel NewNoted(MemoriesViewModel memories)
+        /// <summary>
+        /// A noted date without links, made through the store (CH-53: the desktop no longer adds them), opened in the
+        /// form for editing.
+        /// </summary>
+        private async Task<NotedDateFormViewModel> EditNotedAsync(MemoriesViewModel memories)
         {
-            memories.NewNotedDateCommand.Execute(null);
-            var form = memories.NotedForm!;
-            form.Title = "Our anniversary";
-            form.DayText = "14";
-            form.SelectedMonth = form.Months[1];
+            NotedDateStore.Beside(_workspace.DatabasePath).Add(new NotedDateDraft { Title = "Our anniversary", Month = 2, Day = 14 }, false, Now);
+            SqliteConnection.ClearAllPools();
+            await memories.RefreshAsync(null, null);
 
-            return form;
+            memories.SelectedNotedDate = Assert.Single(memories.NotedDates);
+            memories.EditNotedDateCommand.Execute(null);
+
+            return memories.NotedForm!;
         }
 
         [Fact]
         public async Task ANotedDate_SavesItsOrderedLinks_ShowsThemInTheList_AndEditsThem()
         {
             var memories = await OpenAsync();
-            var form = NewNoted(memories);
+            var form = await EditNotedAsync(memories);
             AddRow(form.GalleryLinks, One, "Day 1");
             AddRow(form.GalleryLinks, Two);
             form.GalleryLinks.Rows[1].MoveUpCommand.Execute(null);
@@ -399,7 +404,8 @@ namespace Chatcheology.Desktop.Tests
         public async Task ANotedDateWithABadLink_ShowsEveryProblem_AndWritesNothing()
         {
             var memories = await OpenAsync();
-            var form = NewNoted(memories);
+            var form = await EditNotedAsync(memories);
+            var dateID = memories.NotedDates[0].NotedDateID;
             var bad = AddRow(form.GalleryLinks, "javascript:alert(1)");
             var badLabel = AddRow(form.GalleryLinks, One, "Day\n1");
             form.Title = string.Empty;
@@ -410,14 +416,15 @@ namespace Chatcheology.Desktop.Tests
             Assert.NotEmpty(bad.UrlError);
             Assert.NotEmpty(badLabel.LabelError);
             Assert.NotEmpty(form.TitleError);
-            Assert.Empty(memories.NotedDates);
+            Assert.Empty(Links.ReadForNotedDate(dateID));
+            Assert.Equal("Our anniversary", Assert.Single(NotedDateStore.Beside(_workspace.DatabasePath).List()).Title);
             Assert.Same(form, memories.NotedForm);
 
             // The title fixed, the link still bad: still nothing written.
             form.Title = "Our anniversary";
             form.SaveCommand.Execute(null);
             await MemoriesViewModelTests.WaitUntil(() => !form.SaveCommand.IsRunning);
-            Assert.Empty(memories.NotedDates);
+            Assert.Empty(Links.ReadForNotedDate(dateID));
         }
 
         [Fact]
@@ -439,7 +446,8 @@ namespace Chatcheology.Desktop.Tests
         public async Task AFailedLinkSave_AfterTheNotedDateSaved_IsShown_AndSavingAgainUpdatesThatDate()
         {
             var memories = await OpenAsync();
-            var form = NewNoted(memories);
+            var form = await EditNotedAsync(memories);
+            form.Title = "Our big day";
             AddRow(form.GalleryLinks, One);
             BlockLinkWrites(true);
 
@@ -455,6 +463,7 @@ namespace Chatcheology.Desktop.Tests
 
             Assert.Null(memories.NotedForm);
             var saved = Assert.Single(memories.NotedDates);
+            Assert.Equal("Our big day", saved.Title);
             Assert.Equal([One], Links.ReadForNotedDate(saved.NotedDateID).Select(l => l.Url));
         }
 

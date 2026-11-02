@@ -159,6 +159,8 @@ namespace Chatcheology.Desktop.ViewModels
         private DateTime? _startDate;
         private DateTime? _endDate;
         private PersonalDatePrecision _precision = PersonalDatePrecision.Day;
+        private bool _everyYear;
+        private string _everyYearError = string.Empty;
         private DateTime? _pickerDate;
         private MessagePickRow? _selectedMessage;
         private EntryPickRow? _selectedEntry;
@@ -220,6 +222,7 @@ namespace Chatcheology.Desktop.ViewModels
             _precision = existing.Precision;
             _startDate = existing.Start.ToDateTime(TimeOnly.MinValue);
             _endDate = existing.End?.ToDateTime(TimeOnly.MinValue);
+            _everyYear = existing.EveryYear;
 
             if (existing.ImageSha256 is { } sha)
             {
@@ -367,6 +370,7 @@ namespace Chatcheology.Desktop.ViewModels
                 if (SetProperty(ref _endDate, value?.Date))
                 {
                     EndError = string.Empty;
+                    OnEveryYearAvailabilityChanged();
                 }
             }
         }
@@ -383,8 +387,52 @@ namespace Chatcheology.Desktop.ViewModels
                 if (SetProperty(ref _precision, value))
                 {
                     EndError = string.Empty;
+                    OnEveryYearAvailabilityChanged();
                 }
             }
+        }
+
+        /// <summary>
+        /// Shown on On this day each year, with a notification on the phone (CH-53). Only for a memory dated to the
+        /// day without an end date: choosing Month or setting an end clears it.
+        /// </summary>
+        public bool EveryYear
+        {
+            get => _everyYear;
+            set
+            {
+                if (SetProperty(ref _everyYear, value && IsEveryYearAvailable))
+                {
+                    EveryYearError = string.Empty;
+                }
+                else if (value && !IsEveryYearAvailable)
+                {
+                    // The check box asked for something the dates do not allow: show it unticked again.
+                    OnPropertyChanged();
+                }
+            }
+        }
+
+        /// <summary>Whether Every year can be ticked: a memory dated to the day without an end date.</summary>
+        public bool IsEveryYearAvailable => Precision == PersonalDatePrecision.Day && EndDate is null;
+
+        /// <summary>The one line under the Every year check box.</summary>
+        public string EveryYearText => "Shown on On this day each year, with a notification on the phone.";
+
+        /// <summary>Every year's problem.</summary>
+        public string EveryYearError { get => _everyYearError; private set => SetProperty(ref _everyYearError, value); }
+
+        private void OnEveryYearAvailabilityChanged()
+        {
+            OnPropertyChanged(nameof(IsEveryYearAvailable));
+
+            if (!IsEveryYearAvailable && _everyYear)
+            {
+                _everyYear = false;
+                OnPropertyChanged(nameof(EveryYear));
+            }
+
+            EveryYearError = string.Empty;
         }
 
         /// <summary>
@@ -550,6 +598,7 @@ namespace Chatcheology.Desktop.ViewModels
             Image = Image,
             ExtraPhotos = Photos.Skip(1).Select(p => new PersonalPhotoDraft(p.Choice, p.Caption)).ToList(),
             Links = Links.Select(l => l.Target).ToList(),
+            EveryYear = EveryYear,
         };
 
         private async Task SaveAsync()
@@ -912,7 +961,8 @@ namespace Chatcheology.Desktop.ViewModels
         private void ClearErrors()
         {
             GalleryLinks.ClearErrors();
-            CollectionError = TitleError = StartError = EndError = SourceError = SummaryError = ImageError = LinksError = FormError = string.Empty;
+            CollectionError = TitleError = StartError = EndError = SourceError = SummaryError = ImageError = LinksError = FormError =
+                EveryYearError = string.Empty;
         }
 
         private void ShowErrors(IReadOnlyDictionary<string, string> errors)
@@ -929,6 +979,7 @@ namespace Chatcheology.Desktop.ViewModels
                     case PersonalFields.Summary: SummaryError = message; break;
                     case PersonalFields.Image: ImageError = message; break;
                     case PersonalFields.Links: LinksError = message; break;
+                    case PersonalFields.EveryYear: EveryYearError = message; break;
                     default: FormError = string.IsNullOrEmpty(FormError) ? message : FormError + " " + message; break;
                 }
             }

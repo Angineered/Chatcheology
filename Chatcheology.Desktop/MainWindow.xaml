@@ -697,8 +697,13 @@
                                 </ItemsControl.ItemTemplate>
                             </ItemsControl>
 
-                            <!-- Noted dates (CH-47): days that matter to the two of you, by month then day. -->
+                            <!-- Noted dates (CH-47), reduced by CH-53: only while any remain, with edit, delete
+                                 and the move to yearly memories; no add. -->
+                            <StackPanel Visibility="{Binding HasNotedDates,
+                                            Converter={StaticResource BoolToVisibility}}">
                             <TextBlock Text="Noted dates" FontWeight="SemiBold" Margin="0,12,0,0" />
+                            <TextBlock Text="{Binding NotedDatesText}" FontSize="11" Foreground="#FF5A5A5A"
+                                       TextWrapping="Wrap" Margin="0,2,0,0" />
                             <ListBox x:Name="NotedDatesList" ItemsSource="{Binding NotedDates}"
                                      SelectedItem="{Binding SelectedNotedDate}"
                                      Height="110" Margin="0,4,0,0"
@@ -722,12 +727,13 @@
                                 </ListBox.ItemTemplate>
                             </ListBox>
                             <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
-                                <Button Content="New noted date…" Padding="8,2"
-                                        Command="{Binding NewNotedDateCommand}" />
+                                <Button Content="Move noted dates to memories…" Padding="8,2"
+                                        Command="{Binding MoveNotedDatesCommand}" />
                                 <Button Content="Edit…" Padding="8,2" Margin="6,0,0,0"
                                         Command="{Binding EditNotedDateCommand}" />
                                 <Button Content="Delete…" Padding="8,2" Margin="6,0,0,0"
                                         Command="{Binding DeleteNotedDateCommand}" />
+                            </StackPanel>
                             </StackPanel>
 
                             <Button Content="Tidy up images…" Padding="8,2" Margin="0,12,0,0"
@@ -784,6 +790,13 @@
                                 </Grid>
                                 <TextBlock Text="With Month, only the month of each date is kept."
                                            FontSize="10" Foreground="#FF7A7A7A" Margin="0,2,0,0" />
+
+                                <!-- CH-53: a yearly memory; only for a day without an end date. -->
+                                <CheckBox Content="Every year" IsChecked="{Binding EveryYear}"
+                                          IsEnabled="{Binding IsEveryYearAvailable}" Margin="0,6,0,0" />
+                                <TextBlock Text="{Binding EveryYearText}" FontSize="10"
+                                           Foreground="#FF7A7A7A" Margin="18,2,0,0" TextWrapping="Wrap" />
+                                <TextBlock Text="{Binding EveryYearError}" Style="{StaticResource FieldError}" />
 
                                 <TextBlock Text="Description (optional)" FontSize="11" Margin="0,6,0,0" />
                                 <TextBox Text="{Binding Summary, UpdateSourceTrigger=PropertyChanged}"

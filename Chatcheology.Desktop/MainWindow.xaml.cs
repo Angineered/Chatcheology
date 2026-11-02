@@ -1,4 +1,4 @@
-﻿using System.ComponentModel;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.Windows;
@@ -59,6 +59,7 @@ namespace Chatcheology.Desktop
                     ConfirmDelete = text => Confirm(text, "Delete memory"),
                     ConfirmDeleteCollection = text => Confirm(text, "Delete collection"),
                     ConfirmDeleteNotedDate = text => Confirm(text, "Delete noted date"),
+                    ConfirmMoveNotedDates = text => Confirm(text, "Move noted dates to memories"),
                     ConfirmTidyImages = text => Confirm(text, "Tidy up images"),
                     ConfirmCoverCaption = text => Confirm(text, "Make cover"),
                 },
