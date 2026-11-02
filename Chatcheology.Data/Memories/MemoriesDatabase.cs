@@ -29,15 +29,16 @@ namespace Chatcheology.Data.Memories
         /// <summary>The value of <c>MemoriesInfo.Purpose</c> in every memories file.</summary>
         internal const string MarkerPurpose = "Memories";
 
-        /// <summary>The memories table layout this build creates. Format 1 to 4 files are still accepted.</summary>
+        /// <summary>The memories table layout this build creates. Format 1 to 5 files are still accepted.</summary>
         /// <remarks>
         /// Format 2 (CH-43) is additive: it adds <c>ItemDefinition</c> and nothing else changes. Format 3
         /// (CH-46) is additive too: it adds <c>EntryImage</c> (a personal memory's extra photos), and so are
-        /// format 4 (CH-47), which adds <c>NotedDate</c>, and format 5 (CH-48), which adds <c>ExternalLink</c>.
+        /// format 4 (CH-47), which adds <c>NotedDate</c>, format 5 (CH-48), which adds <c>ExternalLink</c>, and
+        /// format 6 (CH-53), which adds the column <c>Entry.EveryYear</c> and its trigger.
         /// An older file is upgraded in one transaction by <see cref="UpgradeToCurrent"/> (the enrichment import
-        /// and every personal write do this); every other path reads and writes all five formats.
+        /// and every personal write do this); every other path reads and writes all six formats.
         /// </remarks>
-        internal const int MarkerFormatVersion = 5;
+        internal const int MarkerFormatVersion = 6;
 
         /// <summary>The format this build creates and upgrades to.</summary>
         public const int CurrentFormatVersion = MarkerFormatVersion;
@@ -59,6 +60,12 @@ namespace Chatcheology.Data.Memories
 
         /// <summary>The first format with <c>ExternalLink</c> (CH-48); fixed, whatever the current format is.</summary>
         public const int FirstFormatWithExternalLinks = 5;
+
+        /// <summary>The first format with <c>Entry.EveryYear</c> (CH-53); fixed, whatever the current format is.</summary>
+        public const int FirstFormatWithEveryYear = 6;
+
+        /// <summary>The column format 6 adds to <c>Entry</c>.</summary>
+        internal const string EveryYearColumnName = "EveryYear";
 
         /// <summary>
         /// The SQLite <c>user_version</c> of a memories file. Distinct from every workspace schema
@@ -118,7 +125,7 @@ namespace Chatcheology.Data.Memories
         /// <summary>The tables of a format 4 file.</summary>
         internal static readonly string[] VersionFourTableNames = [.. VersionThreeTableNames, NotedDateTableName];
 
-        /// <summary>The tables of a current (format 5) file.</summary>
+        /// <summary>The tables of a current file (format 5 and 6 have the same tables; 6 adds a column).</summary>
         internal static readonly string[] TableNames = [.. VersionFourTableNames, ExternalLinkTableName];
 
         // GLOB patterns that pin the stored spellings: local wall clock without zone, UTC with Z.
@@ -497,6 +504,48 @@ namespace Chatcheology.Data.Memories
             """,
         ];
 
+        /// <summary>
+        /// Format 5 to 6 (CH-53): the marker is rebuilt for format 6 and <c>Entry.EveryYear</c> is added (0 for
+        /// every existing row): a personal memory shown each year on its day. Triggers allow 1 only on an entry of
+        /// a personal collection dated to the day without an end date. No other table is touched.
+        /// </summary>
+        private static readonly string[] UpgradeToSixStatements =
+        [
+            .. MarkerUpgradeStatements(FirstFormatWithEveryYear),
+
+            $"ALTER TABLE Entry ADD COLUMN {EveryYearColumnName} INTEGER NOT NULL DEFAULT 0 CHECK ({EveryYearColumnName} IN (0, 1));",
+
+            $"""
+            CREATE TRIGGER Entry_EveryYear_Insert
+            BEFORE INSERT ON Entry
+            WHEN {EveryYearBroken}
+            BEGIN
+                SELECT RAISE(ABORT, '{EveryYearRefusal}');
+            END;
+            """,
+
+            $"""
+            CREATE TRIGGER Entry_EveryYear_Update
+            BEFORE UPDATE OF {EveryYearColumnName}, CollectionID, DatePrecision, EndLocal ON Entry
+            WHEN {EveryYearBroken}
+            BEGIN
+                SELECT RAISE(ABORT, '{EveryYearRefusal}');
+            END;
+            """,
+        ];
+
+        /// <summary>The rule's breach, on the row a trigger is about to write.</summary>
+        private const string EveryYearBroken =
+            $"""
+            NEW.{EveryYearColumnName} = 1
+                AND ((SELECT c.Kind FROM Collection c WHERE c.CollectionID = NEW.CollectionID) IS NOT '{KindPersonal}'
+                     OR NEW.DatePrecision IS NOT '{PrecisionDay}'
+                     OR NEW.EndLocal IS NOT NULL)
+            """;
+
+        private const string EveryYearRefusal =
+            "Every year is only for a personal memory dated to the day, without an end date.";
+
         private const string ExternalLinkOwnerCheck =
             $"""
             SELECT RAISE(ABORT, 'An external link belongs to a personal entry or a noted date.')
@@ -553,6 +602,10 @@ namespace Chatcheology.Data.Memories
         /// <summary>Creates a format 4 file exactly as CH-47 did. For upgrade tests only.</summary>
         internal static void CreateFormatVersionFour(string databasePath, DateTime createdDateTimeUtc) =>
             Create(databasePath, createdDateTimeUtc, FirstFormatWithNotedDates);
+
+        /// <summary>Creates a format 5 file exactly as CH-48 did. For upgrade tests only.</summary>
+        internal static void CreateFormatVersionFive(string databasePath, DateTime createdDateTimeUtc) =>
+            Create(databasePath, createdDateTimeUtc, FirstFormatWithExternalLinks);
 
         private static void Create(string databasePath, DateTime createdDateTimeUtc, int version)
         {
@@ -677,13 +730,13 @@ namespace Chatcheology.Data.Memories
         }
 
         /// <summary>
-        /// The format version of an open memories file (1 to 5), after proving it is one. Call it
+        /// The format version of an open memories file (1 to 6), after proving it is one. Call it
         /// outside a transaction.
         /// </summary>
         public static int ReadFormatVersion(SqliteConnection connection) => RequireMemoriesFile(connection);
 
         /// <summary>
-        /// Upgrades an older file (format 1 to 4) to the current format inside <paramref name="transaction"/>:
+        /// Upgrades an older file (format 1 to 5) to the current format inside <paramref name="transaction"/>:
         /// additive only, every existing row unchanged. A current file is left as it is. The
         /// connection must come from <see cref="OpenConnection"/>, which proved the file.
         /// </summary>
@@ -703,7 +756,8 @@ namespace Chatcheology.Data.Memories
                 return false;
             }
 
-            if (version is not (FormatVersionOne or FormatVersionTwo or FirstFormatWithEntryImages or FirstFormatWithNotedDates))
+            if (version is not (FormatVersionOne or FormatVersionTwo or FirstFormatWithEntryImages or FirstFormatWithNotedDates
+                or FirstFormatWithExternalLinks))
             {
                 throw new InvalidOperationException("The memories file's format version is not one this build upgrades. Nothing has been written.");
             }
@@ -737,6 +791,11 @@ namespace Chatcheology.Data.Memories
                 steps.AddRange(UpgradeToFiveStatements);
             }
 
+            if (from < FirstFormatWithEveryYear && to >= FirstFormatWithEveryYear)
+            {
+                steps.AddRange(UpgradeToSixStatements);
+            }
+
             foreach (var statement in steps)
             {
                 command.CommandText = statement;
@@ -746,7 +805,7 @@ namespace Chatcheology.Data.Memories
 
         /// <summary>
         /// Throws unless the connection is open on a memories file: every table of its format and
-        /// exactly one valid marker row (format 1 to 5). A main workspace or an older-exports file
+        /// exactly one valid marker row (format 1 to 6). A main workspace or an older-exports file
         /// is refused by name.
         /// </summary>
         /// <returns>The file's format version.</returns>
@@ -791,7 +850,7 @@ namespace Chatcheology.Data.Memories
                 SELECT
                     (SELECT COUNT(*) FROM MemoriesInfo),
                     (SELECT COUNT(*) FROM MemoriesInfo
-                     WHERE MemoriesInfoID = 1 AND Purpose = $purpose AND FormatVersion IN ($one, $two, $three, $four, $current)),
+                     WHERE MemoriesInfoID = 1 AND Purpose = $purpose AND FormatVersion IN ($one, $two, $three, $four, $five, $current)),
                     (SELECT MAX(FormatVersion) FROM MemoriesInfo);
                 """;
             command.Parameters.AddWithValue("$purpose", MarkerPurpose);
@@ -799,6 +858,7 @@ namespace Chatcheology.Data.Memories
             command.Parameters.AddWithValue("$two", FormatVersionTwo);
             command.Parameters.AddWithValue("$three", FirstFormatWithEntryImages);
             command.Parameters.AddWithValue("$four", FirstFormatWithNotedDates);
+            command.Parameters.AddWithValue("$five", FirstFormatWithExternalLinks);
             command.Parameters.AddWithValue("$current", MarkerFormatVersion);
 
             long allRows, validRows;
@@ -822,11 +882,16 @@ namespace Chatcheology.Data.Memories
             }
 
             // The marker and the tables must agree: format 2 adds ItemDefinition, format 3 EntryImage,
-            // format 4 NotedDate, format 5 ExternalLink.
+            // format 4 NotedDate, format 5 ExternalLink, format 6 the column Entry.EveryYear.
+            command.Parameters.Clear();
+            command.CommandText = $"SELECT COUNT(*) FROM pragma_table_info('Entry') WHERE name = '{EveryYearColumnName}';";
+            var hasEveryYear = Convert.ToInt64(command.ExecuteScalar(), CultureInfo.InvariantCulture) == 1;
+
             if (tables.Contains(ItemDefinitionTableName) != (version >= FirstFormatWithDefinitions)
                 || tables.Contains(EntryImageTableName) != (version >= FirstFormatWithEntryImages)
                 || tables.Contains(NotedDateTableName) != (version >= FirstFormatWithNotedDates)
-                || tables.Contains(ExternalLinkTableName) != (version >= FirstFormatWithExternalLinks))
+                || tables.Contains(ExternalLinkTableName) != (version >= FirstFormatWithExternalLinks)
+                || hasEveryYear != (version >= FirstFormatWithEveryYear))
             {
                 throw new InvalidOperationException(
                     "The memories file's format version and its tables do not agree, so it is not treated as a " +

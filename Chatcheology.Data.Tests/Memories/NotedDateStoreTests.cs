@@ -400,6 +400,7 @@ namespace Chatcheology.Data.Tests.Memories
                 while (reader.Read())
                 {
                     var values = Enumerable.Range(0, reader.FieldCount)
+                        .Where(i => reader.GetName(i) != "EveryYear") // CH-53: format 6 adds it; checked on its own
                         .Select(i => reader.IsDBNull(i) ? "<null>" : Convert.ToString(reader.GetValue(i), System.Globalization.CultureInfo.InvariantCulture));
                     rows.Add(table + "|" + string.Join("|", values));
                 }
