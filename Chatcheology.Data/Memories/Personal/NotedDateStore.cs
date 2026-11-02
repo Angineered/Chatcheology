@@ -328,6 +328,19 @@ namespace Chatcheology.Data.Memories.Personal
                 using var connection = MemoriesDatabase.OpenConnection(MemoriesPath);
                 var version = MemoriesDatabase.ReadFormatVersion(connection);
 
+                // The copy is of the main file alone: in WAL mode saved changes can sit in the -wal file instead.
+                using (var journal = connection.CreateCommand())
+                {
+                    journal.CommandText = "PRAGMA journal_mode;";
+
+                    if (string.Equals(journal.ExecuteScalar() as string, "wal", StringComparison.OrdinalIgnoreCase))
+                    {
+                        throw new PersonalMemoryValidationException(
+                            PersonalFields.NotedDate,
+                            "The memories file is in WAL journal mode, so a copy of it alone could miss saved changes.");
+                    }
+                }
+
                 // Not deferred: the write lock is held from here, so the copy is the file exactly as it was.
                 using var transaction = connection.BeginTransaction(deferred: false);
 
@@ -438,15 +451,32 @@ namespace Chatcheology.Data.Memories.Personal
             return dates;
         }
 
-        /// <summary>Copies the file byte for byte to a new file; an existing target is never overwritten.</summary>
-        private static void CopyFile(string source, string target)
+        /// <summary>For tests: runs after the copy's file was created, before any byte is copied.</summary>
+        internal Action? AfterCopyCreatedForTests { get; set; }
+
+        /// <summary>
+        /// Copies the file byte for byte to a new file; an existing target is never overwritten. A copy that fails
+        /// part-way is deleted, so no partial copy is ever left under a backup's name.
+        /// </summary>
+        private void CopyFile(string source, string target)
         {
             // Shared read and write: SQLite holds the file open on this process's own connection.
             using var from = new FileStream(source, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
-            using var to = new FileStream(target, FileMode.CreateNew, FileAccess.Write, FileShare.None);
+            var to = new FileStream(target, FileMode.CreateNew, FileAccess.Write, FileShare.None);
 
-            from.CopyTo(to);
-            to.Flush(flushToDisk: true);
+            try
+            {
+                AfterCopyCreatedForTests?.Invoke();
+                from.CopyTo(to);
+                to.Flush(flushToDisk: true);
+                to.Dispose();
+            }
+            catch
+            {
+                to.Dispose();
+                File.Delete(target);
+                throw;
+            }
         }
 
         /// <summary>The personal collection named <see cref="MovedCollectionName"/>, matched as names are kept unique, or a new one (shown).</summary>
