@@ -24,16 +24,35 @@ namespace Chatcheology.Archive.Tests
             var tables = ArchiveSample.Rows(
                 Database, "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name;");
 
-            // The required tables, plus EntryImage (CH-46), NotedDate (CH-47) and ExternalLink (CH-48), which a
-            // reader does not require.
+            // The required tables, plus EntryImage (CH-46) and ExternalLink (CH-48), which a reader does not
+            // require. Version 3 has no NotedDate table (CH-53).
             Assert.Equal(
                 ArchiveFormat.TableNamesOf(ArchiveFormat.FormatVersion)
+                    .Append(ArchiveFormat.EntryImageTableName)
+                    .Append(ArchiveFormat.ExternalLinkTableName)
+                    .Order(StringComparer.Ordinal),
+                tables);
+            Assert.Equal(14, tables.Count);
+            Assert.Equal(["EveryYear"], ArchiveSample.Rows(Database, "SELECT name FROM pragma_table_info('Entry') WHERE name = 'EveryYear';"));
+        }
+
+        [Fact]
+        public void AVersionTwoDatabase_HoldsTheNotedDateTable_AndNoEveryYearColumn()
+        {
+            ArchiveSample.WriteDatabase(_folder.Path, formatVersion: 2);
+
+            var tables = ArchiveSample.Rows(
+                Database, "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name;");
+
+            Assert.Equal(
+                ArchiveFormat.TableNamesOf(2)
                     .Append(ArchiveFormat.EntryImageTableName)
                     .Append(ArchiveFormat.NotedDateTableName)
                     .Append(ArchiveFormat.ExternalLinkTableName)
                     .Order(StringComparer.Ordinal),
                 tables);
             Assert.Equal(15, tables.Count);
+            Assert.Empty(ArchiveSample.Rows(Database, "SELECT name FROM pragma_table_info('Entry') WHERE name = 'EveryYear';"));
         }
 
         [Fact]
@@ -143,7 +162,7 @@ namespace Chatcheology.Archive.Tests
         {
             ArchiveSample.WriteDatabase(_folder.Path);
 
-            Assert.Equal(["2"], ArchiveSample.Rows(Database, "PRAGMA user_version;"));
+            Assert.Equal(["3"], ArchiveSample.Rows(Database, "PRAGMA user_version;"));
             Assert.Equal(["delete"], ArchiveSample.Rows(Database, "PRAGMA journal_mode;"));
             Assert.Equal([Database], Directory.GetFiles(_folder.Path));
         }
@@ -250,7 +269,7 @@ namespace Chatcheology.Archive.Tests
 
             var refusal = Assert.Throws<ArchiveFormatException>(() => ArchiveReader.Open(_folder.Path));
 
-            Assert.Contains("format version 3", refusal.Message, StringComparison.Ordinal);
+            Assert.Contains("format version 4", refusal.Message, StringComparison.Ordinal);
         }
 
         [Fact]
@@ -303,7 +322,7 @@ namespace Chatcheology.Archive.Tests
         [Fact]
         public void Writer_RefusesAnotherFormatVersion()
         {
-            Assert.Throws<InvalidOperationException>(() => ArchiveWriter.Create(Database, ArchiveSample.Info(3)));
+            Assert.Throws<InvalidOperationException>(() => ArchiveWriter.Create(Database, ArchiveSample.Info(4)));
             Assert.Throws<InvalidOperationException>(() => ArchiveWriter.Create(Database, ArchiveSample.Info(0)));
             Assert.False(File.Exists(Database));
         }

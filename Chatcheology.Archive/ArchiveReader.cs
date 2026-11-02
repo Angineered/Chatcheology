@@ -44,12 +44,20 @@ namespace Chatcheology.Archive
             _connection = connection;
             Info = info;
             HasEntryImages = info.FormatVersion >= 2 && tables.Contains(ArchiveFormat.EntryImageTableName);
-            HasNotedDates = info.FormatVersion >= 2 && tables.Contains(ArchiveFormat.NotedDateTableName);
+            HasNotedDates = info.FormatVersion == ArchiveFormat.NotedDatesFormatVersion && tables.Contains(ArchiveFormat.NotedDateTableName);
             HasExternalLinks = info.FormatVersion >= 2 && tables.Contains(ArchiveFormat.ExternalLinkTableName);
 
             // A version 1 archive has no Source column: every message in it is a workspace message.
             _messageColumns = info.FormatVersion >= 2 ? MessageColumnsV2 : MessageColumnsV1;
+
+            // Before version 3 no entry is yearly (CH-53).
+            _entryColumns = EntryColumnsWith(HasEveryYear ? "EveryYear" : "0");
         }
+
+        private readonly string _entryColumns;
+
+        /// <summary>Whether entries carry <c>EveryYear</c> (CH-53: format version 3 and later).</summary>
+        public bool HasEveryYear => Info.FormatVersion >= ArchiveFormat.FirstVersionWithEveryYear;
 
         /// <summary>Whether the archive has the memory tables (format version 2 and later).</summary>
         public bool HasMemories => Info.FormatVersion >= 2;
@@ -62,7 +70,8 @@ namespace Chatcheology.Archive
 
         /// <summary>
         /// Whether the archive has the <c>NotedDate</c> table (CH-47). A version 2 archive written before it
-        /// lacks the table and reads as having no noted dates; a version 1 archive has none.
+        /// lacks the table and reads as having no noted dates; a version 1 archive has none, and so has a version 3
+        /// archive (CH-53: noted dates became yearly memories; a <c>NotedDate</c> table there is never read).
         /// </summary>
         public bool HasNotedDates { get; }
 
@@ -457,7 +466,7 @@ namespace Chatcheology.Archive
             using var command = _connection.CreateCommand();
             command.CommandText =
                 $"""
-                {EntryColumns}
+                {_entryColumns}
                 WHERE StartLocal >= $from AND StartLocal < $to
                 ORDER BY StartLocal, EntryID;
                 """;
@@ -478,7 +487,7 @@ namespace Chatcheology.Archive
             using var command = _connection.CreateCommand();
             command.CommandText =
                 $"""
-                {EntryColumns}
+                {_entryColumns}
                 WHERE CollectionID = $collection
                 ORDER BY StartLocal, EntryID;
                 """;
@@ -816,7 +825,7 @@ namespace Chatcheology.Archive
             }
 
             using var command = _connection.CreateCommand();
-            command.CommandText = $"{EntryColumns} ORDER BY EntryID;";
+            command.CommandText = $"{_entryColumns} ORDER BY EntryID;";
 
             return ReadEntryRows(command);
         }
@@ -927,12 +936,55 @@ namespace Chatcheology.Archive
             return definitions;
         }
 
-        private const string EntryColumns =
-            """
+        private static string EntryColumnsWith(string everyYear) =>
+            $"""
             SELECT EntryID, CollectionID, SourceKey, Title, StartLocal, EndLocal, StartUtc, EndUtc, DatePrecision,
-                   Summary, ImageSha256, ImageExtension, Source, DayLevel
+                   Summary, ImageSha256, ImageExtension, Source, DayLevel, {everyYear}
             FROM Entry
             """;
+
+        /// <summary>
+        /// The yearly entries (CH-53, version 3), ordered by identifier: identifier, title, start, precision and
+        /// collection kind only, for a schedule that must not build the whole memory index. None before version 3.
+        /// Rows are as stored, rule or not; a value of the wrong kind is refused.
+        /// </summary>
+        public IReadOnlyList<ArchiveYearlyEntry> ReadYearlyEntries()
+        {
+            if (!HasEveryYear)
+            {
+                return [];
+            }
+
+            using var command = _connection.CreateCommand();
+            command.CommandText =
+                """
+                SELECT e.EntryID, e.Title, e.StartLocal, e.DatePrecision, c.Kind
+                FROM Entry AS e LEFT JOIN Collection AS c ON c.CollectionID = e.CollectionID
+                WHERE e.EveryYear = 1
+                ORDER BY e.EntryID;
+                """;
+
+            var entries = new List<ArchiveYearlyEntry>();
+
+            using var reader = command.ExecuteReader();
+
+            while (reader.Read())
+            {
+                entries.Add(new ArchiveYearlyEntry
+                {
+                    EntryID = Integer(reader, 0),
+                    Title = Text(reader, 1),
+                    StartLocal = ArchiveFormat.ParseLocal(Text(reader, 2)),
+                    DatePrecision = ParseVocabulary(
+                        Text(reader, 3),
+                        ArchiveMemoryVocabulary.DatePrecisions,
+                        "An entry in the archive has a date precision the format does not define."),
+                    CollectionKind = NullableText(reader, 4),
+                });
+            }
+
+            return entries;
+        }
 
         private static List<ArchiveEntry> ReadEntryRows(SqliteCommand command)
         {
@@ -966,6 +1018,12 @@ namespace Chatcheology.Archive
                             ArchiveMemoryVocabulary.DayLevels,
                             "An entry in the archive has a day level the format does not define.")
                         : null,
+                    EveryYear = Integer(reader, 14) switch
+                    {
+                        0 => false,
+                        1 => true,
+                        _ => throw new ArchiveFormatException("An entry in the archive has an Every year value the format does not define."),
+                    },
                 });
             }
 
@@ -1345,6 +1403,16 @@ namespace Chatcheology.Archive
             if (!ArchiveFormat.TableNamesOf(version).All(tables.Contains))
             {
                 throw new ArchiveFormatException("The archive database is missing one of the format's tables.");
+            }
+
+            if (version >= ArchiveFormat.FirstVersionWithEveryYear)
+            {
+                command.CommandText = "SELECT COUNT(*) FROM pragma_table_info('Entry') WHERE name = 'EveryYear';";
+
+                if (Convert.ToInt64(command.ExecuteScalar(), CultureInfo.InvariantCulture) != 1)
+                {
+                    throw new ArchiveFormatException("The archive database is missing one of the format's columns.");
+                }
             }
 
             return tables;

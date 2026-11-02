@@ -418,6 +418,7 @@ namespace Chatcheology.Data.ArchiveExport
                 ImageExtension = row.Entry.ImageSha256 is { } sha ? imageExtension(sha, row.Entry.ImageExtension!) : null,
                 Source = row.Entry.Source,
                 DayLevel = row.Entry.DayLevel,
+                EveryYear = row.Entry.EveryYear,
                 Images = row.Photos.Select(photo => new ArchiveEntryImage
                 {
                     EntryID = photo.EntryID,

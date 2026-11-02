@@ -35,7 +35,14 @@ namespace Chatcheology.Mobile.Synthetic
     /// Whether to add the invented memory layers (<see cref="SyntheticMemories"/>, CH-42); needs at least
     /// 200 messages.
     /// </param>
-    /// <param name="NotedDates">Whether to add three invented noted dates (CH-47).</param>
+    /// <param name="NotedDates">
+    /// Whether to add three invented gifted noted dates (CH-47). Only format version 2 carries them, so the archive
+    /// is then written as version 2 (CH-53): the fixture for gifted noted dates.
+    /// </param>
+    /// <param name="YearlyMemories">
+    /// Whether to add three invented yearly memories (CH-53, version 3) in a personal collection of their own: an
+    /// anniversary with a note and a gallery link, a leap day, and one dated in the future.
+    /// </param>
     internal sealed record SyntheticArchiveOptions(
         int Messages = 3000,
         int Days = 120,
@@ -53,10 +60,11 @@ namespace Chatcheology.Mobile.Synthetic
         int Videos = 0,
         byte[]? VideoBytes = null,
         bool Memories = false,
-        bool NotedDates = false);
+        bool NotedDates = false,
+        bool YearlyMemories = false);
 
     /// <summary>
-    /// Writes a whole portable archive (the current format) of invented conversation through
+    /// Writes a whole portable archive (the current format, or version 2 with noted dates) of invented conversation through
     /// <see cref="ArchiveWriter"/>: database, media, manifest and contents list.
     /// </summary>
     /// <remarks>
@@ -75,6 +83,12 @@ namespace Chatcheology.Mobile.Synthetic
         internal static readonly DateTime Created = new(2026, 10, 21, 9, 0, 0, DateTimeKind.Utc);
 
         internal static readonly DateOnly FirstDay = new(2025, 1, 6);
+
+        /// <summary>The personal collection of the yearly memories (CH-53).</summary>
+        internal const long YearlyCollection = 3;
+
+        /// <summary>The yearly memory dated in the future (CH-53): it must not show before its own day.</summary>
+        internal static readonly DateOnly FutureYearlyDay = new(2031, 11, 20);
 
         private static readonly (int Width, int Height)[] Sizes =
         [
@@ -117,13 +131,19 @@ namespace Chatcheology.Mobile.Synthetic
                 throw new ArgumentException("Too many attachments for that many messages.", nameof(options));
             }
 
+            if (options.NotedDates && options.YearlyMemories)
+            {
+                throw new ArgumentException("Noted dates (version 2) and yearly memories (version 3) are never in one archive.", nameof(options));
+            }
+
+            var version = options.NotedDates ? ArchiveFormat.NotedDatesFormatVersion : ArchiveFormat.FormatVersion;
             var random = new Random(options.Seed);
             var mediaFolder = Path.Combine(folder, ArchiveFormat.MediaFolderName);
             Directory.CreateDirectory(mediaFolder);
 
             using var writer = ArchiveWriter.Create(Path.Combine(folder, ArchiveFormat.DatabaseFileName), new ArchiveInfo
             {
-                FormatVersion = ArchiveFormat.FormatVersion,
+                FormatVersion = version,
                 CreatedUtc = Created,
                 ProducerVersion = "Chatcheology synthetic generator 1.0",
                 ConversationTitle = Title,
@@ -340,16 +360,64 @@ namespace Chatcheology.Mobile.Synthetic
                 writer.WriteExternalLink(new ArchiveExternalLink { ExternalLinkID = 101, OwnerKind = ExternalLinkOwnerKind.NotedDate, OwnerID = 1, Ordinal = 1, Url = "https://example.org/synthetic-anniversary", Label = null });
             }
 
+            if (options.YearlyMemories)
+            {
+                WriteYearlyMemories(writer);
+            }
+
             var counts = writer.Complete();
 
             var manifest = new ArchiveManifest(
-                ArchiveManifest.FormatName, ArchiveFormat.FormatVersion, "Chatcheology synthetic generator 1.0", Created, counts);
+                ArchiveManifest.FormatName, version, "Chatcheology synthetic generator 1.0", Created, counts);
 
             File.WriteAllBytes(Path.Combine(folder, ArchiveFormat.ManifestFileName), manifest.ToBytes());
             File.WriteAllBytes(Path.Combine(folder, ArchiveContents.FileName), ArchiveContents.Build(folder));
 
             return counts;
         }
+
+        /// <summary>
+        /// Three invented yearly memories (CH-53) in a personal collection "Noted dates", as the desktop's move
+        /// writes them: an anniversary with a note and a gallery link on a reserved example domain, a leap day, and
+        /// one dated in the future.
+        /// </summary>
+        private static void WriteYearlyMemories(ArchiveWriter writer)
+        {
+            writer.WriteCollection(new ArchiveCollection
+            {
+                CollectionID = YearlyCollection,
+                Kind = ArchiveMemoryVocabulary.KindPersonal,
+                Name = "Noted dates",
+                SourceDescription = null,
+                ShownByDefault = true,
+                PeriodGapMinutes = null,
+            });
+
+            writer.WriteEntry(Yearly(501, "Our synthetic anniversary", new DateOnly(2016, 3, 14), "An invented note."));
+            writer.WriteEntry(Yearly(502, "Invented leap day", new DateOnly(2020, 2, 29), null));
+            writer.WriteEntry(Yearly(503, "Invented future day", FutureYearlyDay, null));
+
+            writer.WriteExternalLink(new ArchiveExternalLink { ExternalLinkID = 101, OwnerKind = ExternalLinkOwnerKind.Entry, OwnerID = 501, Ordinal = 1, Url = "https://example.org/synthetic-anniversary", Label = null });
+        }
+
+        private static ArchiveEntry Yearly(long id, string title, DateOnly day, string? summary) => new()
+        {
+            EntryID = id,
+            CollectionID = YearlyCollection,
+            SourceKey = null,
+            Title = title,
+            StartLocal = day.ToDateTime(TimeOnly.MinValue),
+            EndLocal = null,
+            StartUtc = null,
+            EndUtc = null,
+            DatePrecision = "Day",
+            Summary = summary,
+            ImageSha256 = null,
+            ImageExtension = null,
+            Source = "Noted date",
+            DayLevel = null,
+            EveryYear = true,
+        };
 
         private static ArchiveAttachment Attachment(
             long id, long messageID, ArchiveAttachmentState state, string? sha, string? name, int ordinal = 1, long? copyOf = null) => new()

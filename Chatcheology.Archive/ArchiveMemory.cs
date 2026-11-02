@@ -114,6 +114,18 @@ namespace Chatcheology.Archive
                         : "0")}));
             """;
 
+        /// <summary>
+        /// Yearly entries (CH-53, version 3) that break the rule: Every year only on an entry of a personal
+        /// collection dated to the day without an end date.
+        /// </summary>
+        internal const string EntriesEveryYearInvalid =
+            """
+            SELECT COUNT(*) FROM Entry AS e
+            LEFT JOIN Collection AS c ON c.CollectionID = e.CollectionID
+            WHERE e.EveryYear IS NOT 0
+              AND (e.EveryYear IS NOT 1 OR c.Kind IS NOT 'Personal' OR e.DatePrecision IS NOT 'Day' OR e.EndLocal IS NOT NULL);
+            """;
+
         /// <summary>Owners (CH-48) whose links are not numbered 1..n without a gap or a repeat.</summary>
         internal const string ExternalLinkOwnersOrdinalsInvalid =
             """
@@ -217,6 +229,12 @@ namespace Chatcheology.Archive
         /// <summary>The source record's day level, or <see langword="null"/>.</summary>
         public required string? DayLevel { get; init; }
 
+        /// <summary>
+        /// Shown each year on its day (CH-53, version 3): only a personal entry dated to the day without an end.
+        /// Always false in a version 1 or 2 archive.
+        /// </summary>
+        public bool EveryYear { get; init; }
+
         /// <summary>The periods, with their items. Empty for a personal entry.</summary>
         public IReadOnlyList<ArchiveEntryPeriod> Periods { get; init; } = [];
 
@@ -231,6 +249,29 @@ namespace Chatcheology.Archive
             ImageSha256 is { } sha && ImageExtension is { } extension
                 ? ArchiveFormat.MediaFolderName + "/" + sha + extension
                 : null;
+    }
+
+    /// <summary>
+    /// One yearly entry (CH-53, version 3) as the phone's notification schedule needs it: no summary, image or
+    /// period. Read as stored; whether it keeps the rule (a personal Day entry without an end) is the
+    /// validator's to count, and a viewer checks <see cref="CollectionKind"/> and <see cref="DatePrecision"/> itself.
+    /// </summary>
+    public sealed class ArchiveYearlyEntry
+    {
+        /// <summary>The entry.</summary>
+        public required long EntryID { get; init; }
+
+        /// <summary>The title.</summary>
+        public required string Title { get; init; }
+
+        /// <summary>The start, local wall clock.</summary>
+        public required DateTime StartLocal { get; init; }
+
+        /// <summary><c>Second</c>, <c>Day</c> or <c>Month</c>.</summary>
+        public required string DatePrecision { get; init; }
+
+        /// <summary>The kind of its collection (<see cref="ArchiveMemoryVocabulary.KindPersonal"/> for a valid one), or <see langword="null"/> when it has none.</summary>
+        public required string? CollectionKind { get; init; }
     }
 
     /// <summary>

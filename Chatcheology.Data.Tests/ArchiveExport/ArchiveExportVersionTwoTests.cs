@@ -3,6 +3,7 @@ using System.Text;
 using Chatcheology.Archive;
 using Chatcheology.Data.ArchiveExport;
 using Chatcheology.Data.Memories;
+using Chatcheology.Data.Memories.Personal;
 using Chatcheology.Data.OlderExports;
 using Chatcheology.Data.Tests.Matching;
 using Microsoft.Data.Sqlite;
@@ -157,7 +158,8 @@ namespace Chatcheology.Data.Tests.ArchiveExport
         /// personal collection with one entry linking to an imported entry and to workspace message 2.
         /// </summary>
         private void Memories(
-            int linkedSequence = 2, bool formatOne = false, bool formatTwo = false, bool formatThree = false, bool formatFour = false)
+            int linkedSequence = 2, bool formatOne = false, bool formatTwo = false, bool formatThree = false, bool formatFour = false,
+            bool formatFive = false)
         {
             if (formatOne)
             {
@@ -174,6 +176,10 @@ namespace Chatcheology.Data.Tests.ArchiveExport
             else if (formatFour)
             {
                 MemoriesDatabase.CreateFormatVersionFour(MemoriesPath, Now);
+            }
+            else if (formatFive)
+            {
+                MemoriesDatabase.CreateFormatVersionFive(MemoriesPath, Now);
             }
             else
             {
@@ -297,6 +303,24 @@ namespace Chatcheology.Data.Tests.ArchiveExport
             INSERT INTO ExternalLink VALUES (9, 'NotedDate', 5, 1, 'https://photos.example.org/album/c?key=x', 'Invented album');
             """);
 
+        /// <summary>
+        /// CH-53: moves the noted dates (all three) to memories, then deletes the one without a year that stays, so
+        /// the export may run.
+        /// </summary>
+        private NotedDateMoveResult MoveNotedDates()
+        {
+            var store = new NotedDateStore(MemoriesPath);
+            var result = store.MoveToMemories(store.List().Count);
+
+            foreach (var left in store.List())
+            {
+                store.Delete(left.NotedDateID);
+            }
+
+            SqliteConnection.ClearAllPools();
+            return result;
+        }
+
         private void ExecuteMemories(string sql)
         {
             using (var connection = MemoriesDatabase.OpenConnection(MemoriesPath))
@@ -329,7 +353,7 @@ namespace Chatcheology.Data.Tests.ArchiveExport
         // ---------------------------------------------------------------------------------------
 
         [Fact]
-        public void NoOlderExportsAndNoMemoriesFile_IsAVersionTwoArchiveOfTheWorkspaceOnly()
+        public void NoOlderExportsAndNoMemoriesFile_IsAVersionThreeArchiveOfTheWorkspaceOnly()
         {
             Workspace();
             var output = _fixture.Output();
@@ -344,7 +368,7 @@ namespace Chatcheology.Data.Tests.ArchiveExport
 
             using (var reader = ArchiveReader.Open(output))
             {
-                Assert.Equal(2, reader.Info.FormatVersion);
+                Assert.Equal(3, reader.Info.FormatVersion);
                 Assert.Equal([1, 2, 3], Messages(reader).Select(m => m.SequenceNumber));
                 Assert.Empty(reader.ReadCollections());
             }
@@ -780,80 +804,107 @@ namespace Chatcheology.Data.Tests.ArchiveExport
         }
 
         // ---------------------------------------------------------------------------------------
-        // Noted dates (CH-47).
+        // Noted dates (CH-47), moved to yearly memories before an export (CH-53).
         // ---------------------------------------------------------------------------------------
 
         [Fact]
-        public void NotedDates_RoundTrip_AsStored_WithTheirIdentifiers_AndValidate()
+        public void NotedDatesLeft_RefuseTheExport_WithTheCount_AndWriteNothing()
         {
             Workspace();
             Memories();
             NotedDates();
             var output = _fixture.Output();
 
+            var refusal = Assert.Throws<ArchiveExportRefusedException>(() => Export(output));
+
+            Assert.Equal("Move noted dates to memories first (3 left). Nothing was written.", refusal.Message);
+            Assert.DoesNotContain("Invented", refusal.Message, StringComparison.Ordinal);
+            Assert.Empty(_fixture.ExportsContent());
+            Assert.False(Directory.Exists(output));
+
+            // One left without a year still refuses.
+            new NotedDateStore(MemoriesPath).MoveToMemories(3);
+            SqliteConnection.ClearAllPools();
+
+            var again = Assert.Throws<ArchiveExportRefusedException>(() => Export(output));
+            Assert.Equal("Move noted dates to memories first (1 left). Nothing was written.", again.Message);
+            Assert.False(Directory.Exists(output));
+        }
+
+        [Fact]
+        public void MovedNotedDates_ExportAsYearlyMemories_InVersionThree_AndCompare()
+        {
+            Workspace();
+            Memories();
+            NotedDates();
+            var moved = MoveNotedDates();
+            var output = _fixture.Output();
+
             var result = Export(output);
 
-            Assert.Equal(3, result.Counts.NotedDates);
-            Assert.Contains("\"notedDates\": 3", File.ReadAllText(Path.Combine(output, ArchiveFormat.ManifestFileName)), StringComparison.Ordinal);
+            Assert.Equal(0, result.Counts.NotedDates);
+            Assert.Contains("\"notedDates\": 0", File.ReadAllText(Path.Combine(output, ArchiveFormat.ManifestFileName)), StringComparison.Ordinal);
 
             var validation = ArchiveValidator.Validate(output);
             Assert.True(validation.Passed, string.Join(", ", validation.FirstProblems));
 
             using (var reader = ArchiveReader.Open(output))
             {
-                Assert.True(reader.HasNotedDates);
+                Assert.Equal(3, reader.Info.FormatVersion);
+                Assert.False(reader.HasNotedDates);
+
+                // The two dates with a year are yearly memories in the new collection "Noted dates".
+                var collection = Assert.Single(reader.ReadCollections(), c => c.Name == NotedDateStore.MovedCollectionName);
+                Assert.Equal(ArchiveMemoryVocabulary.KindPersonal, collection.Kind);
+                Assert.True(collection.ShownByDefault);
+
                 Assert.Equal(
                     [
-                        (1L, "Invented anniversary", 2, 14, (int?)2019, (string?)"An invented note"),
-                        (2L, "Leap day", 2, 29, null, null),
-                        (5L, "Year end", 12, 31, 2000, null),
+                        ("Invented anniversary", new DateTime(2019, 2, 14), (string?)"An invented note"),
+                        ("Year end", new DateTime(2000, 12, 31), null),
                     ],
-                    reader.ReadNotedDates().Select(d => (d.NotedDateID, d.Title, d.Month, d.Day, d.Year, d.Note)));
-
-                // Not memories: no collection, entry or link was added for them.
-                Assert.Equal(2, reader.ReadCollections().Count);
-                Assert.Equal(3, reader.ReadAllEntries().Count);
-                Assert.Equal(2, reader.ReadAllLinks().Count);
+                    reader.ReadYearlyEntries().Select(e => (e.Title, e.StartLocal, reader.ReadAllEntries().Single(a => a.EntryID == e.EntryID).Summary)));
+                Assert.Equal(moved.Pairs.Select(p => p.EntryID), reader.ReadYearlyEntries().Select(e => e.EntryID));
+                Assert.All(reader.ReadEntriesOf(collection.CollectionID), e =>
+                {
+                    Assert.True(e.EveryYear);
+                    Assert.Equal("Day", e.DatePrecision);
+                    Assert.Null(e.EndLocal);
+                    Assert.Equal(NotedDateStore.MovedSource, e.Source);
+                });
+                Assert.False(reader.ReadAllEntries().Single(e => e.EntryID == 20).EveryYear);
             }
 
             var comparison = Compare(output);
             Assert.True(comparison.Passed, string.Join(", ", comparison.FirstMismatches));
-            Assert.Equal(3, comparison.NotedDates);
+            Assert.Equal(0, comparison.NotedDates);
         }
 
         [Fact]
-        public void TheComparer_FindsAChangedNotedDate_AMissingOne_AndAnExtraOne()
+        public void TheComparer_FindsANotedDateAddedLater_AndAChangedEveryYear()
         {
             Workspace();
             Memories();
-            NotedDates();
+            ExecuteMemories(
+                """
+                INSERT INTO Entry (EntryID, CollectionID, Title, StartLocal, DatePrecision, Source, EveryYear)
+                VALUES (21, 2, 'Invented yearly', '2019-02-14T00:00:00', 'Day', 'My own memory', 1);
+                """);
             var output = _fixture.Output();
             Export(output);
+            Assert.True(Compare(output).Passed);
 
-            // Each field on its own is a difference.
-            foreach (var change in new[]
-                     {
-                         "UPDATE NotedDate SET Title = 'Renamed' WHERE NotedDateID = 1;",
-                         "UPDATE NotedDate SET Month = 3 WHERE NotedDateID = 1;",
-                         "UPDATE NotedDate SET Day = 15 WHERE NotedDateID = 1;",
-                         "UPDATE NotedDate SET Year = 2018 WHERE NotedDateID = 1;",
-                         "UPDATE NotedDate SET Year = NULL WHERE NotedDateID = 1;",
-                         "UPDATE NotedDate SET Note = 'Another note' WHERE NotedDateID = 1;",
-                         "UPDATE NotedDate SET Note = NULL WHERE NotedDateID = 1;",
-                     })
-            {
-                ExecuteMemories(change);
-                Assert.Equal(1, Compare(output).MismatchCounts[ArchiveMismatchKind.NotedDateDiffers]);
-                ExecuteMemories("UPDATE NotedDate SET Title = 'Invented anniversary', Month = 2, Day = 14, Year = 2019, Note = 'An invented note' WHERE NotedDateID = 1;");
-                Assert.True(Compare(output).Passed);
-            }
+            ExecuteMemories("UPDATE Entry SET EveryYear = 0 WHERE EntryID = 21;");
+            Assert.Equal(1, Compare(output).MismatchCounts[ArchiveMismatchKind.EntryDiffers]);
+            ExecuteMemories("UPDATE Entry SET EveryYear = 1 WHERE EntryID = 21;");
+            Assert.True(Compare(output).Passed);
 
-            // Missing from the archive (added since), and extra in it (deleted since).
-            ExecuteMemories("INSERT INTO NotedDate VALUES (7, 'Added later', 6, 1, NULL, NULL); DELETE FROM NotedDate WHERE NotedDateID = 2;");
+            // A noted date in the memories file is missing from a version 3 archive, which has none.
+            ExecuteMemories("INSERT INTO NotedDate VALUES (7, 'Added later', 6, 1, NULL, NULL);");
 
             var comparison = Compare(output);
 
-            Assert.Equal(2, comparison.MismatchCounts[ArchiveMismatchKind.NotedDateDiffers]);
+            Assert.Equal(1, comparison.MismatchCounts[ArchiveMismatchKind.NotedDateDiffers]);
             Assert.Equal(0, comparison.MismatchCounts[ArchiveMismatchKind.EntryDiffers]);
             Assert.Equal(0, comparison.MismatchCounts[ArchiveMismatchKind.CollectionCountsDiffer]);
         }
@@ -872,8 +923,9 @@ namespace Chatcheology.Data.Tests.ArchiveExport
 
             using (var reader = ArchiveReader.Open(output))
             {
-                Assert.True(reader.HasNotedDates);
+                Assert.False(reader.HasNotedDates);
                 Assert.Empty(reader.ReadNotedDates());
+                Assert.Empty(reader.ReadYearlyEntries());
             }
 
             var comparison = Compare(output);
@@ -886,22 +938,27 @@ namespace Chatcheology.Data.Tests.ArchiveExport
         }
 
         [Fact]
-        public void ANotedDateWithAYearAfterTheExport_StopsTheExport()
+        public void AFormatFiveMemoriesFile_HasNoYearlyMemories_AndIsNotUpgraded()
         {
             Workspace();
-            Memories();
-
-            // The schema cannot know the current year; the archive writer refuses it.
-            ExecuteMemories("INSERT INTO NotedDate VALUES (1, 'Invented future', 5, 1, 2999, NULL);");
+            Memories(formatFive: true);
             var output = _fixture.Output();
 
-            var stop = Assert.Throws<ArchiveExportStoppedException>(() => Export(output));
+            Export(output);
+            Assert.True(ArchiveValidator.Validate(output).Passed);
 
-            Assert.Contains("noted date", stop.Message, StringComparison.Ordinal);
-            Assert.DoesNotContain("Invented future", stop.Message, StringComparison.Ordinal);
-            Assert.Empty(_fixture.ExportsContent());
+            using (var reader = ArchiveReader.Open(output))
+            {
+                Assert.Equal(3, reader.Info.FormatVersion);
+                Assert.All(reader.ReadAllEntries(), e => Assert.False(e.EveryYear));
+                Assert.Empty(reader.ReadYearlyEntries());
+            }
+
+            Assert.True(Compare(output).Passed);
+
+            using var connection = MemoriesDatabase.OpenReadOnlyConnection(MemoriesPath);
+            Assert.Equal(5, MemoriesDatabase.ReadFormatVersion(connection));
         }
-
         // ---------------------------------------------------------------------------------------
         // External links (CH-48).
         // ---------------------------------------------------------------------------------------
@@ -913,6 +970,10 @@ namespace Chatcheology.Data.Tests.ArchiveExport
             Memories();
             NotedDates();
             ExternalLinks();
+
+            // CH-53: noted date 5's link goes with it to its memory: same identifier, order and label.
+            var moved = MoveNotedDates();
+            var yearEnd = moved.Pairs.Single(p => p.NotedDateID == 5).EntryID;
             var output = _fixture.Output();
 
             var result = Export(output);
@@ -930,11 +991,12 @@ namespace Chatcheology.Data.Tests.ArchiveExport
                     [
                         (2L, ExternalLinkOwnerKind.Entry, 20L, 1, "https://photos.example.org/album/a", (string?)"Day 1"),
                         (4L, ExternalLinkOwnerKind.Entry, 20L, 2, "https://photos.example.org/album/b", null),
-                        (9L, ExternalLinkOwnerKind.NotedDate, 5L, 1, "https://photos.example.org/album/c?key=x", "Invented album"),
+                        (9L, ExternalLinkOwnerKind.Entry, yearEnd, 1, "https://photos.example.org/album/c?key=x", "Invented album"),
                     ],
                     reader.ReadAllExternalLinks().Select(l => (l.ExternalLinkID, l.OwnerKind, l.OwnerID, l.Ordinal, l.Url, l.Label)));
                 Assert.Equal([2L, 4L], reader.ReadExternalLinks(ExternalLinkOwnerKind.Entry, 20).Select(l => l.ExternalLinkID));
-                Assert.Equal([9L], reader.ReadExternalLinks(ExternalLinkOwnerKind.NotedDate, 5).Select(l => l.ExternalLinkID));
+                Assert.Equal([9L], reader.ReadExternalLinks(ExternalLinkOwnerKind.Entry, yearEnd).Select(l => l.ExternalLinkID));
+                Assert.Empty(reader.ReadExternalLinks(ExternalLinkOwnerKind.NotedDate, 5));
 
                 // Not memory links: the memory-to-message and memory-to-memory links are unchanged.
                 Assert.Equal(2, reader.ReadAllLinks().Count);
@@ -952,6 +1014,7 @@ namespace Chatcheology.Data.Tests.ArchiveExport
             Memories();
             NotedDates();
             ExternalLinks();
+            MoveNotedDates();
             var output = _fixture.Output();
             Export(output);
 
@@ -969,23 +1032,23 @@ namespace Chatcheology.Data.Tests.ArchiveExport
                          "UPDATE ExternalLink SET OwnerKind = 'NotedDate', OwnerID = 20 WHERE ExternalLinkID = 2;",
                      })
             {
-                if (change.Contains("OwnerID = 20", StringComparison.Ordinal))
+                if (change.Contains("'NotedDate'", StringComparison.Ordinal))
                 {
-                    // Same identifier, other kind: needs a noted date 20 to be allowed.
-                    ExecuteMemories("INSERT INTO NotedDate VALUES (20, 'Invented twenty', 1, 20, NULL, NULL);");
+                    // Another kind: needs a noted date of that identifier to be allowed (20: same identifier as the entry).
+                    ExecuteMemories("INSERT INTO NotedDate VALUES (1, 'Invented one', 1, 1, NULL, NULL); INSERT INTO NotedDate VALUES (20, 'Invented twenty', 1, 20, NULL, NULL);");
                 }
 
                 ExecuteMemories(change);
                 Assert.Equal(1, Compare(output).MismatchCounts[ArchiveMismatchKind.ExternalLinkDiffers]);
                 ExecuteMemories(Restore);
-                ExecuteMemories("DELETE FROM NotedDate WHERE NotedDateID = 20;");
+                ExecuteMemories("DELETE FROM NotedDate WHERE NotedDateID IN (1, 20);");
                 Assert.True(Compare(output).Passed);
             }
 
             // Missing from the archive (added since), and extra in it (removed since).
             ExecuteMemories(
                 """
-                INSERT INTO ExternalLink VALUES (11, 'NotedDate', 1, 1, 'https://photos.example.org/album/new', NULL);
+                INSERT INTO ExternalLink VALUES (11, 'Entry', 20, 3, 'https://photos.example.org/album/new', NULL);
                 DELETE FROM ExternalLink WHERE ExternalLinkID = 9;
                 """);
 
@@ -1001,13 +1064,12 @@ namespace Chatcheology.Data.Tests.ArchiveExport
         {
             Workspace();
             Memories(formatFour: true);
-            NotedDates();
             var output = _fixture.Output();
 
             var result = Export(output);
 
             Assert.Equal(0, result.Counts.ExternalLinks);
-            Assert.Equal(3, result.Counts.NotedDates);
+            Assert.Equal(0, result.Counts.NotedDates);
             Assert.True(ArchiveValidator.Validate(output).Passed);
 
             using (var reader = ArchiveReader.Open(output))

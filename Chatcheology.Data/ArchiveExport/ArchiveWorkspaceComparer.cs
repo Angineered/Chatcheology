@@ -411,7 +411,8 @@ namespace Chatcheology.Data.ArchiveExport
             && e.Summary == a.Summary
             && e.ImageSha256 == a.ImageSha256
             && e.Source == a.Source
-            && e.DayLevel == a.DayLevel;
+            && e.DayLevel == a.DayLevel
+            && e.EveryYear == a.EveryYear;
 
         /// <summary>Extra photos (CH-46) in order, hash and caption; the extension follows the stored file, as for the cover.</summary>
         private static bool SamePhotos(IReadOnlyList<ArchiveEntryImage> expected, IReadOnlyList<ArchiveEntryImage> actual) =>

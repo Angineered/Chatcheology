@@ -38,7 +38,7 @@ namespace Chatcheology.Mobile.Tests
 
             using (var writer = ArchiveWriter.Create(Path.Combine(folder, ArchiveFormat.DatabaseFileName), new ArchiveInfo
             {
-                FormatVersion = ArchiveFormat.FormatVersion,
+                FormatVersion = ArchiveFormat.NotedDatesFormatVersion,
                 CreatedUtc = created,
                 ProducerVersion = "Synthetic producer 1.0",
                 ConversationTitle = "Alex and Sam",
@@ -91,7 +91,7 @@ namespace Chatcheology.Mobile.Tests
 
             File.WriteAllBytes(
                 Path.Combine(folder, ArchiveFormat.ManifestFileName),
-                new ArchiveManifest(ArchiveManifest.FormatName, ArchiveFormat.FormatVersion, "Synthetic producer 1.0", created, counts).ToBytes());
+                new ArchiveManifest(ArchiveManifest.FormatName, ArchiveFormat.NotedDatesFormatVersion, "Synthetic producer 1.0", created, counts).ToBytes());
             File.WriteAllBytes(Path.Combine(folder, ArchiveContents.FileName), ArchiveContents.Build(folder));
         }
 
