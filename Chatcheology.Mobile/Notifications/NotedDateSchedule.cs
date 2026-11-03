@@ -76,8 +76,9 @@ namespace Chatcheology.Mobile.Notifications
     public static class NotedDateSchedule
     {
         /// <summary>
-        /// How many days ahead are searched: every noted date falls at least once a year (29 February on
-        /// 28 February otherwise), so a year and a day is enough.
+        /// How many days ahead are searched day by day: every noted date, and every yearly memory already past its
+        /// own date, falls at least once a year (29 February on 28 February otherwise), so a year and a day is
+        /// enough. A yearly memory dated later than that is found by jumping to its own date (<see cref="Next"/>).
         /// </summary>
         public const int DaysAhead = 367;
 
@@ -124,7 +125,8 @@ namespace Chatcheology.Mobile.Notifications
         /// The next moment a noted date notifies after <paramref name="localNow"/>, or <see langword="null"/> when
         /// nothing can notify. Today at the time when that is still ahead; today at once (a
         /// <see cref="CatchUpDelay"/> from now) when the time has passed and an archive due today is not yet
-        /// posted; otherwise the first later day with one.
+        /// posted; otherwise the first later day with one, however far: a yearly memory dated years ahead (CH-53)
+        /// is scheduled for its own date.
         /// </summary>
         /// <param name="archives">Every installed archive's noted dates.</param>
         /// <param name="time">The app's notification time.</param>
@@ -155,17 +157,31 @@ namespace Chatcheology.Mobile.Notifications
                 day = day.AddDays(1);
             }
 
-            for (var i = 0; i < DaysAhead && day < DateOnly.MaxValue; i++, day = day.AddDays(1))
+            while (true)
             {
-                var due = DueOn(list, day);
-
-                if (due.Count > 0)
+                for (var i = 0; i < DaysAhead && day < DateOnly.MaxValue; i++, day = day.AddDays(1))
                 {
-                    return new NextNotification(day, day.ToDateTime(time), due);
-                }
-            }
+                    var due = DueOn(list, day);
 
-            return null;
+                    if (due.Count > 0)
+                    {
+                        return new NextNotification(day, day.ToDateTime(time), due);
+                    }
+                }
+
+                // Nothing within a year and a day: only a yearly memory dated later still can notify (CH-53), first
+                // on its own date. Jump there and search on; every jump moves forward, so this ends.
+                if (day >= DateOnly.MaxValue
+                    || list.SelectMany(archive => archive.NotifyingYearly)
+                        .Select(memory => (DateOnly?)memory.Start)
+                        .Where(start => start >= day)
+                        .Min() is not { } later)
+                {
+                    return null;
+                }
+
+                day = later;
+            }
         }
 
         /// <summary>

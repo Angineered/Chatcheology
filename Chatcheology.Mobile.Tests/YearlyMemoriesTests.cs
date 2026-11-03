@@ -281,6 +281,36 @@ namespace Chatcheology.Mobile.Tests
         }
 
         [Fact]
+        public void A_yearly_memory_dated_years_ahead_is_scheduled_for_its_own_date()
+        {
+            static ArchiveNotedDates Only(params YearlyMemoryListing[] yearly) => new("f", "hash-f", true, []) { Yearly = yearly };
+
+            // Five years ahead, nothing else: its own date at the time, not nothing.
+            var far = Only(new YearlyMemoryListing(1, "Far", D(2031, 11, 20), true));
+            Assert.True(far.CanNotify);
+            var next = NotedDateSchedule.Next([far], Nine, At(2026, 11, 3, 10, 0))!;
+            Assert.Equal(D(2031, 11, 20), next.Day);
+            Assert.Equal(At(2031, 11, 20, 9, 0), next.LocalMoment);
+            Assert.Equal("A noted date today", next.Due.Single().Text);
+
+            // A leap day years ahead: its own 29 February.
+            Assert.Equal(D(2032, 2, 29), NotedDateSchedule.Next([Only(new YearlyMemoryListing(2, "Leap", D(2032, 2, 29), true))], Nine, At(2026, 11, 3))!.Day);
+
+            // Two far memories: the nearer one; a nearer noted date still comes first.
+            Assert.Equal(D(2029, 1, 1), NotedDateSchedule.Next([Only(new YearlyMemoryListing(3, "B", D(2033, 5, 5), true), new YearlyMemoryListing(4, "A", D(2029, 1, 1), true))], Nine, At(2026, 11, 3))!.Day);
+            var withNoted = far with { Dates = [new NotedDateListing("n", "Noted", 1, 10, null, null, false, true)] };
+            Assert.Equal(D(2027, 1, 10), NotedDateSchedule.Next([withNoted], Nine, At(2026, 11, 3))!.Day);
+
+            // Muted, or On this day off: still nothing.
+            Assert.Null(NotedDateSchedule.Next([Only(new YearlyMemoryListing(1, "Far", D(2031, 11, 20), false))], Nine, At(2026, 11, 3)));
+            Assert.Null(NotedDateSchedule.Next([far with { OnThisDayEnabled = false }], Nine, At(2026, 11, 3)));
+
+            // The emulator archive's future memory, alone: scheduled for its own date.
+            var synthetic = Only(new YearlyMemoryListing(503, "Future", SyntheticArchive.FutureYearlyDay, true));
+            Assert.Equal(SyntheticArchive.FutureYearlyDay, NotedDateSchedule.Next([synthetic], Nine, At(2026, 11, 3))!.Day);
+        }
+
+        [Fact]
         public void The_schedule_reads_yearly_memories_and_their_mutes_from_installed_archives()
         {
             var library = NewLibrary();
