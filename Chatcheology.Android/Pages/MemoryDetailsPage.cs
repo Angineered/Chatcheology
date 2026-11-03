@@ -21,8 +21,9 @@ namespace Chatcheology.Android.Pages
         /// <param name="showMessage">Opens the conversation at a linked message.</param>
         /// <param name="showEntry">Opens the conversation at a linked entry's row.</param>
         /// <param name="showInChat">
-        /// Opened from a yearly memory on the On this day card (CH-53): opens the conversation at the memory's day.
-        /// Given only when that day has messages; without it there is no Show in chat.
+        /// Opened from a memory on the On this day card (CH-53) or the Memories list (CH-56): opens the conversation
+        /// at the memory's row when it is visible, otherwise at its day. Given only when there is such a target (a
+        /// visible row, or a day with messages); without it there is no Show in chat.
         /// </param>
         internal MemoryDetailsPage(MemoryDetails details, Func<int, Task> showMessage, Func<long, Task> showEntry, Func<Task>? showInChat = null)
         {

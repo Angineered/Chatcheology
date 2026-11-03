@@ -5,6 +5,7 @@ using Chatcheology.Android.Conversation;
 using Chatcheology.Archive;
 using Chatcheology.Mobile.Conversation;
 using Chatcheology.Mobile.Gallery;
+using Chatcheology.Mobile.Memories;
 using Chatcheology.Mobile.Presentation;
 using Microsoft.Data.Sqlite;
 using Microsoft.Maui.Platform;
@@ -24,6 +25,8 @@ namespace Chatcheology.Android.Pages
     /// <para>Memory rows (CH-42) come with the timeline; a tap opens their details. A layer or filter
     /// switched in Settings rebuilds the timeline at the same place, like a change of "me", and the date
     /// picker's days are read again.</para>
+    /// <para>An archive with memories has Memories in the overflow menu (CH-56): every memory in one list,
+    /// whatever the layers say, each opening its details over the list.</para>
     /// </remarks>
     public partial class ConversationPage : ContentPage
     {
@@ -104,6 +107,12 @@ namespace Chatcheology.Android.Pages
             if (_session.CanSearch)
             {
                 ToolbarItems.Add(new ToolbarItem("Search", "toolbar_search.png", () => _ = OpenSearchAsync()));
+            }
+
+            // CH-56: every memory in one list, whatever the layer switches say.
+            if (_session.Memories.HasMemories)
+            {
+                ToolbarItems.Add(new ToolbarItem("Memories", null, () => _ = OpenMemoriesAsync()) { Order = ToolbarItemOrder.Secondary });
             }
 
             ToolbarItems.Add(new ToolbarItem("Settings", null, () => _ = OpenSettingsAsync()) { Order = ToolbarItemOrder.Secondary });
@@ -453,21 +462,24 @@ namespace Chatcheology.Android.Pages
         internal Task OpenAtMessageAsync(int sequenceNumber) =>
             ReopenAsync(timeline => timeline.OpenAt(sequenceNumber), sequenceNumber);
 
-        /// <summary>Opens the conversation at a memory row and highlights it (a search hit or a link).</summary>
-        internal async Task OpenAtMemoryAsync(MemoryKey key)
+        /// <summary>
+        /// Opens the conversation at a memory row and highlights it (a search hit or a link). True when the
+        /// conversation was opened there.
+        /// </summary>
+        internal async Task<bool> OpenAtMemoryAsync(MemoryKey key)
         {
             if (_closed)
             {
-                return;
+                return false;
             }
 
             if (_session.Memories.Layout(_session.MemoryView).Find(key) is null)
             {
                 await DisplayAlertAsync("Memories", "That memory is not shown now: its layer or filter is off in Settings.", "OK");
-                return;
+                return false;
             }
 
-            await ReopenAsync(timeline => timeline.OpenAtMemory(key), null, key);
+            return await ReopenAsync(timeline => timeline.OpenAtMemory(key), null, key);
         }
 
         private async Task PickDateAsync()
@@ -908,6 +920,65 @@ namespace Chatcheology.Android.Pages
             }
 
             await Navigation.PushAsync(new StarredPage(_state, _session, this));
+        }
+
+        private async Task OpenMemoriesAsync()
+        {
+            if (_closed || Navigation.NavigationStack.LastOrDefault() != this)
+            {
+                return;
+            }
+
+            await Navigation.PushAsync(new MemoriesPage(_session, this));
+        }
+
+        /// <summary>
+        /// A row of the Memories list (CH-56) was tapped: its details (read-only, whatever its layer says), pushed
+        /// over the list, with Show in chat when there is a target (<see cref="MemoryList.ShowInChat"/>).
+        /// </summary>
+        internal async Task OpenMemoryDetailsAsync(MemoryKey key)
+        {
+            if (_closed || _session.MemoryDetails(key) is not { } details)
+            {
+                return;
+            }
+
+            var list = await _session.GetMemoryListAsync();
+
+            if (_closed)
+            {
+                return;
+            }
+
+            Func<Task>? showInChat = _session.MemoryShowInChat(list, key) is { } target ? () => ShowMemoryInChatAsync(target) : null;
+
+            await Navigation.PushAsync(new MemoryDetailsPage(details, ShowMessageAsync, ShowEntryAsync, showInChat));
+        }
+
+        /// <summary>
+        /// Show in chat from a memory opened from the Memories list: back to this page, at the row when it is
+        /// visible, otherwise at its day; the On this day card goes once there, whichever it was.
+        /// </summary>
+        private async Task ShowMemoryInChatAsync(MemoryShowTarget target)
+        {
+            if (_closed)
+            {
+                return;
+            }
+
+            while (Navigation.NavigationStack.Count > 1 && Navigation.NavigationStack[^1] != this)
+            {
+                await Navigation.PopAsync(animated: false);
+            }
+
+            var shown = target.Row is { } key
+                ? await OpenAtMemoryAsync(key)
+                : target.Day is { } day && await GoToDayAsync(day);
+
+            if (shown)
+            {
+                OnThisDayCard.IsVisible = false;
+            }
         }
 
         /// <summary>
