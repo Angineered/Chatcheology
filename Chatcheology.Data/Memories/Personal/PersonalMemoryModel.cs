@@ -99,6 +99,12 @@ namespace Chatcheology.Data.Memories.Personal
 
         /// <summary>The links the memory has after the save.</summary>
         public IReadOnlyList<PersonalLinkTarget> Links { get; init; } = [];
+
+        /// <summary>
+        /// Shown on On this day each year on its day (CH-53). Only for a memory dated to the day without an end
+        /// date; anything else is refused with <see cref="PersonalFields.EveryYear"/>.
+        /// </summary>
+        public bool EveryYear { get; init; }
     }
 
     /// <summary>The field names a validation message is attached to.</summary>
@@ -149,6 +155,9 @@ namespace Chatcheology.Data.Memories.Personal
 
         /// <summary>A noted date as a whole (for example: it is no longer there) (CH-47).</summary>
         public const string NotedDate = "NotedDate";
+
+        /// <summary>A memory's Every year switch (CH-53).</summary>
+        public const string EveryYear = "EveryYear";
     }
 
     /// <summary>A save that was refused, with one message per field. Nothing was written.</summary>
@@ -182,8 +191,9 @@ namespace Chatcheology.Data.Memories.Personal
 
     /// <summary>One personal memory as the list shows it.</summary>
     /// <param name="Precision">The stored precision: Day, Month, or Second for a memory with a time of day.</param>
+    /// <param name="EveryYear">Shown on On this day each year (CH-53); false before format 6.</param>
     public sealed record PersonalEntrySummary(
-        long EntryID, long CollectionID, string Title, DateTime StartLocal, DateTime? EndLocal, string Precision)
+        long EntryID, long CollectionID, string Title, DateTime StartLocal, DateTime? EndLocal, string Precision, bool EveryYear = false)
     {
         /// <summary>The date as the list shows it.</summary>
         public string DateText => PersonalMemoryRules.DateText(Precision, StartLocal, EndLocal);
@@ -248,6 +258,9 @@ namespace Chatcheology.Data.Memories.Personal
 
         /// <summary>The extra photos after the cover, in order (none in a format 1 or 2 file).</summary>
         public IReadOnlyList<PersonalPhotoDetails> ExtraPhotos { get; init; } = [];
+
+        /// <summary>Shown on On this day each year (CH-53); false in a file before format 6.</summary>
+        public bool EveryYear { get; init; }
     }
 
     /// <summary>One stored extra photo of a memory.</summary>
@@ -404,6 +417,11 @@ namespace Chatcheology.Data.Memories.Personal
                 errors[PersonalFields.Start] = "Choose Day or Month.";
             }
 
+            if (EveryYearError(draft.EveryYear, draft.Precision, draft.End) is { } everyYear)
+            {
+                errors[PersonalFields.EveryYear] = everyYear;
+            }
+
             if (source.Length == 0)
             {
                 errors[PersonalFields.Source] = "Say where this memory comes from.";
@@ -434,6 +452,26 @@ namespace Chatcheology.Data.Memories.Personal
             }
 
             return errors;
+        }
+
+        /// <summary>
+        /// Why a memory cannot be shown every year (CH-53), or <see langword="null"/> when it can or the switch is
+        /// off: Every year needs a memory dated to the day without an end date (the store checks it is in a
+        /// personal collection).
+        /// </summary>
+        public static string? EveryYearError(bool everyYear, PersonalDatePrecision precision, DateOnly? end)
+        {
+            if (!everyYear)
+            {
+                return null;
+            }
+
+            if (precision != PersonalDatePrecision.Day)
+            {
+                return "Every year needs a memory dated to the day, not a month.";
+            }
+
+            return end is null ? null : "Every year is only for a memory without an end date.";
         }
 
         /// <summary>A date as the desktop lists it: "2 January 2018", "January 2018", or a range "… to …".</summary>

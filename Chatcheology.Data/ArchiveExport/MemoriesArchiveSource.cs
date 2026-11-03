@@ -39,7 +39,10 @@ namespace Chatcheology.Data.ArchiveExport
         /// <summary>The item definitions some item uses, ordered by set and item; each icon's extension is the memories file's own.</summary>
         internal required IReadOnlyList<ArchiveItemDefinition> Definitions { get; init; }
 
-        /// <summary>The noted dates (CH-47, format 4; none before), ordered by identifier, as stored.</summary>
+        /// <summary>
+        /// The noted dates (CH-47, format 4; none before), ordered by identifier, as stored. Since CH-53 an export
+        /// refuses while any remain: they are moved to memories first.
+        /// </summary>
         internal IReadOnlyList<ArchiveNotedDate> NotedDates { get; init; } = [];
 
         /// <summary>The external links (CH-48, format 5; none before), ordered by identifier, as stored.</summary>
@@ -89,7 +92,8 @@ namespace Chatcheology.Data.ArchiveExport
                 var collections = ReadCollections(connection);
                 var images = ReadImages(connection, mediaFolder, hasDefinitions, hasPhotos);
                 var photos = hasPhotos ? ReadPhotos(connection, images) : [];
-                var entries = ReadEntries(connection, images, photos, cancellationToken);
+                var entries = ReadEntries(
+                    connection, images, photos, formatVersion >= MemoriesDatabase.FirstFormatWithEveryYear, cancellationToken);
                 var links = ReadLinks(connection);
                 var definitions = hasDefinitions ? ReadDefinitions(connection, images) : [];
                 var notedDates = formatVersion >= MemoriesDatabase.FirstFormatWithNotedDates ? ReadNotedDates(connection) : [];
@@ -242,6 +246,7 @@ namespace Chatcheology.Data.ArchiveExport
             SqliteConnection connection,
             IReadOnlyDictionary<string, MemoryImage> images,
             IReadOnlyDictionary<long, List<MemoryPhotoRow>> photos,
+            bool hasEveryYear,
             CancellationToken cancellationToken)
         {
             var items = ReadItems(connection);
@@ -249,9 +254,9 @@ namespace Chatcheology.Data.ArchiveExport
 
             using var command = connection.CreateCommand();
             command.CommandText =
-                """
+                $"""
                 SELECT EntryID, CollectionID, SourceKey, Title, StartLocal, EndLocal, StartUtc, EndUtc, DatePrecision,
-                       Summary, ImageSha256, Source, DayLevel
+                       Summary, ImageSha256, Source, DayLevel, {(hasEveryYear ? MemoriesDatabase.EveryYearColumnName : "0")}
                 FROM Entry ORDER BY EntryID;
                 """;
 
@@ -289,6 +294,7 @@ namespace Chatcheology.Data.ArchiveExport
                         ImageExtension = sha is null ? null : images[sha].Extension,
                         Source = Nullable(reader, 11),
                         DayLevel = Nullable(reader, 12),
+                        EveryYear = reader.GetInt64(13) == 1,
                     },
                     periods.GetValueOrDefault(entryID) ?? [])
                 {

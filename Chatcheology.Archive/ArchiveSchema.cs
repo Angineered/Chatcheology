@@ -17,7 +17,8 @@ namespace Chatcheology.Archive
     /// Day jumps get their own index on <c>DateTimeLocal</c>.</para>
     /// <para>Version 2 differs from version 1 in two ways only: <c>Message</c> gains <c>Source</c>,
     /// and the six memory tables are added. Every version 1 table and meaning is otherwise the
-    /// same.</para>
+    /// same. Version 3 (CH-53) differs from version 2 in two ways only: <c>Entry</c> gains
+    /// <c>EveryYear</c>, and there is no <c>NotedDate</c> table.</para>
     /// </remarks>
     internal static class ArchiveSchema
     {
@@ -26,7 +27,8 @@ namespace Chatcheology.Archive
         internal static IReadOnlyList<string> StatementsOf(int formatVersion) => formatVersion switch
         {
             1 => Statements(MessageV1),
-            2 => [.. Statements(MessageV2), .. MemoryStatements],
+            2 => [.. Statements(MessageV2), .. MemoryStatements(2)],
+            3 => [.. Statements(MessageV2), .. MemoryStatements(3)],
             _ => throw new ArgumentOutOfRangeException(
                 nameof(formatVersion), formatVersion, "Not a format version this build knows."),
         };
@@ -201,7 +203,7 @@ namespace Chatcheology.Archive
         /// item uses, anything naming a source account). An item names the archive participant instead of a role.
         /// An entry image is a <c>Media</c> payload, stored as <c>media/&lt;sha256&gt;&lt;ImageExtension&gt;</c>.
         /// </summary>
-        private static readonly string[] MemoryStatements =
+        private static string[] MemoryStatements(int version) =>
         [
             """
             CREATE TABLE Collection (
@@ -237,7 +239,7 @@ namespace Chatcheology.Archive
                 ImageSha256    TEXT NULL,
                 ImageExtension TEXT NULL,
                 Source         TEXT NULL,
-                DayLevel       TEXT NULL,
+                DayLevel       TEXT NULL,{(version >= ArchiveFormat.FirstVersionWithEveryYear ? EveryYearColumn : string.Empty)}
 
                 UNIQUE (CollectionID, SourceKey),
 
@@ -405,19 +407,9 @@ namespace Chatcheology.Archive
 
             // CH-47: noted dates, copied from the memories file as they are (same identifiers, same checks).
             // Not memories: nothing refers to them and they refer to nothing. Added to version 2 without a
-            // version bump: a reader treats a version 2 archive without this table as one with none.
-            $"""
-            CREATE TABLE NotedDate (
-                NotedDateID INTEGER PRIMARY KEY,
-                Title       TEXT NOT NULL,
-                Month       INTEGER NOT NULL,
-                Day         INTEGER NOT NULL,
-                Year        INTEGER NULL,
-                Note        TEXT NULL,
-
-                {NotedDateRules.TableChecks}
-            );
-            """,
+            // version bump: a reader treats a version 2 archive without this table as one with none. Version 3
+            // has none (CH-53): noted dates became yearly memories.
+            .. NotedDateStatements(version),
 
             // CH-48: external links (web addresses for photos kept elsewhere) on personal entries and noted
             // dates, copied from the memories file as they are (same identifiers, same checks). The owner is
@@ -439,5 +431,31 @@ namespace Chatcheology.Archive
             );
             """,
         ];
+
+        /// <summary>
+        /// Version 3's <c>Entry.EveryYear</c> (CH-53): 1 for a personal memory shown each year on its day. That it
+        /// is a personal Day entry without an end is the writer's and the validator's to check.
+        /// </summary>
+        private const string EveryYearColumn =
+            "\n    EveryYear      INTEGER NOT NULL DEFAULT 0 CHECK (EveryYear IN (0, 1)),";
+
+        private static string[] NotedDateStatements(int version) =>
+            version != ArchiveFormat.NotedDatesFormatVersion
+                ? []
+                :
+                [
+                    $"""
+                    CREATE TABLE NotedDate (
+                        NotedDateID INTEGER PRIMARY KEY,
+                        Title       TEXT NOT NULL,
+                        Month       INTEGER NOT NULL,
+                        Day         INTEGER NOT NULL,
+                        Year        INTEGER NULL,
+                        Note        TEXT NULL,
+
+                        {NotedDateRules.TableChecks}
+                    );
+                    """,
+                ];
     }
 }

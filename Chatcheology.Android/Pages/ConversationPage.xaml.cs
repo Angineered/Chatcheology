@@ -630,6 +630,7 @@ namespace Chatcheology.Android.Pages
                 return;
             }
 
+            ShowYearlyMemories(onThisDay);
             ShowNotedDates(onThisDay);
             OnThisDayYears.Children.Clear();
             OnThisDayYears.IsVisible = onThisDay.Years.Count > 0;
@@ -675,6 +676,121 @@ namespace Chatcheology.Android.Pages
 
             OnThisDayCard.IsVisible = true;
             onThisDay.MarkShown();
+        }
+
+        /// <summary>
+        /// Yearly memories (CH-53), one row each above the noted dates: the cover thumbnail when there is one, the
+        /// title with "· N years" (the title alone in its own year) and the gallery chip. A tap on the thumbnail or
+        /// title opens the memory's details.
+        /// </summary>
+        private void ShowYearlyMemories(OnThisDay onThisDay)
+        {
+            OnThisDayYearly.Children.Clear();
+            OnThisDayYearly.IsVisible = onThisDay.Yearly.Count > 0;
+
+            foreach (var yearly in onThisDay.Yearly)
+            {
+                var row = new Grid
+                {
+                    ColumnDefinitions = { new ColumnDefinition(GridLength.Auto), new ColumnDefinition(GridLength.Star) },
+                    ColumnSpacing = yearly.HasImage ? 8 : 0,
+                    Padding = new Thickness(0, 3),
+                };
+
+                // One recognizer per view: a recognizer belongs to the view it is added to.
+                TapGestureRecognizer OpensDetails()
+                {
+                    var tap = new TapGestureRecognizer();
+                    tap.Tapped += async (_, _) =>
+                    {
+                        try
+                        {
+                            await OnYearlyTappedAsync(yearly);
+                        }
+                        catch (Exception)
+                        {
+                            // A tap handler: nothing here may end the app.
+                        }
+                    };
+
+                    return tap;
+                }
+
+                if (yearly.ImagePath is { } image)
+                {
+                    var thumbnail = new DecodedImage
+                    {
+                        WidthRequest = 40,
+                        HeightRequest = 40,
+                        FailedText = string.Empty,
+                        VerticalOptions = LayoutOptions.Center,
+                        Path = image,
+                    };
+
+                    thumbnail.GestureRecognizers.Add(OpensDetails());
+                    row.Add(thumbnail, 0);
+                }
+
+                var title = new Label
+                {
+                    Text = yearly.Text,
+                    FontSize = 14,
+                    FontAttributes = FontAttributes.Bold,
+                    TextDecorations = TextDecorations.Underline,
+                    Padding = new Thickness(0, 2),
+                }.TextIn("LinkText");
+
+                SemanticProperties.SetDescription(title, "Open the memory " + yearly.Title);
+                title.GestureRecognizers.Add(OpensDetails());
+
+                var text = new VerticalStackLayout { Spacing = 0, VerticalOptions = LayoutOptions.Center, Children = { title } };
+
+                // CH-48: the memory's gallery links, opened only after a confirmation.
+                if (yearly.Galleries.Count > 0)
+                {
+                    text.Add(SettingsPage.GalleryLine(this, yearly.GalleryText, yearly.Galleries));
+                }
+
+                row.Add(text, 1);
+                OnThisDayYearly.Children.Add(row);
+            }
+        }
+
+        /// <summary>
+        /// A yearly memory's row was tapped: its details (read-only, whatever its layer says), with Show in chat only
+        /// when its own date has messages.
+        /// </summary>
+        private async Task OnYearlyTappedAsync(YearlyToday yearly)
+        {
+            if (_closed
+                || Navigation.NavigationStack.LastOrDefault() != this
+                || _session.MemoryDetails(new MemoryKey(yearly.EntryID, null)) is not { } details)
+            {
+                return;
+            }
+
+            Func<Task>? showInChat = yearly.ShowInChatDay is { } day ? () => ShowDayAsync(day) : null;
+
+            await Navigation.PushAsync(new MemoryDetailsPage(details, ShowMessageAsync, ShowEntryAsync, showInChat));
+        }
+
+        /// <summary>Show in chat from a yearly memory's details: back to this page, at that day; the card goes once there.</summary>
+        private async Task ShowDayAsync(DateOnly day)
+        {
+            if (_closed)
+            {
+                return;
+            }
+
+            while (Navigation.NavigationStack.Count > 1 && Navigation.NavigationStack[^1] != this)
+            {
+                await Navigation.PopAsync(animated: false);
+            }
+
+            if (await GoToDayAsync(day))
+            {
+                OnThisDayCard.IsVisible = false;
+            }
         }
 
         /// <summary>

@@ -88,6 +88,9 @@ namespace Chatcheology.Mobile.Tests.Support
         internal int Media(params AttachmentSpec[] attachments) =>
             Add("<Media omitted>", Other, null, null, null, attachments);
 
+        /// <summary>Version 2 when there are gifted noted dates (only version 2 carries them, CH-53), otherwise the current one.</summary>
+        private int Version => _notedDates.Count > 0 ? ArchiveFormat.NotedDatesFormatVersion : ArchiveFormat.FormatVersion;
+
         /// <summary>Writes the archive into <paramref name="folder"/>: database, media, manifest, contents list.</summary>
         internal string Write(string folder)
         {
@@ -98,7 +101,7 @@ namespace Chatcheology.Mobile.Tests.Support
 
             using var writer = ArchiveWriter.Create(Path.Combine(folder, ArchiveFormat.DatabaseFileName), new ArchiveInfo
             {
-                FormatVersion = ArchiveFormat.FormatVersion,
+                FormatVersion = Version,
                 CreatedUtc = created,
                 ProducerVersion = "Test builder 1.0",
                 ConversationTitle = Title,
@@ -147,7 +150,7 @@ namespace Chatcheology.Mobile.Tests.Support
 
             File.WriteAllBytes(
                 Path.Combine(folder, ArchiveFormat.ManifestFileName),
-                new ArchiveManifest(ArchiveManifest.FormatName, ArchiveFormat.FormatVersion, "Test builder 1.0", created, counts).ToBytes());
+                new ArchiveManifest(ArchiveManifest.FormatName, Version, "Test builder 1.0", created, counts).ToBytes());
             File.WriteAllBytes(Path.Combine(folder, ArchiveContents.FileName), ArchiveContents.Build(folder));
 
             return folder;

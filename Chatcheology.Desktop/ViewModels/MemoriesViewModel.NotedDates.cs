@@ -1,21 +1,50 @@
 using System.Collections.ObjectModel;
+using System.Globalization;
 using Chatcheology.Data.Memories.Personal;
 
 namespace Chatcheology.Desktop.ViewModels
 {
     /// <summary>
-    /// The Noted dates section of the Memories area (CH-47): a list by month then day, and a form to add and
-    /// edit them. They share the area's busy, blocked and closing behaviour: not while an export, check or
-    /// decision runs, held while a read or write is in flight, and a result that arrives after the area was
-    /// closed or reopened is dropped. Only the <c>NotedDate</c> table of the memories file is written.
+    /// The Noted dates section of the Memories area (CH-47, reduced by CH-53): while any noted date remains, a
+    /// list by month then day with edit and delete (no add), and "Move noted dates to memories", which turns
+    /// every one with a year into a yearly memory. When none remain the section is gone. They share the area's
+    /// busy, blocked and closing behaviour: not while an export, check or decision runs, held while a read or
+    /// write is in flight, and a result that arrives after the area was closed or reopened is dropped.
     /// </summary>
     public sealed partial class MemoriesViewModel
     {
         private NotedDateRow? _selectedNotedDate;
         private NotedDateFormViewModel? _notedForm;
 
-        /// <summary>Opens an empty noted-date form.</summary>
-        public RelayCommand NewNotedDateCommand { get; }
+        /// <summary>
+        /// Moves every noted date with a year to memories (CH-53), after a confirmation with the count. Only
+        /// while at least one noted date has a year.
+        /// </summary>
+        public AsyncRelayCommand MoveNotedDatesCommand { get; }
+
+        /// <summary>Whether any noted date remains: the section (list, edit, delete, move) shows only then.</summary>
+        public bool HasNotedDates => NotedDates.Count > 0;
+
+        /// <summary>How many remaining noted dates have a year (and so can be moved).</summary>
+        public int NotedDatesWithYear => NotedDates.Count(d => d.Year is not null);
+
+        /// <summary>
+        /// A line under the section: what the move does, and what to do with a noted date that has no year.
+        /// </summary>
+        public string NotedDatesText
+        {
+            get
+            {
+                var withYear = NotedDatesWithYear;
+                var without = NotedDates.Count - withYear;
+                var text = "Noted dates are now yearly memories. Move them to keep them on On this day.";
+
+                return without == 0
+                    ? text
+                    : text + " " + (without == 1 ? "1 noted date has" : without.ToString(CultureInfo.CurrentCulture) + " noted dates have") +
+                      " no year and cannot be moved: give it a year, or delete it.";
+            }
+        }
 
         /// <summary>Opens the selected noted date in the form.</summary>
         public RelayCommand EditNotedDateCommand { get; }
@@ -87,11 +116,18 @@ namespace Chatcheology.Desktop.ViewModels
                 NotedDates.Add(new NotedDateRow(date, galleries.GetValueOrDefault(date.NotedDateID)));
             }
 
+            OnNotedDatesChanged();
             _selectedNotedDate = null;
             SelectedNotedDate = NotedDates.FirstOrDefault(d => d.NotedDateID == keep);
         }
 
-        private void NewNotedDate() => OpenNotedForm(null);
+        private void OnNotedDatesChanged()
+        {
+            OnPropertyChanged(nameof(HasNotedDates));
+            OnPropertyChanged(nameof(NotedDatesWithYear));
+            OnPropertyChanged(nameof(NotedDatesText));
+            MoveNotedDatesCommand.RaiseCanExecuteChanged();
+        }
 
         private void EditNotedDate()
         {
@@ -101,7 +137,7 @@ namespace Chatcheology.Desktop.ViewModels
             }
         }
 
-        private void OpenNotedForm(NotedDateRow? existing)
+        private void OpenNotedForm(NotedDateRow existing)
         {
             if (_backend is not { } backend)
             {
@@ -149,6 +185,49 @@ namespace Chatcheology.Desktop.ViewModels
 
             SelectedNotedDate = NotedDates.FirstOrDefault(d => d.NotedDateID == id);
             StatusText = "Noted date saved.";
+        }
+
+
+        private async Task MoveNotedDatesAsync()
+        {
+            if (_backend is not { } backend)
+            {
+                return;
+            }
+
+            var all = NotedDates.Count;
+            var withYear = NotedDatesWithYear;
+            var without = all - withYear;
+
+            var question =
+                "Move " + (withYear == 1 ? "1 noted date" : withYear.ToString(CultureInfo.CurrentCulture) + " noted dates") +
+                " to memories? Each becomes a yearly memory, with its note and gallery links, in your collection \"" +
+                NotedDateStore.MovedCollectionName + "\". A copy of the memories file is kept first beside it, as " +
+                NotedDateStore.MoveBackupFileName + " (or the next free name after it)." +
+                (without == 0
+                    ? string.Empty
+                    : " " + (without == 1 ? "1 noted date has" : without.ToString(CultureInfo.CurrentCulture) + " noted dates have") +
+                      " no year and stays here.");
+
+            if (!_dialogs.ConfirmMoveNotedDates(question))
+            {
+                StatusText = "Nothing was moved.";
+                return;
+            }
+
+            await WriteAsync(
+                () => backend.NotedDates.MoveToMemories(all),
+                result => (
+                    "Moved " + (result.Moved == 1 ? "1 noted date" : result.Moved.ToString(CultureInfo.CurrentCulture) + " noted dates") +
+                    " to memories. The copy from before is " + result.BackupFileName + "." +
+                    (result.LeftWithoutYear == 0
+                        ? string.Empty
+                        : " " + (result.LeftWithoutYear == 1
+                            ? "1 noted date has"
+                            : result.LeftWithoutYear.ToString(CultureInfo.CurrentCulture) + " noted dates have") +
+                          " no year and stayed."),
+                    result.CollectionID,
+                    null)).ConfigureAwait(true);
         }
 
         private async Task DeleteNotedDateAsync()

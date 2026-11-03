@@ -162,6 +162,13 @@ namespace Chatcheology.Data.ArchiveExport
                     $"{Count(request.ExpectMissingReviewed)}. Nothing was written.");
             }
 
+            // CH-53: version 3 has no noted dates; they are moved to memories (yearly memories) first.
+            if (combined.ToArchiveNotedDates().Count is var notedDates and > 0)
+            {
+                throw new ArchiveExportRefusedException(
+                    $"Move noted dates to memories first ({Count(notedDates)} left). Nothing was written.");
+            }
+
             foreach (var root in combined.MediaRoots.Distinct(StringComparer.OrdinalIgnoreCase))
             {
                 if (IsWithinRoot(output, root))
@@ -402,10 +409,6 @@ namespace Chatcheology.Data.ArchiveExport
                 writer.WriteItemDefinition(definition);
             }
 
-            foreach (var notedDate in combined.ToArchiveNotedDates())
-            {
-                writer.WriteNotedDate(notedDate);
-            }
 
             foreach (var externalLink in combined.ToArchiveExternalLinks())
             {

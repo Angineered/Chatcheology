@@ -25,24 +25,51 @@ namespace Chatcheology.Mobile.Tests
         }
 
         [Fact]
-        public void Every_Debug_install_writes_the_current_format_with_its_noted_dates_and_validates()
+        public void Every_Debug_install_writes_version_three_with_its_yearly_memories_and_validates()
         {
             foreach (var options in new[] { SyntheticDebugInstalls.Standard, SyntheticDebugInstalls.MidDay, SyntheticDebugInstalls.WithMemories })
             {
                 using var folder = new TemporaryFolder();
                 var counts = SyntheticArchive.Write(folder.Path, options);
 
-                Assert.Equal(3, counts.NotedDates);
-                Assert.True(ArchiveValidator.Validate(folder.Path).Passed);
+                Assert.Equal(0, counts.NotedDates);
+                var validation = ArchiveValidator.Validate(folder.Path);
+                Assert.True(validation.Passed, string.Join(", ", validation.FirstProblems));
 
                 using var reader = ArchiveReader.Open(folder.Path);
                 Assert.Equal(ArchiveFormat.FormatVersion, reader.Info.FormatVersion);
-                Assert.Equal(2, reader.Info.FormatVersion);
-                Assert.True(reader.HasNotedDates);
-                Assert.Equal(["Our synthetic anniversary", "Invented birthday", "Invented leap day"], reader.ReadNotedDates().Select(d => d.Title).ToList());
+                Assert.Equal(3, reader.Info.FormatVersion);
+                Assert.False(reader.HasNotedDates);
+
+                // CH-53: at least two yearly memories, one dated in the future and one with a gallery link.
+                var yearly = reader.ReadYearlyEntries();
+                Assert.Equal(["Our synthetic anniversary", "Invented leap day", "Invented future day"], yearly.Select(e => e.Title).ToList());
+                Assert.All(yearly, e => Assert.Equal(ArchiveMemoryVocabulary.KindPersonal, e.CollectionKind));
+                Assert.All(yearly, e => Assert.Equal("Day", e.DatePrecision));
+                Assert.Contains(yearly, e => DateOnly.FromDateTime(e.StartLocal) > new DateOnly(2026, 11, 2));
+                Assert.Equal(SyntheticArchive.FutureYearlyDay, DateOnly.FromDateTime(yearly[2].StartLocal));
+                Assert.Single(reader.ReadExternalLinks(ExternalLinkOwnerKind.Entry, yearly[0].EntryID));
             }
 
             Assert.True(SyntheticDebugInstalls.WithMemories.Memories);
+        }
+
+        [Fact]
+        public void The_noted_dates_fixture_is_version_two_with_gifted_noted_dates_and_validates()
+        {
+            using var folder = new TemporaryFolder();
+            var counts = SyntheticArchive.Write(folder.Path, Options with { NotedDates = true });
+
+            Assert.Equal(3, counts.NotedDates);
+            Assert.True(ArchiveValidator.Validate(folder.Path).Passed);
+
+            using var reader = ArchiveReader.Open(folder.Path);
+            Assert.Equal(2, reader.Info.FormatVersion);
+            Assert.True(reader.HasNotedDates);
+            Assert.Empty(reader.ReadYearlyEntries());
+            Assert.Equal(["Our synthetic anniversary", "Invented birthday", "Invented leap day"], reader.ReadNotedDates().Select(d => d.Title).ToList());
+
+            Assert.Throws<ArgumentException>(() => SyntheticArchive.Write(Path.Combine(folder.Path, "x"), Options with { NotedDates = true, YearlyMemories = true }));
         }
 
         [Fact]

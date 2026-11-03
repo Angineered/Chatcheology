@@ -959,13 +959,16 @@ namespace Chatcheology.Archive.Tests
         /// <summary>A writer with participants, messages and both collections written, not completed.</summary>
         /// <param name="photos">The personal entry gets a cover and two extra photos (the second is the game image).</param>
         /// <param name="photoMedia">Whether the extra photo's Media row is written.</param>
-        private static ArchiveWriter Begin(string database, int localItems = 1, bool photos = false, bool photoMedia = true)
+        /// <param name="formatVersion">Version 2 (with noted dates) unless a test asks for another (CH-53).</param>
+        internal static ArchiveWriter Begin(
+            string database, int localItems = 1, bool photos = false, bool photoMedia = true,
+            int formatVersion = ArchiveFormat.NotedDatesFormatVersion)
         {
             var info = ArchiveSample.Info();
 
             var writer = ArchiveWriter.Create(database, new ArchiveInfo
             {
-                FormatVersion = info.FormatVersion,
+                FormatVersion = formatVersion,
                 CreatedUtc = info.CreatedUtc,
                 ProducerVersion = info.ProducerVersion,
                 ConversationTitle = info.ConversationTitle,
@@ -1119,14 +1122,22 @@ namespace Chatcheology.Archive.Tests
             return writer;
         }
 
-        /// <summary>A whole version 2 archive folder with one export message, two collections and links.</summary>
-        private static ArchiveCounts WriteMemoryArchive(string folder, bool photos = false, bool notedDates = false, bool externalLinks = false)
+        /// <summary>
+        /// A whole version 2 archive folder with one export message, two collections and links. With a later
+        /// <paramref name="formatVersion"/> (CH-53) there are no noted dates, and <paramref name="beforeLinks"/> may
+        /// add rows (yearly entries) before the links.
+        /// </summary>
+        internal static ArchiveCounts WriteMemoryArchive(
+            string folder, bool photos = false, bool notedDates = false, bool externalLinks = false,
+            int formatVersion = ArchiveFormat.NotedDatesFormatVersion, Action<ArchiveWriter>? beforeLinks = null)
         {
             ArchiveCounts counts;
 
-            using (var writer = Begin(Path.Combine(folder, ArchiveFormat.DatabaseFileName), photos: photos))
+            using (var writer = Begin(Path.Combine(folder, ArchiveFormat.DatabaseFileName), photos: photos, formatVersion: formatVersion))
             {
-                if (notedDates || externalLinks)
+                beforeLinks?.Invoke(writer);
+
+                if ((notedDates || externalLinks) && formatVersion == ArchiveFormat.NotedDatesFormatVersion)
                 {
                     foreach (var date in NotedDates)
                     {
@@ -1136,7 +1147,7 @@ namespace Chatcheology.Archive.Tests
 
                 if (externalLinks)
                 {
-                    foreach (var link in ExternalLinks)
+                    foreach (var link in ExternalLinks.Where(l => formatVersion == ArchiveFormat.NotedDatesFormatVersion || l.OwnerKind == ExternalLinkOwnerKind.Entry))
                     {
                         writer.WriteExternalLink(link);
                     }
@@ -1198,7 +1209,7 @@ namespace Chatcheology.Archive.Tests
 
             File.WriteAllBytes(
                 Path.Combine(folder, ArchiveFormat.ManifestFileName),
-                new ArchiveManifest(ArchiveManifest.FormatName, ArchiveFormat.FormatVersion, "Synthetic producer 1.0", ArchiveSample.Created, counts).ToBytes());
+                new ArchiveManifest(ArchiveManifest.FormatName, formatVersion, "Synthetic producer 1.0", ArchiveSample.Created, counts).ToBytes());
             File.WriteAllBytes(Path.Combine(folder, ArchiveContents.FileName), ArchiveContents.Build(folder));
 
             return counts;

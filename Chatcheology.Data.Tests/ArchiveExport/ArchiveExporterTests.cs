@@ -825,7 +825,7 @@ namespace Chatcheology.Data.Tests.ArchiveExport
                 }
 
                 Assert.Equal(
-                    ArchiveFormat.TableNamesOf(ArchiveFormat.FormatVersion).Append(ArchiveFormat.EntryImageTableName).Append(ArchiveFormat.NotedDateTableName).Append(ArchiveFormat.ExternalLinkTableName).Order(StringComparer.Ordinal),
+                    ArchiveFormat.TableNamesOf(ArchiveFormat.FormatVersion).Append(ArchiveFormat.EntryImageTableName).Append(ArchiveFormat.ExternalLinkTableName).Order(StringComparer.Ordinal),
                     tables);
             }
 

@@ -78,7 +78,8 @@ namespace Chatcheology.Archive
                 or ArchiveProblemKind.ExternalLinkLabelInvalid
                 or ArchiveProblemKind.ExternalLinkOwnerInvalid
                 or ArchiveProblemKind.ExternalLinkOrdinalsInvalid
-                or ArchiveProblemKind.ExternalLinkTooMany => ArchiveCheck.LinksAndBasis,
+                or ArchiveProblemKind.ExternalLinkTooMany
+                or ArchiveProblemKind.EntryEveryYearInvalid => ArchiveCheck.LinksAndBasis,
 
             ArchiveProblemKind.SequenceNumberInvalid
                 or ArchiveProblemKind.SequenceGap
@@ -596,6 +597,12 @@ namespace Chatcheology.Archive
             CheckNotedDates(reader, record);
             CheckExternalLinks(reader, record);
 
+            // Yearly entries (CH-53, version 3): only a personal entry dated to the day without an end.
+            if (reader.HasEveryYear)
+            {
+                record.AddCount(ArchiveProblemKind.EntryEveryYearInvalid, (int)reader.ReadCount(ArchiveMemoryRules.EntriesEveryYearInvalid));
+            }
+
             return images;
         }
 
@@ -896,6 +903,12 @@ namespace Chatcheology.Archive
 
         /// <summary>Version 2 (CH-48): an entry or a noted date has more than 10 external links.</summary>
         ExternalLinkTooMany,
+
+        /// <summary>
+        /// Version 3 (CH-53): a yearly entry that is not in a personal collection, not dated to the day, or has an
+        /// end date.
+        /// </summary>
+        EntryEveryYearInvalid,
     }
 
     /// <summary>

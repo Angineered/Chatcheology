@@ -277,16 +277,46 @@ namespace Chatcheology.Archive
                 }
             }
 
+            var hasEveryYear = _info.FormatVersion >= ArchiveFormat.FirstVersionWithEveryYear;
+
+            if (entry.EveryYear)
+            {
+                if (!hasEveryYear)
+                {
+                    throw new InvalidOperationException("A yearly entry needs format version 3 or later.");
+                }
+
+                // That its collection is personal is checked in Complete: the collection is another table.
+                if (entry.DatePrecision != "Day" || entry.EndLocal is not null)
+                {
+                    throw new InvalidOperationException(
+                        "Only a personal entry dated to the day without an end date can be yearly.");
+                }
+            }
+
             using (var command = Command(
                        transaction,
-                       """
-                       INSERT INTO Entry (
-                           EntryID, CollectionID, SourceKey, Title, StartLocal, EndLocal, StartUtc, EndUtc,
-                           DatePrecision, Summary, ImageSha256, ImageExtension, Source, DayLevel)
-                       VALUES ($id, $collection, $key, $title, $startLocal, $endLocal, $startUtc, $endUtc,
-                               $precision, $summary, $sha, $extension, $source, $level);
-                       """))
+                       hasEveryYear
+                           ? """
+                             INSERT INTO Entry (
+                                 EntryID, CollectionID, SourceKey, Title, StartLocal, EndLocal, StartUtc, EndUtc,
+                                 DatePrecision, Summary, ImageSha256, ImageExtension, Source, DayLevel, EveryYear)
+                             VALUES ($id, $collection, $key, $title, $startLocal, $endLocal, $startUtc, $endUtc,
+                                     $precision, $summary, $sha, $extension, $source, $level, $everyYear);
+                             """
+                           : """
+                             INSERT INTO Entry (
+                                 EntryID, CollectionID, SourceKey, Title, StartLocal, EndLocal, StartUtc, EndUtc,
+                                 DatePrecision, Summary, ImageSha256, ImageExtension, Source, DayLevel)
+                             VALUES ($id, $collection, $key, $title, $startLocal, $endLocal, $startUtc, $endUtc,
+                                     $precision, $summary, $sha, $extension, $source, $level);
+                             """))
             {
+                if (hasEveryYear)
+                {
+                    command.Parameters.AddWithValue("$everyYear", entry.EveryYear ? 1 : 0);
+                }
+
                 command.Parameters.AddWithValue("$id", entry.EntryID);
                 command.Parameters.AddWithValue("$collection", entry.CollectionID);
                 command.Parameters.AddWithValue("$key", (object?)entry.SourceKey ?? DBNull.Value);
@@ -447,14 +477,21 @@ namespace Chatcheology.Archive
         }
 
         /// <summary>
-        /// Writes one noted date (format version 2, CH-47) as the memories file holds it. Its fields must
-        /// keep <see cref="NotedDateRules"/>, the latest year being the archive's creation year.
+        /// Writes one noted date (format version 2 only, CH-47) as the memories file holds it. Its fields must
+        /// keep <see cref="NotedDateRules"/>, the latest year being the archive's creation year. Version 3 has no
+        /// noted dates (CH-53).
         /// </summary>
-        /// <exception cref="InvalidOperationException">The row breaks a format rule, or the archive is version 1.</exception>
+        /// <exception cref="InvalidOperationException">The row breaks a format rule, or the archive is not version 2.</exception>
         public void WriteNotedDate(ArchiveNotedDate notedDate)
         {
             ArgumentNullException.ThrowIfNull(notedDate);
             var transaction = RequireMemories();
+
+            if (_info.FormatVersion != ArchiveFormat.NotedDatesFormatVersion)
+            {
+                throw new InvalidOperationException(
+                    "Noted dates are written into a version 2 archive only; from version 3 they are yearly memories.");
+            }
 
             var errors = NotedDateRules.Validate(
                 notedDate.Title, notedDate.Month, notedDate.Day, notedDate.Year, notedDate.Note,
@@ -577,8 +614,18 @@ namespace Chatcheology.Archive
                 RequireCount(transaction, ArchiveMemoryRules.DefinitionsUnused, 0,
                     "Only item definitions that an item of the archive uses may be written.");
 
-                RequireCount(transaction, ArchiveMemoryRules.ExternalLinksOwnerInvalid(hasNotedDates: true), 0,
-                    "An external link must belong to a personal entry or a noted date of the archive.");
+                var notedDates = _info.FormatVersion == ArchiveFormat.NotedDatesFormatVersion;
+
+                RequireCount(transaction, ArchiveMemoryRules.ExternalLinksOwnerInvalid(hasNotedDates: notedDates), 0,
+                    notedDates
+                        ? "An external link must belong to a personal entry or a noted date of the archive."
+                        : "An external link must belong to a personal entry of the archive.");
+
+                if (_info.FormatVersion >= ArchiveFormat.FirstVersionWithEveryYear)
+                {
+                    RequireCount(transaction, ArchiveMemoryRules.EntriesEveryYearInvalid, 0,
+                        "Only a personal entry dated to the day without an end date can be yearly.");
+                }
 
                 RequireCount(transaction, ArchiveMemoryRules.ExternalLinkOwnersOrdinalsInvalid, 0,
                     "The external links of an entry or a noted date must be numbered 1, 2, ... without a gap.");
@@ -625,7 +672,9 @@ namespace Chatcheology.Archive
                     EntryLinks = (int)Count(transaction, "SELECT COUNT(*) FROM EntryLink;"),
                     ItemDefinitions = (int)Count(transaction, "SELECT COUNT(*) FROM ItemDefinition;"),
                     EntryImages = (int)Count(transaction, "SELECT COUNT(*) FROM EntryImage;"),
-                    NotedDates = (int)Count(transaction, "SELECT COUNT(*) FROM NotedDate;"),
+                    NotedDates = _info.FormatVersion == ArchiveFormat.NotedDatesFormatVersion
+                        ? (int)Count(transaction, "SELECT COUNT(*) FROM NotedDate;")
+                        : 0,
                     ExternalLinks = (int)Count(transaction, "SELECT COUNT(*) FROM ExternalLink;"),
                     Collections = ReadCollectionCounts(transaction),
                 };
@@ -872,7 +921,7 @@ namespace Chatcheology.Archive
 
         private static void ValidateInfo(ArchiveInfo info)
         {
-            // The current version is what an export writes; version 1 is kept writable so a build can
+            // The current version is what an export writes; versions 1 and 2 are kept writable so a build can
             // prove it still reads what earlier builds wrote.
             if (!ArchiveFormat.IsKnownVersion(info.FormatVersion))
             {
@@ -982,7 +1031,7 @@ namespace Chatcheology.Archive
 
         /// <summary>
         /// Version 2 (CH-47): noted dates. A manifest written before CH-47 has none and reads as 0, matching
-        /// an archive without the <c>NotedDate</c> table.
+        /// an archive without the <c>NotedDate</c> table; a version 3 archive has none (CH-53).
         /// </summary>
         public int NotedDates { get; init; }
 

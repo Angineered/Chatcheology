@@ -48,7 +48,8 @@ namespace Chatcheology.Mobile.Conversation
     /// <para><strong>Memories (CH-42).</strong> An archive with memory collections has them read once at
     /// open (<see cref="Memories"/>), so placing rows, details and memory search read nothing more. Each
     /// collection is a layer, on or off per archive (default: the collection's own), with filters for an
-    /// imported one. Gallery, Starred and On this day stay message-only.</para>
+    /// imported one. Gallery, Starred and On this day stay message-only, except that On this day shows
+    /// yearly memories (CH-53) whatever the layer switches say.</para>
     /// </remarks>
     public sealed class ArchiveSession : IDisposable
     {
@@ -56,6 +57,7 @@ namespace Chatcheology.Mobile.Conversation
         private readonly string _identity;
         private readonly IReadOnlyList<ArchiveNotedDate> _giftedNotedDates;
         private readonly IReadOnlyDictionary<long, IReadOnlyList<GalleryLink>> _giftedNotedDateLinks;
+        private readonly IReadOnlyList<YearlyMemory> _yearly;
         private readonly CancellationTokenSource _closing = new();
         private readonly object _searchLock = new();
         private Task<ConversationSearch>? _search;
@@ -82,6 +84,9 @@ namespace Chatcheology.Mobile.Conversation
                 : GalleryLinks.GroupFromArchive(reader.ReadAllExternalLinks())
                     .Where(pair => pair.Key.Kind == ExternalLinkOwnerKind.NotedDate)
                     .ToDictionary(pair => pair.Key.OwnerID, pair => pair.Value);
+
+            // Yearly memories (CH-53, version 3), read once; a row that breaks the rule is left out.
+            _yearly = YearlyMemories.From(reader.ReadYearlyEntries());
         }
 
         /// <summary>The archive's memories (CH-42), read at open; empty for an archive without any.</summary>
@@ -372,9 +377,30 @@ namespace Chatcheology.Mobile.Conversation
             }
         }
 
-        /// <summary>On this day (CH-39) for <paramref name="days"/> (from <see cref="ReadDays"/>) on <paramref name="today"/>.</summary>
+        /// <summary>
+        /// On this day (CH-39) for <paramref name="days"/> (from <see cref="ReadDays"/>) on <paramref name="today"/>:
+        /// yearly memories (CH-53), noted dates (CH-47) and message years.
+        /// </summary>
         public OnThisDay OnThisDayFor(IEnumerable<DateOnly> days, DateOnly today) =>
-            OnThisDay.For(_settings, _identity, days, today, _giftedNotedDates, _giftedNotedDateLinks);
+            OnThisDay.For(_settings, _identity, days, today, _giftedNotedDates, _giftedNotedDateLinks, _yearly, Memories);
+
+        /// <summary>
+        /// The archive's yearly memories (CH-53) with their mute switches, by title, for Settings. Read from the
+        /// settings each time, so a change shows at once.
+        /// </summary>
+        public IReadOnlyList<YearlyMemoryListing> YearlyMemoryListings => YearlyMemories.List(_settings, _identity, _yearly);
+
+        /// <summary>
+        /// Mutes or unmutes a yearly memory (it stays on the card; muting only stops its notification). Only this
+        /// archive's yearly memories can be muted.
+        /// </summary>
+        public void SetYearlyMemoryMuted(long entryID, bool muted)
+        {
+            if (_yearly.Any(memory => memory.EntryID == entryID))
+            {
+                _settings.SetYearlyMemoryMuted(_identity, entryID, muted);
+            }
+        }
 
         /// <summary>
         /// Every noted date (CH-47) for Settings: the archive's gifted ones, which can only be muted, then the

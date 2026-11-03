@@ -20,7 +20,11 @@ namespace Chatcheology.Android.Pages
         /// <param name="details">What to show.</param>
         /// <param name="showMessage">Opens the conversation at a linked message.</param>
         /// <param name="showEntry">Opens the conversation at a linked entry's row.</param>
-        internal MemoryDetailsPage(MemoryDetails details, Func<int, Task> showMessage, Func<long, Task> showEntry)
+        /// <param name="showInChat">
+        /// Opened from a yearly memory on the On this day card (CH-53): opens the conversation at the memory's day.
+        /// Given only when that day has messages; without it there is no Show in chat.
+        /// </param>
+        internal MemoryDetailsPage(MemoryDetails details, Func<int, Task> showMessage, Func<long, Task> showEntry, Func<Task>? showInChat = null)
         {
             _showMessage = showMessage;
             _showEntry = showEntry;
@@ -53,6 +57,27 @@ namespace Chatcheology.Android.Pages
 
             body.Add(new Label { Text = details.Title, FontSize = 20, FontAttributes = FontAttributes.Bold });
             body.Add(Muted(details.DateText, 14));
+
+            if (showInChat is not null)
+            {
+                var show = new Button { Text = "Show in chat", HorizontalOptions = LayoutOptions.Start };
+                show.Clicked += async (_, _) =>
+                {
+                    try
+                    {
+                        if (Navigation.NavigationStack.LastOrDefault() == this)
+                        {
+                            await showInChat();
+                        }
+                    }
+                    catch (Exception)
+                    {
+                        // A button handler: nothing here may end the app.
+                    }
+                };
+
+                body.Add(show);
+            }
 
             if (details.Summary.Length > 0)
             {

@@ -112,12 +112,13 @@ namespace Chatcheology.Data.Memories.Personal
                 }
 
                 var entries = new Dictionary<long, List<PersonalEntrySummary>>();
+                var everyYear = EveryYearColumn(connection, "e");
 
                 using (var command = connection.CreateCommand())
                 {
                     command.CommandText =
                         $"""
-                        SELECT e.EntryID, e.CollectionID, e.Title, e.StartLocal, e.EndLocal, e.DatePrecision
+                        SELECT e.EntryID, e.CollectionID, e.Title, e.StartLocal, e.EndLocal, e.DatePrecision, {everyYear}
                         FROM Entry e JOIN Collection c ON c.CollectionID = e.CollectionID
                         WHERE c.Kind = '{MemoriesDatabase.KindPersonal}'
                         ORDER BY e.StartLocal, e.EntryID;
@@ -133,7 +134,8 @@ namespace Chatcheology.Data.Memories.Personal
                             reader.GetString(2),
                             Local(reader.GetString(3)),
                             reader.IsDBNull(4) ? null : Local(reader.GetString(4)),
-                            reader.GetString(5));
+                            reader.GetString(5),
+                            reader.GetInt64(6) == 1);
 
                         if (!entries.TryGetValue(summary.CollectionID, out var list))
                         {
@@ -160,8 +162,9 @@ namespace Chatcheology.Data.Memories.Personal
 
             using var command = connection.CreateCommand();
             command.CommandText =
-                """
-                SELECT e.CollectionID, c.Kind, e.Title, e.StartLocal, e.EndLocal, e.DatePrecision, e.Summary, e.Source, e.ImageSha256, m.Extension
+                $"""
+                SELECT e.CollectionID, c.Kind, e.Title, e.StartLocal, e.EndLocal, e.DatePrecision, e.Summary, e.Source, e.ImageSha256, m.Extension,
+                       {EveryYearColumn(connection, "e")}
                 FROM Entry e JOIN Collection c ON c.CollectionID = e.CollectionID
                 LEFT JOIN MediaFile m ON m.Sha256 = e.ImageSha256
                 WHERE e.EntryID = $id;
@@ -204,6 +207,7 @@ namespace Chatcheology.Data.Memories.Personal
                     ImageSha256 = sha,
                     ImagePath = imagePath is not null && File.Exists(imagePath) ? imagePath : null,
                     Links = [],
+                    EveryYear = reader.GetInt64(10) == 1,
                 };
             }
 
@@ -694,8 +698,8 @@ namespace Chatcheology.Data.Memories.Personal
             using var command = Command(transaction,
                 """
                 INSERT INTO Entry (CollectionID, SourceKey, Title, StartLocal, EndLocal, StartUtc, EndUtc,
-                                   DatePrecision, Summary, ImageSha256, ImageSourceUrl, Source, DayLevel)
-                VALUES ($collection, NULL, $title, $start, $end, NULL, NULL, $precision, $summary, $image, NULL, $source, NULL);
+                                   DatePrecision, Summary, ImageSha256, ImageSourceUrl, Source, DayLevel, EveryYear)
+                VALUES ($collection, NULL, $title, $start, $end, NULL, NULL, $precision, $summary, $image, NULL, $source, NULL, $everyYear);
                 SELECT last_insert_rowid();
                 """);
             Bind(command, draft, imageSha);
@@ -708,7 +712,8 @@ namespace Chatcheology.Data.Memories.Personal
             using var command = Command(transaction,
                 """
                 UPDATE Entry SET CollectionID = $collection, Title = $title, StartLocal = $start, EndLocal = $end,
-                                 DatePrecision = $precision, Summary = $summary, ImageSha256 = $image, Source = $source
+                                 DatePrecision = $precision, Summary = $summary, ImageSha256 = $image, Source = $source,
+                                 EveryYear = $everyYear
                 WHERE EntryID = $id;
                 """);
             Bind(command, draft, imageSha);
@@ -732,6 +737,7 @@ namespace Chatcheology.Data.Memories.Personal
             command.Parameters.AddWithValue("$summary", string.IsNullOrEmpty(summary) ? DBNull.Value : summary);
             command.Parameters.AddWithValue("$image", (object?)imageSha ?? DBNull.Value);
             command.Parameters.AddWithValue("$source", draft.Source.Trim());
+            command.Parameters.AddWithValue("$everyYear", draft.EveryYear ? 1 : 0);
         }
 
         /// <summary>Keeps the links the draft still has (same rows), removes the others, adds the new ones in order.</summary>
@@ -935,6 +941,15 @@ namespace Chatcheology.Data.Memories.Personal
         // -----------------------------------------------------------------------------------
         // Plumbing.
         // -----------------------------------------------------------------------------------
+
+        /// <summary>
+        /// The <c>EveryYear</c> column of <paramref name="alias"/> on a format 6 file, or the constant 0 on an older
+        /// one (read-only opens do not upgrade, CH-53).
+        /// </summary>
+        internal static string EveryYearColumn(SqliteConnection connection, string alias) =>
+            MemoriesDatabase.ReadFormatVersion(connection) >= MemoriesDatabase.FirstFormatWithEveryYear
+                ? alias + "." + MemoriesDatabase.EveryYearColumnName
+                : "0";
 
         private static string Describe(string collection, string title, string precision, DateTime start, DateTime? end) =>
             title + ", " + PersonalMemoryRules.DateText(precision, start, end) + " (" + collection + ")";

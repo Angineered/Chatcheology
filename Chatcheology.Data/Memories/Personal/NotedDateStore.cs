@@ -32,8 +32,28 @@ namespace Chatcheology.Data.Memories.Personal
         public string? Note { get; init; }
     }
 
+    /// <summary>One noted date that became a memory (CH-53).</summary>
+    /// <param name="NotedDateID">The noted date it was (now deleted).</param>
+    /// <param name="EntryID">The memory it became.</param>
+    public sealed record NotedDateMoved(long NotedDateID, long EntryID);
+
+    /// <summary>What moving noted dates to memories did (CH-53).</summary>
+    /// <param name="Moved">Noted dates that became yearly memories.</param>
+    /// <param name="LeftWithoutYear">Noted dates without a year, left as they were.</param>
+    /// <param name="CollectionID">The personal collection the memories are in.</param>
+    /// <param name="CollectionCreated">Whether that collection was made by the move (otherwise an existing one was reused).</param>
+    /// <param name="Pairs">Each moved noted date and its memory, in noted-date order.</param>
+    public sealed record NotedDateMoveResult(
+        int Moved, int LeftWithoutYear, long CollectionID, bool CollectionCreated, IReadOnlyList<NotedDateMoved> Pairs)
+    {
+        /// <summary>The name (no folder) of the copy made before the move, such as <c>memories.db.before-CH-53-2</c>.</summary>
+        public string BackupFileName { get; init; } = NotedDateStore.MoveBackupFileName;
+    }
+
     /// <summary>
-    /// Noted dates in the memories file beside the open workspace (CH-47): list, add, update, delete.
+    /// Noted dates in the memories file beside the open workspace (CH-47): list, add, update, delete, and the
+    /// one-off move into yearly memories (CH-53). Since CH-53 the desktop no longer adds noted dates; <see cref="Add"/>
+    /// stays for tests and for files made before.
     /// </summary>
     /// <remarks>
     /// <para><strong>Not memories.</strong> A noted date has no collection, entry or link; only the
@@ -226,6 +246,330 @@ namespace Chatcheology.Data.Memories.Personal
 
             return command.ExecuteNonQuery() == 1 ? 0 : throw Gone();
         });
+
+        // -----------------------------------------------------------------------------------
+        // Moving noted dates to memories (CH-53).
+        // -----------------------------------------------------------------------------------
+
+        /// <summary>
+        /// The name of the copy of the memories file kept beside it before the move (CH-53). When it is taken, the
+        /// first free one of <c>-2</c>, <c>-3</c>, ... after it is used; an existing file is never overwritten.
+        /// </summary>
+        public const string MoveBackupFileName = MemoriesDatabase.FileName + ".before-CH-53";
+
+        /// <summary>The personal collection the moved noted dates go to (CH-53).</summary>
+        public const string MovedCollectionName = "Noted dates";
+
+        /// <summary>The source line of a moved noted date (CH-53).</summary>
+        public const string MovedSource = "Noted date";
+
+        /// <summary>
+        /// Where the next move's copy goes: <see cref="MoveBackupFileName"/> beside the memories file, or the first
+        /// free <c>-2</c>, <c>-3</c>, ... after it.
+        /// </summary>
+        public string NextMoveBackupPath()
+        {
+            var folder = Path.GetDirectoryName(MemoriesPath)!;
+
+            for (var number = 1; ; number++)
+            {
+                var name = number == 1
+                    ? MoveBackupFileName
+                    : MoveBackupFileName + "-" + number.ToString(CultureInfo.InvariantCulture);
+                var path = Path.Combine(folder, name);
+
+                if (!File.Exists(path) && !Directory.Exists(path))
+                {
+                    return path;
+                }
+            }
+        }
+
+        /// <summary>For tests: runs inside the move's transaction after each noted date became a memory.</summary>
+        internal Action<int>? AfterEachMovedForTests { get; set; }
+
+        /// <summary>
+        /// Moves every noted date that has a year into memories, once (CH-53): each becomes a yearly personal memory
+        /// dated to its day in the personal collection <see cref="MovedCollectionName"/>, with its gallery links.
+        /// Noted dates without a year are left as they are and counted.
+        /// </summary>
+        /// <remarks>
+        /// <para><strong>A copy first.</strong> Before anything is written the memories file is copied, byte for
+        /// byte, to <see cref="MoveBackupFileName"/> beside it (or the first free <c>-2</c>, <c>-3</c>, ... name
+        /// after it), under the write lock, so the copy is exactly the file before the move. An existing file is
+        /// never overwritten.</para>
+        /// <para><strong>One transaction.</strong> An older file is upgraded to the current format; the number of
+        /// noted dates must still be <paramref name="confirmedCount"/>; an existing personal collection of that name
+        /// (ignoring case and outer spaces) is reused with its shown-by-default setting, otherwise one is created
+        /// and shown; each moved date becomes an entry (title, local midnight of the day, precision Day, summary =
+        /// note, source <see cref="MovedSource"/>, Every year; no end, times, key, day level or image); its links
+        /// are re-pointed to the entry (same identifiers, order and labels); the moved rows are deleted with plain
+        /// SQL; and no link may remain on a moved date. Any failure rolls everything back and removes the copy
+        /// this call made, so the move can be tried again.</para>
+        /// </remarks>
+        /// <param name="confirmedCount">How many noted dates the operator was told there are (all of them, with or without a year).</param>
+        /// <exception cref="PersonalMemoryValidationException">
+        /// The count changed, or no noted date has a year. Nothing was written.
+        /// </exception>
+        /// <exception cref="FileNotFoundException">There is no memories file.</exception>
+        public NotedDateMoveResult MoveToMemories(int confirmedCount)
+        {
+            if (!FileExists)
+            {
+                throw new FileNotFoundException(
+                    "There is no memories file beside this workspace. Nothing has been created.");
+            }
+
+            string? backup = null;
+            var copied = false;
+
+            try
+            {
+                using var connection = MemoriesDatabase.OpenConnection(MemoriesPath);
+                var version = MemoriesDatabase.ReadFormatVersion(connection);
+
+                // The copy is of the main file alone: in WAL mode saved changes can sit in the -wal file instead.
+                using (var journal = connection.CreateCommand())
+                {
+                    journal.CommandText = "PRAGMA journal_mode;";
+
+                    if (string.Equals(journal.ExecuteScalar() as string, "wal", StringComparison.OrdinalIgnoreCase))
+                    {
+                        throw new PersonalMemoryValidationException(
+                            PersonalFields.NotedDate,
+                            "The memories file is in WAL journal mode, so a copy of it alone could miss saved changes.");
+                    }
+                }
+
+                // Not deferred: the write lock is held from here, so the copy is the file exactly as it was.
+                using var transaction = connection.BeginTransaction(deferred: false);
+
+                var all = version >= MemoriesDatabase.FirstFormatWithNotedDates ? ReadAll(transaction) : [];
+
+                if (all.Count != confirmedCount)
+                {
+                    throw new PersonalMemoryValidationException(
+                        PersonalFields.NotedDate,
+                        "The noted dates changed since you were asked, so nothing was moved. Try again.");
+                }
+
+                var moving = all.Where(d => d.Year is not null).ToList();
+
+                if (moving.Count == 0)
+                {
+                    throw new PersonalMemoryValidationException(
+                        PersonalFields.NotedDate,
+                        "No noted date has a year, so none can become a memory. Give them a year or delete them.");
+                }
+
+                // The first free name; CreateNew in CopyFile still refuses to overwrite one that appeared meanwhile.
+                backup = NextMoveBackupPath();
+                CopyFile(MemoriesPath, backup);
+                copied = true;
+
+                MemoriesDatabase.UpgradeToCurrent(connection, transaction);
+
+                var (collectionID, created) = FindOrCreateCollection(transaction);
+                var moved = new List<(long NotedDateID, long EntryID)>();
+
+                foreach (var date in moving)
+                {
+                    var entryID = InsertMovedEntry(transaction, collectionID, date);
+                    RepointLinks(transaction, date.NotedDateID, entryID);
+                    moved.Add((date.NotedDateID, entryID));
+
+                    AfterEachMovedForTests?.Invoke(moved.Count);
+                }
+
+                using (var delete = Command(transaction, "DELETE FROM NotedDate WHERE NotedDateID = $id;"))
+                {
+                    foreach (var (notedDateID, _) in moved)
+                    {
+                        delete.Parameters.Clear();
+                        delete.Parameters.AddWithValue("$id", notedDateID);
+
+                        if (delete.ExecuteNonQuery() != 1)
+                        {
+                            throw new InvalidOperationException("A noted date being moved could not be removed. Nothing was moved.");
+                        }
+                    }
+                }
+
+                RequireMoveComplete(transaction, moved, all.Count - moving.Count);
+
+                BeforeCommit?.Invoke();
+                transaction.Commit();
+
+                return new NotedDateMoveResult(
+                    moved.Count,
+                    all.Count - moving.Count,
+                    collectionID,
+                    created,
+                    moved.Select(pair => new NotedDateMoved(pair.NotedDateID, pair.EntryID)).ToList())
+                {
+                    BackupFileName = Path.GetFileName(backup),
+                };
+            }
+            catch
+            {
+                // The transaction has rolled back: the copy this call made is of a file that did not change.
+                SqliteConnection.ClearAllPools();
+
+                if (copied && backup is not null && File.Exists(backup))
+                {
+                    File.Delete(backup);
+                }
+
+                throw;
+            }
+            finally
+            {
+                SqliteConnection.ClearAllPools();
+            }
+        }
+
+        private static List<NotedDate> ReadAll(SqliteTransaction transaction)
+        {
+            using var command = Command(transaction,
+                "SELECT NotedDateID, Title, Month, Day, Year, Note FROM NotedDate ORDER BY NotedDateID;");
+
+            var dates = new List<NotedDate>();
+
+            using var reader = command.ExecuteReader();
+
+            while (reader.Read())
+            {
+                dates.Add(new NotedDate(
+                    reader.GetInt64(0),
+                    reader.GetString(1),
+                    reader.GetInt32(2),
+                    reader.GetInt32(3),
+                    reader.IsDBNull(4) ? null : reader.GetInt32(4),
+                    reader.IsDBNull(5) ? null : reader.GetString(5)));
+            }
+
+            return dates;
+        }
+
+        /// <summary>For tests: runs after the copy's file was created, before any byte is copied.</summary>
+        internal Action? AfterCopyCreatedForTests { get; set; }
+
+        /// <summary>
+        /// Copies the file byte for byte to a new file; an existing target is never overwritten. A copy that fails
+        /// part-way is deleted, so no partial copy is ever left under a backup's name.
+        /// </summary>
+        private void CopyFile(string source, string target)
+        {
+            // Shared read and write: SQLite holds the file open on this process's own connection.
+            using var from = new FileStream(source, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            var to = new FileStream(target, FileMode.CreateNew, FileAccess.Write, FileShare.None);
+
+            try
+            {
+                AfterCopyCreatedForTests?.Invoke();
+                from.CopyTo(to);
+                to.Flush(flushToDisk: true);
+                to.Dispose();
+            }
+            catch
+            {
+                to.Dispose();
+                File.Delete(target);
+                throw;
+            }
+        }
+
+        /// <summary>The personal collection named <see cref="MovedCollectionName"/>, matched as names are kept unique, or a new one (shown).</summary>
+        private static (long CollectionID, bool Created) FindOrCreateCollection(SqliteTransaction transaction)
+        {
+            using (var read = Command(transaction, "SELECT CollectionID, Name FROM Collection WHERE Kind = $kind ORDER BY CollectionID;"))
+            {
+                read.Parameters.AddWithValue("$kind", MemoriesDatabase.KindPersonal);
+
+                using var reader = read.ExecuteReader();
+
+                while (reader.Read())
+                {
+                    // Compared here, not in SQL, as PersonalMemoryStore keeps names unique.
+                    if (string.Equals(reader.GetString(1).Trim(), MovedCollectionName, StringComparison.OrdinalIgnoreCase))
+                    {
+                        return (reader.GetInt64(0), false);
+                    }
+                }
+            }
+
+            using var insert = Command(transaction,
+                """
+                INSERT INTO Collection (Kind, Name, SourceDescription, ShownByDefault, PeriodGapMinutes)
+                VALUES ($kind, $name, NULL, 1, NULL);
+                SELECT last_insert_rowid();
+                """);
+            insert.Parameters.AddWithValue("$kind", MemoriesDatabase.KindPersonal);
+            insert.Parameters.AddWithValue("$name", MovedCollectionName);
+
+            return (Convert.ToInt64(insert.ExecuteScalar(), CultureInfo.InvariantCulture), true);
+        }
+
+        /// <summary>The entry a moved noted date becomes: a personal Day entry as the memory form writes one, Every year.</summary>
+        private static long InsertMovedEntry(SqliteTransaction transaction, long collectionID, NotedDate date)
+        {
+            // The NotedDate checks guarantee a real day; a stored value that is not one stops the move here.
+            var day = new DateOnly(date.Year!.Value, date.Month, date.Day);
+
+            using var command = Command(transaction,
+                $"""
+                INSERT INTO Entry (CollectionID, SourceKey, Title, StartLocal, EndLocal, StartUtc, EndUtc,
+                                   DatePrecision, Summary, ImageSha256, ImageSourceUrl, Source, DayLevel, EveryYear)
+                VALUES ($collection, NULL, $title, $start, NULL, NULL, NULL, '{MemoriesDatabase.PrecisionDay}', $summary, NULL, NULL,
+                        $source, NULL, 1);
+                SELECT last_insert_rowid();
+                """);
+            command.Parameters.AddWithValue("$collection", collectionID);
+            command.Parameters.AddWithValue("$title", date.Title);
+            command.Parameters.AddWithValue("$start", MemoriesDatabase.FormatLocal(day.ToDateTime(TimeOnly.MinValue)));
+            command.Parameters.AddWithValue("$summary", (object?)date.Note ?? DBNull.Value);
+            command.Parameters.AddWithValue("$source", MovedSource);
+
+            return Convert.ToInt64(command.ExecuteScalar(), CultureInfo.InvariantCulture);
+        }
+
+        /// <summary>Re-points a noted date's gallery links to the entry it became: same rows, so identifiers, order and labels stay.</summary>
+        private static void RepointLinks(SqliteTransaction transaction, long notedDateID, long entryID)
+        {
+            using var command = Command(transaction,
+                $"""
+                UPDATE ExternalLink SET OwnerKind = '{ExternalLinkRules.OwnerEntry}', OwnerID = $entry
+                WHERE OwnerKind = '{ExternalLinkRules.OwnerNotedDate}' AND OwnerID = $date;
+                """);
+            command.Parameters.AddWithValue("$entry", entryID);
+            command.Parameters.AddWithValue("$date", notedDateID);
+            command.ExecuteNonQuery();
+        }
+
+        /// <summary>The checks before the move commits: nothing left on a moved date, every other date still there.</summary>
+        private static void RequireMoveComplete(SqliteTransaction transaction, IReadOnlyList<(long NotedDateID, long EntryID)> moved, int left)
+        {
+            var ids = "[" + string.Join(",", moved.Select(m => m.NotedDateID.ToString(CultureInfo.InvariantCulture))) + "]";
+
+            using var command = Command(transaction,
+                $"""
+                SELECT
+                    (SELECT COUNT(*) FROM ExternalLink
+                     WHERE OwnerKind = '{ExternalLinkRules.OwnerNotedDate}' AND OwnerID IN (SELECT value FROM json_each($ids))),
+                    (SELECT COUNT(*) FROM NotedDate WHERE NotedDateID IN (SELECT value FROM json_each($ids))),
+                    (SELECT COUNT(*) FROM NotedDate);
+                """);
+            command.Parameters.AddWithValue("$ids", ids);
+
+            using var reader = command.ExecuteReader();
+            reader.Read();
+
+            if (reader.GetInt64(0) != 0 || reader.GetInt64(1) != 0 || reader.GetInt64(2) != left)
+            {
+                throw new InvalidOperationException(
+                    "The move did not leave the memories file as expected, so nothing was moved.");
+            }
+        }
 
         // -----------------------------------------------------------------------------------
         // Plumbing.

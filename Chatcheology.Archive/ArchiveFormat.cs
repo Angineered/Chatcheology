@@ -26,9 +26,17 @@ namespace Chatcheology.Archive
         /// higher than the one it knows. Filling a column the format already has (such as a message's
         /// forwarded status) does not change it. Version 2 adds <c>Message.Source</c>, one
         /// <c>ArchiveInfo</c> period per shown older export, and the memory tables; every version 1
-        /// meaning is unchanged.
+        /// meaning is unchanged. Version 3 (CH-53) adds <c>Entry.EveryYear</c> (yearly memories) and drops the
+        /// <c>NotedDate</c> table: noted dates became yearly memories. An older viewer refuses a version 3 archive
+        /// instead of reading it as one without anniversaries.
         /// </remarks>
-        public const int FormatVersion = 2;
+        public const int FormatVersion = 3;
+
+        /// <summary>The version with noted dates (CH-47), still read and written for tests (CH-53).</summary>
+        public const int NotedDatesFormatVersion = 2;
+
+        /// <summary>The first version with <c>Entry.EveryYear</c> and without <c>NotedDate</c> (CH-53).</summary>
+        public const int FirstVersionWithEveryYear = 3;
 
         /// <summary>The lowest format version this build reads (and can still write, for tests).</summary>
         public const int MinimumFormatVersion = 1;
@@ -83,6 +91,7 @@ namespace Chatcheology.Archive
         /// <summary>
         /// The table of noted dates (CH-47). Written into every version 2 archive, but not required, like
         /// <see cref="EntryImageTableName"/>: a version 2 archive without it reads as having no noted dates.
+        /// Version 3 has no such table (CH-53); one found there is not read.
         /// </summary>
         public const string NotedDateTableName = "NotedDate";
 
@@ -98,7 +107,7 @@ namespace Chatcheology.Archive
         public static IReadOnlyList<string> TableNamesOf(int formatVersion) => formatVersion switch
         {
             1 => TableNames,
-            2 => [.. TableNames, .. MemoryTableNames],
+            2 or 3 => [.. TableNames, .. MemoryTableNames],
             _ => throw new ArgumentOutOfRangeException(nameof(formatVersion), formatVersion, "Not a format version this build knows."),
         };
 

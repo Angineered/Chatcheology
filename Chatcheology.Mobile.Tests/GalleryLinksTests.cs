@@ -456,7 +456,7 @@ namespace Chatcheology.Mobile.Tests
             var grouped = GalleryLinks.GroupFromArchive(reader.ReadAllExternalLinks());
 
             Assert.Equal("2 galleries", GalleryLinks.Summary(grouped[(ExternalLinkOwnerKind.Entry, 10)]));
-            Assert.Equal("Gallery · example.org", GalleryLinks.Summary(grouped[(ExternalLinkOwnerKind.NotedDate, 1)]));
+            Assert.Equal("Gallery · example.org", GalleryLinks.Summary(grouped[(ExternalLinkOwnerKind.Entry, 501)]));
         }
 
         [Fact]

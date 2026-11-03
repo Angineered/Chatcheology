@@ -346,7 +346,7 @@ namespace Chatcheology.Tools.MemoryImport.Tests
             Assert.Equal(string.Empty, error);
             Assert.Equal(
                 "Dry run: nothing is written.\n" +
-                "Memories file format: 5\n" +
+                "Memories file format: 6\n" +
                 "Sets: 2\n" +
                 "Definitions: 4\n" +
                 "  hidden: 1\n" +
@@ -422,6 +422,9 @@ namespace Chatcheology.Tools.MemoryImport.Tests
                     DROP TABLE EntryImage;
                     DROP TABLE NotedDate;
                     DROP TABLE ExternalLink;
+                    DROP TRIGGER Entry_EveryYear_Insert;
+                    DROP TRIGGER Entry_EveryYear_Update;
+                    ALTER TABLE Entry DROP COLUMN EveryYear;
                     """;
                 command.ExecuteNonQuery();
             }
@@ -429,21 +432,38 @@ namespace Chatcheology.Tools.MemoryImport.Tests
             SqliteConnection.ClearAllPools();
 
             var (_, dry, _) = Run("psn-enrich-dry-run", "--workspace-folder", _workspace, DefinitionsFile());
-            Assert.Contains("The memories file is format 1; psn-enrich upgrades it to 5.\n", Lines(dry), StringComparison.Ordinal);
+            Assert.Contains("The memories file is format 1; psn-enrich upgrades it to 6.\n", Lines(dry), StringComparison.Ordinal);
             Assert.Contains("Changes: 5\n", Lines(dry), StringComparison.Ordinal);
 
             var (code, output, _) = Run("psn-enrich", "--workspace-folder", _workspace, DefinitionsFile());
 
             Assert.Equal(0, code);
-            Assert.Contains("Upgraded the memories file from format 1 to 5.\n", Lines(output), StringComparison.Ordinal);
+            Assert.Contains("Upgraded the memories file from format 1 to 6.\n", Lines(output), StringComparison.Ordinal);
             Assert.Contains("Changes: 5\n", Lines(output), StringComparison.Ordinal);
-            Assert.Equal(5, Scalar("SELECT FormatVersion FROM MemoriesInfo;"));
+            Assert.Equal(6, Scalar("SELECT FormatVersion FROM MemoriesInfo;"));
         }
 
         [Fact]
-        public void ImportEnrichAndFetch_OnACurrentFile_KeepTheNotedDatesAndExternalLinks()
+        public void ImportEnrichAndFetch_OnACurrentFile_KeepTheNotedDatesExternalLinksAndYearlyMemories()
         {
             ImportStandard();
+
+            // CH-53: a personal yearly memory (format 6) keeps its Every year through import, enrich and fetch.
+            using (var connection = new SqliteConnection($"Data Source={MemoriesPath}"))
+            {
+                connection.Open();
+                using var command = connection.CreateCommand();
+                command.CommandText =
+                    """
+                    INSERT INTO Collection (Kind, Name, SourceDescription, ShownByDefault, PeriodGapMinutes) VALUES ('Personal', 'Noted dates', NULL, 1, NULL);
+                    INSERT INTO Entry (CollectionID, Title, StartLocal, DatePrecision, Source, EveryYear)
+                    VALUES (last_insert_rowid(), 'Invented yearly day', '2019-02-14T00:00:00', 'Day', 'Noted date', 1);
+                    """;
+                command.ExecuteNonQuery();
+            }
+
+            SqliteConnection.ClearAllPools();
+
             var store = new Chatcheology.Data.Memories.Personal.NotedDateStore(MemoriesPath);
             var dated = store.Add(new() { Title = "Invented anniversary", Month = 2, Day = 14, Year = 2019, Note = "An invented note" }, false, Now);
             store.Add(new() { Title = "Leap day", Month = 2, Day = 29 }, false, Now);
@@ -462,7 +482,8 @@ namespace Chatcheology.Tools.MemoryImport.Tests
             Assert.Equal(2, before.Count);
             Assert.Equal(linksBefore, links.ReadForNotedDate(dated));
             Assert.Equal(2, linksBefore.Count);
-            Assert.Equal(5, Scalar("SELECT FormatVersion FROM MemoriesInfo;"));
+            Assert.Equal(6, Scalar("SELECT FormatVersion FROM MemoriesInfo;"));
+            Assert.Equal(1, Scalar("SELECT COUNT(*) FROM Entry WHERE EveryYear = 1 AND Title = 'Invented yearly day';"));
         }
 
         [Fact]

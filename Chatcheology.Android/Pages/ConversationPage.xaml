@@ -220,6 +220,8 @@
             </Border.Shadow>
             <Grid ColumnDefinitions="*,Auto" ColumnSpacing="4">
                 <VerticalStackLayout Spacing="2">
+                    <!-- CH-53: today's yearly memories first, one row each with its cover thumbnail and gallery chip. -->
+                    <VerticalStackLayout x:Name="OnThisDayYearly" Spacing="0" />
                     <!-- CH-47: today's noted dates, one row each, before the message years. -->
                     <VerticalStackLayout x:Name="OnThisDayNoted" Spacing="0" />
                     <FlexLayout x:Name="OnThisDayYears" Wrap="Wrap" AlignItems="Center" />

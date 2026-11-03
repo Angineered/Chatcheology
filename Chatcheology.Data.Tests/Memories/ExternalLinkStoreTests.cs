@@ -38,12 +38,11 @@ namespace Chatcheology.Data.Tests.Memories
         // ---------------------------------------------------------------------------------------
 
         [Fact]
-        public void ANewFile_IsFormatFive_WithTheExternalLinkTable()
+        public void ANewFile_HasTheExternalLinkTable()
         {
             _folder.CreateMemories();
 
-            Assert.Equal(5, MemoriesDatabase.CurrentFormatVersion);
-            Assert.Equal(5, _folder.Scalar("SELECT FormatVersion FROM MemoriesInfo;"));
+            Assert.Equal(MemoriesDatabase.CurrentFormatVersion, _folder.Scalar("SELECT FormatVersion FROM MemoriesInfo;"));
             Assert.Equal(1, _folder.Scalar("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'ExternalLink';"));
             Assert.Equal(2, _folder.Scalar("SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger' AND tbl_name = 'ExternalLink';"));
         }
@@ -82,7 +81,7 @@ namespace Chatcheology.Data.Tests.Memories
             // The first write upgrades, in the same transaction, keeping every row.
             _links.ReplaceForEntry(7, [Link("a", "Day 1")]);
 
-            Assert.Equal(5, _folder.Scalar("SELECT FormatVersion FROM MemoriesInfo;"));
+            Assert.Equal(MemoriesDatabase.CurrentFormatVersion, _folder.Scalar("SELECT FormatVersion FROM MemoriesInfo;"));
             Assert.Equal(1, _folder.Scalar("SELECT COUNT(*) FROM sqlite_master WHERE name = 'ExternalLink';"));
             Assert.Equal(1, _folder.Scalar("SELECT COUNT(*) FROM sqlite_master WHERE name = 'NotedDate';"));
             Assert.Equal(1, _folder.Scalar("SELECT COUNT(*) FROM sqlite_master WHERE name = 'EntryImage';"));
@@ -98,7 +97,7 @@ namespace Chatcheology.Data.Tests.Memories
             CreateOlder(4);
             _dates.Add(new NotedDateDraft { Title = "Invented anniversary", Month = 2, Day = 14 }, false, Now);
 
-            Assert.Equal(5, _folder.Scalar("SELECT FormatVersion FROM MemoriesInfo;"));
+            Assert.Equal(MemoriesDatabase.CurrentFormatVersion, _folder.Scalar("SELECT FormatVersion FROM MemoriesInfo;"));
             Assert.Equal(1, _folder.Scalar("SELECT COUNT(*) FROM sqlite_master WHERE name = 'ExternalLink';"));
 
             SqliteConnection.ClearAllPools();
@@ -106,7 +105,7 @@ namespace Chatcheology.Data.Tests.Memories
             CreateOlder(4);
             _memories.RenameCollection(_memories.CreateCollection("Holidays", false, Now), "Trips");
 
-            Assert.Equal(5, _folder.Scalar("SELECT FormatVersion FROM MemoriesInfo;"));
+            Assert.Equal(MemoriesDatabase.CurrentFormatVersion, _folder.Scalar("SELECT FormatVersion FROM MemoriesInfo;"));
         }
 
         [Fact]
@@ -159,7 +158,7 @@ namespace Chatcheology.Data.Tests.Memories
 
             Assert.Equal(3, rows.Count);
             Assert.Equal(rows, Rows());
-            Assert.Equal(5, _folder.Scalar("SELECT FormatVersion FROM MemoriesInfo;"));
+            Assert.Equal(MemoriesDatabase.CurrentFormatVersion, _folder.Scalar("SELECT FormatVersion FROM MemoriesInfo;"));
         }
 
         // ---------------------------------------------------------------------------------------
@@ -490,6 +489,7 @@ namespace Chatcheology.Data.Tests.Memories
                 while (reader.Read())
                 {
                     var values = Enumerable.Range(0, reader.FieldCount)
+                        .Where(i => reader.GetName(i) != "EveryYear") // CH-53: format 6 adds it; checked on its own
                         .Select(i => reader.IsDBNull(i) ? "<null>" : Convert.ToString(reader.GetValue(i), System.Globalization.CultureInfo.InvariantCulture));
                     rows.Add(table + "|" + string.Join("|", values));
                 }

@@ -33,14 +33,26 @@ namespace Chatcheology.Mobile.Conversation
         private readonly string _identity;
 
         private OnThisDay(
-            ArchiveSettings settings, string identity, DateOnly today, IReadOnlyList<OnThisDayYear> years, IReadOnlyList<NotedToday> noted)
+            ArchiveSettings settings,
+            string identity,
+            DateOnly today,
+            IReadOnlyList<OnThisDayYear> years,
+            IReadOnlyList<NotedToday> noted,
+            IReadOnlyList<YearlyToday> yearly)
         {
             _settings = settings;
             _identity = identity;
             Today = today;
             Years = years;
             Noted = noted;
+            Yearly = yearly;
         }
+
+        /// <summary>
+        /// Today's yearly memories (CH-53), by title; they come first, before the noted dates and the message
+        /// years, and turn the card on by themselves. Shown whatever the memory layer switches say.
+        /// </summary>
+        public IReadOnlyList<YearlyToday> Yearly { get; }
 
         /// <summary>
         /// Today's noted dates (CH-47), gifted and own, by title; they come before the message years and
@@ -57,8 +69,8 @@ namespace Chatcheology.Mobile.Conversation
         /// <summary>Whether On this day is on for the archive (Settings).</summary>
         public bool IsEnabled => _settings.GetOnThisDayEnabled(_identity);
 
-        /// <summary>Whether the top-bar icon is shown: on, and a noted date or at least one year matches.</summary>
-        public bool ShowsIcon => IsEnabled && (Years.Count > 0 || Noted.Count > 0);
+        /// <summary>Whether the top-bar icon is shown: on, and a yearly memory, a noted date or at least one year matches.</summary>
+        public bool ShowsIcon => IsEnabled && (Years.Count > 0 || Noted.Count > 0 || Yearly.Count > 0);
 
         /// <summary>Whether the card opens by itself now: the icon is shown and it has not been shown today.</summary>
         public bool OpensByItself => ShowsIcon && _settings.GetOnThisDayShown(_identity) != Today;
@@ -71,25 +83,33 @@ namespace Chatcheology.Mobile.Conversation
         /// <paramref name="gifted"/> are the archive's own noted dates (none for an archive without any); the
         /// phone's own are read from <paramref name="settings"/>.
         /// </summary>
-        /// <remarks><paramref name="giftedLinks"/> are the gifted dates' gallery links (CH-48) by identifier, or none.</remarks>
+        /// <remarks>
+        /// <paramref name="giftedLinks"/> are the gifted dates' gallery links (CH-48) by identifier, or none.
+        /// <paramref name="yearly"/> are the archive's yearly memories (CH-53, none before version 3), and
+        /// <paramref name="memories"/> the memory index their thumbnails and gallery links come from.
+        /// </remarks>
         public static OnThisDay For(
             ArchiveSettings settings,
             string contentsSha256,
             IEnumerable<DateOnly> days,
             DateOnly today,
             IEnumerable<ArchiveNotedDate>? gifted = null,
-            IReadOnlyDictionary<long, IReadOnlyList<Memories.GalleryLink>>? giftedLinks = null)
+            IReadOnlyDictionary<long, IReadOnlyList<Memories.GalleryLink>>? giftedLinks = null,
+            IEnumerable<YearlyMemory>? yearly = null,
+            Memories.MemoryIndex? memories = null)
         {
             ArgumentNullException.ThrowIfNull(settings);
             ArgumentException.ThrowIfNullOrWhiteSpace(contentsSha256);
 
             var dayList = days as IReadOnlyCollection<DateOnly> ?? days.ToList();
+            var daySet = dayList.ToHashSet();
             var noted = NotedDates.For(
                 NotedDates.List(settings, contentsSha256, gifted ?? [], giftedLinks),
-                dayList.ToHashSet(),
+                daySet,
                 today);
 
-            return new OnThisDay(settings, contentsSha256, today, Find(dayList, today), noted);
+            return new OnThisDay(
+                settings, contentsSha256, today, Find(dayList, today), noted, YearlyMemories.For(yearly ?? [], daySet, today, memories));
         }
 
         /// <summary>Records that the card was shown today, so it does not open by itself again until tomorrow.</summary>

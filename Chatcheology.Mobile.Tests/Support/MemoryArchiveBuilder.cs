@@ -221,6 +221,36 @@ namespace Chatcheology.Mobile.Tests.Support
             });
         }
 
+        /// <summary>
+        /// Adds a yearly memory (CH-53, version 3) to the personal collection, as the desktop's move writes one: a
+        /// Day entry without an end, Every year on; with a cover photo and extra photos when asked.
+        /// </summary>
+        internal void Yearly(long entryID, string title, DateOnly day, bool image = false, params string?[] photoCaptions)
+        {
+            Memory(entryID, title, day.ToDateTime(TimeOnly.MinValue), image: image, photoCaptions: photoCaptions);
+
+            var memory = _entries[^1];
+            _entries[^1] = new ArchiveEntry
+            {
+                EntryID = memory.EntryID,
+                CollectionID = memory.CollectionID,
+                SourceKey = null,
+                Title = memory.Title,
+                StartLocal = memory.StartLocal,
+                EndLocal = null,
+                StartUtc = null,
+                EndUtc = null,
+                DatePrecision = "Day",
+                Summary = null,
+                ImageSha256 = memory.ImageSha256,
+                ImageExtension = memory.ImageExtension,
+                Source = "Noted date",
+                DayLevel = null,
+                Images = memory.Images,
+                EveryYear = true,
+            };
+        }
+
         /// <summary>Adds a definition for (set, item), with an icon when asked.</summary>
         internal void Definition(string setId, string itemId, string? name, bool hidden = false, bool icon = false, string? detail = null)
         {
@@ -266,6 +296,17 @@ namespace Chatcheology.Mobile.Tests.Support
                 Label = label,
             });
 
+        /// <summary>
+        /// The format version to write; by default version 2 when there are gifted noted dates (only version 2
+        /// carries them, CH-53), otherwise the current one.
+        /// </summary>
+        internal int? FormatVersion { get; set; }
+
+        private int Version =>
+            FormatVersion ?? (_notedDates.Count > 0 || _externalLinks.Any(l => l.OwnerKind == ExternalLinkOwnerKind.NotedDate)
+                ? ArchiveFormat.NotedDatesFormatVersion
+                : ArchiveFormat.FormatVersion);
+
         /// <summary>Writes the archive into <paramref name="folder"/>: database, media, manifest, contents list.</summary>
         internal string Write(string folder)
         {
@@ -277,7 +318,7 @@ namespace Chatcheology.Mobile.Tests.Support
 
             using (var writer = ArchiveWriter.Create(Path.Combine(folder, ArchiveFormat.DatabaseFileName), new ArchiveInfo
             {
-                FormatVersion = ArchiveFormat.FormatVersion,
+                FormatVersion = Version,
                 CreatedUtc = created,
                 ProducerVersion = "Memory test builder 1.0",
                 ConversationTitle = "Alex and Sam",
@@ -358,7 +399,7 @@ namespace Chatcheology.Mobile.Tests.Support
 
             File.WriteAllBytes(
                 Path.Combine(folder, ArchiveFormat.ManifestFileName),
-                new ArchiveManifest(ArchiveManifest.FormatName, ArchiveFormat.FormatVersion, "Memory test builder 1.0", created, counts).ToBytes());
+                new ArchiveManifest(ArchiveManifest.FormatName, Version, "Memory test builder 1.0", created, counts).ToBytes());
             File.WriteAllBytes(Path.Combine(folder, ArchiveContents.FileName), ArchiveContents.Build(folder));
 
             return folder;

@@ -47,6 +47,9 @@ namespace Chatcheology.Desktop.ViewModels
         /// <summary>Asks before a noted date is deleted (CH-47). True to delete it.</summary>
         public Func<string, bool> ConfirmDeleteNotedDate { get; init; } = _ => false;
 
+        /// <summary>Asks before the noted dates are moved to memories (CH-53). True to move them.</summary>
+        public Func<string, bool> ConfirmMoveNotedDates { get; init; } = _ => false;
+
         /// <summary>The files to add, from <see cref="ChooseImages"/> or else <see cref="ChooseImage"/>.</summary>
         internal IReadOnlyList<string> ChooseImageFiles() =>
             ChooseImages is { } many ? many() ?? [] : ChooseImage() is { } one ? [one] : [];
@@ -163,7 +166,7 @@ namespace Chatcheology.Desktop.ViewModels
             DeleteEntryCommand = new AsyncRelayCommand(DeleteEntryAsync, () => CanWrite() && SelectedEntry is not null);
             DeleteCollectionCommand = new AsyncRelayCommand(DeleteCollectionAsync, () => CanWrite() && SelectedCollection is not null);
             TidyImagesCommand = new AsyncRelayCommand(TidyImagesAsync, () => CanWrite() && FileExists);
-            NewNotedDateCommand = new RelayCommand(NewNotedDate, CanWrite);
+            MoveNotedDatesCommand = new AsyncRelayCommand(MoveNotedDatesAsync, () => CanWrite() && NotedDatesWithYear > 0);
             EditNotedDateCommand = new RelayCommand(EditNotedDate, () => CanWrite() && SelectedNotedDate is not null);
             DeleteNotedDateCommand = new AsyncRelayCommand(DeleteNotedDateAsync, () => CanWrite() && SelectedNotedDate is not null);
         }
@@ -412,7 +415,7 @@ namespace Chatcheology.Desktop.ViewModels
             DeleteEntryCommand.RaiseCanExecuteChanged();
             DeleteCollectionCommand.RaiseCanExecuteChanged();
             TidyImagesCommand.RaiseCanExecuteChanged();
-            NewNotedDateCommand.RaiseCanExecuteChanged();
+            MoveNotedDatesCommand.RaiseCanExecuteChanged();
             EditNotedDateCommand.RaiseCanExecuteChanged();
             DeleteNotedDateCommand.RaiseCanExecuteChanged();
             Form?.RaiseCommandStates();
@@ -430,6 +433,7 @@ namespace Chatcheology.Desktop.ViewModels
             Form = null;
             NotedForm = null;
             NotedDates.Clear();
+            OnNotedDatesChanged();
             _selectedNotedDate = null;
             OnPropertyChanged(nameof(SelectedNotedDate));
             IsOpen = false;

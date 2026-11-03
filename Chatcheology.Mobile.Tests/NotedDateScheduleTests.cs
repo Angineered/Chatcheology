@@ -329,7 +329,7 @@ namespace Chatcheology.Mobile.Tests
             // The day posted is read per archive.
             settings.SetNotedDatesPostedThrough(firstHash, new DateOnly(2026, 4, 4));
             Assert.Equal([secondHash], NotedDateSchedule.DueOn(NotedDateSchedule.Read(library, settings), new DateOnly(2026, 4, 4)).Select(d => d.ContentsSha256).ToList());
-            Assert.Equal("archives=2 notedDates=4 notifying=3 scheduled=yes", NotedDateSchedule.DescribeCounts(archives, NotedDateSchedule.Next(archives, Nine, At(2026, 4, 1))));
+            Assert.Equal("archives=2 notedDates=4 yearly=0 notifying=3 scheduled=yes", NotedDateSchedule.DescribeCounts(archives, NotedDateSchedule.Next(archives, Nine, At(2026, 4, 1))));
 
             // On this day off for the empty archive: it is left out.
             settings.SetOnThisDayEnabled(secondHash, false);

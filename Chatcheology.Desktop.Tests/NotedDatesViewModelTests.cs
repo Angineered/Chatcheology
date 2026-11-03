@@ -7,19 +7,20 @@ using Microsoft.Data.Sqlite;
 namespace Chatcheology.Desktop.Tests
 {
     /// <summary>
-    /// The Noted dates section of the Memories area (CH-47 step 1b): list order, add, edit, delete, the
-    /// form's validation, the first-create confirmation, and the area's busy and closing behaviour. Invented
-    /// titles and dates, a synthetic workspace, the real store.
+    /// The Noted dates section of the Memories area (CH-47 step 1b, reduced by CH-53): list order, edit, delete, the
+    /// form's validation, no add, the move to yearly memories with its confirmation, the section gone when none
+    /// remain, and the area's busy and closing behaviour. Invented titles and dates, a synthetic workspace, the real
+    /// store.
     /// </summary>
     public sealed class NotedDatesViewModelTests : IDisposable
     {
         private static readonly DateTime Now = new(2026, 10, 28, 9, 0, 0, DateTimeKind.Utc);
 
         private readonly ArchiveTestWorkspace _workspace = new();
-        private readonly List<string> _createAsked = [];
         private readonly List<string> _deleteAsked = [];
-        private bool _confirmCreate = true;
+        private readonly List<string> _moveAsked = [];
         private bool _confirmDelete = true;
+        private bool _confirmMove = true;
         private bool _blocked;
 
         public void Dispose()
@@ -36,15 +37,16 @@ namespace Chatcheology.Desktop.Tests
         {
             ChooseImage = () => null,
             ConfirmDelete = _ => false,
-            ConfirmCreateFile = text =>
-            {
-                _createAsked.Add(text);
-                return _confirmCreate;
-            },
+            ConfirmCreateFile = _ => true,
             ConfirmDeleteNotedDate = text =>
             {
                 _deleteAsked.Add(text);
                 return _confirmDelete;
+            },
+            ConfirmMoveNotedDates = text =>
+            {
+                _moveAsked.Add(text);
+                return _confirmMove;
             },
         };
 
@@ -74,16 +76,6 @@ namespace Chatcheology.Desktop.Tests
             SqliteConnection.ClearAllPools();
         }
 
-        private static async Task FillAsync(NotedDateFormViewModel form, string title, string day, int month, string year = "", string note = "")
-        {
-            form.Title = title;
-            form.DayText = day;
-            form.SelectedMonth = form.Months[month - 1];
-            form.YearText = year;
-            form.Note = note;
-            await Task.CompletedTask;
-        }
-
         private static async Task SaveAsync(MemoriesViewModel memories)
         {
             var form = memories.NotedForm!;
@@ -93,6 +85,17 @@ namespace Chatcheology.Desktop.Tests
             await MemoriesViewModelTests.WaitUntil(() => !form.IsSaving && !form.SaveCommand.IsRunning);
             await memories.AfterNotedSave;
             await MemoriesViewModelTests.WaitUntil(() => !memories.IsBusy);
+        }
+
+        private static async Task RunAsync(AsyncRelayCommand command, MemoriesViewModel memories) =>
+            await MemoriesViewModelTests.Run(command, memories);
+
+        private static NotedDateFormViewModel Edit(MemoriesViewModel memories, int index = 0)
+        {
+            memories.SelectedNotedDate = memories.NotedDates[index];
+            memories.EditNotedDateCommand.Execute(null);
+
+            return memories.NotedForm!;
         }
 
         [Fact]
@@ -112,77 +115,31 @@ namespace Chatcheology.Desktop.Tests
             Assert.Equal("14 Feb", memories.NotedDates[1].DateText);
             Assert.Equal(string.Empty, memories.NotedDates[1].SinceText);
             Assert.Equal("since 2019", memories.NotedDates[2].SinceText);
+
+            Assert.True(memories.HasNotedDates);
+            Assert.Equal(2, memories.NotedDatesWithYear);
+            Assert.Contains("2 noted dates have no year and cannot be moved", memories.NotedDatesText, StringComparison.Ordinal);
         }
 
         [Fact]
-        public async Task WithNoFile_TheListIsEmpty_AndNothingIsCreatedByOpening()
+        public async Task WithNoNotedDates_TheSectionIsGone_AndThereIsNoAdd()
         {
             var memories = await OpenAsync();
 
             Assert.Empty(memories.NotedDates);
+            Assert.False(memories.HasNotedDates);
+            Assert.False(memories.MoveNotedDatesCommand.CanExecute(null));
             Assert.False(File.Exists(MemoriesPath));
-            Assert.True(memories.NewNotedDateCommand.CanExecute(null));
+            Assert.Null(typeof(MemoriesViewModel).GetProperty("NewNotedDateCommand"));
         }
 
         [Fact]
-        public async Task TheFirstNotedDate_AsksBeforeCreatingTheFile_AndCancelCreatesNothing()
-        {
-            var memories = await OpenAsync();
-
-            memories.NewNotedDateCommand.Execute(null);
-            var form = Assert.IsType<NotedDateFormViewModel>(memories.NotedForm);
-            Assert.True(form.IsNew);
-            Assert.Equal("New noted date", form.Heading);
-            Assert.False(memories.IsListShown);
-
-            await FillAsync(form, "Our anniversary", "14", 2, "2019");
-
-            _confirmCreate = false;
-            form.SaveCommand.Execute(null);
-            await MemoriesViewModelTests.WaitUntil(() => !form.SaveCommand.IsRunning);
-
-            Assert.Single(_createAsked);
-            Assert.Equal("Nothing was created.", form.FormError);
-            Assert.False(File.Exists(MemoriesPath));
-            Assert.Same(form, memories.NotedForm);
-            Assert.False(memories.IsWriting);
-
-            // Cancel: the form closes and still nothing exists.
-            form.CancelCommand.Execute(null);
-            Assert.Null(memories.NotedForm);
-            Assert.True(memories.IsListShown);
-            Assert.False(File.Exists(MemoriesPath));
-
-            // Now say yes.
-            _confirmCreate = true;
-            memories.NewNotedDateCommand.Execute(null);
-            await FillAsync(memories.NotedForm!, "Our anniversary", "14", 2, "2019");
-            await SaveAsync(memories);
-
-            Assert.Equal(2, _createAsked.Count);
-            Assert.True(File.Exists(MemoriesPath));
-            Assert.Equal("14 Feb: Our anniversary, since 2019", Assert.Single(memories.NotedDates).DisplayText);
-            Assert.Equal("Noted date saved.", memories.StatusText);
-            Assert.Null(memories.NotedForm);
-
-            // Once the file exists, nobody is asked again.
-            memories.NewNotedDateCommand.Execute(null);
-            await FillAsync(memories.NotedForm!, "Second", "1", 1);
-            await SaveAsync(memories);
-            Assert.Equal(2, _createAsked.Count);
-            Assert.Equal(2, memories.NotedDates.Count);
-        }
-
-        [Fact]
-        public async Task EditAndDelete_ChangeTheSelectedDate()
+        public async Task EditAndDelete_ChangeTheSelectedDate_AndTheLastDeleteRemovesTheSection()
         {
             Seed(Draft("Our anniversary", 2, 14, 2019, "First note."), Draft("Birthday", 6, 1));
             var memories = await OpenAsync();
 
-            memories.SelectedNotedDate = memories.NotedDates[0];
-            memories.EditNotedDateCommand.Execute(null);
-
-            var form = Assert.IsType<NotedDateFormViewModel>(memories.NotedForm);
+            var form = Edit(memories);
             Assert.False(form.IsNew);
             Assert.Equal("Edit noted date", form.Heading);
             Assert.Equal("Our anniversary", form.Title);
@@ -200,6 +157,7 @@ namespace Chatcheology.Desktop.Tests
             Assert.Equal("15 Feb: Our big day", edited.DisplayText);
             Assert.Equal(edited.NotedDateID, memories.SelectedNotedDate?.NotedDateID);
             Assert.Equal(2, memories.NotedDates.Count);
+            Assert.Equal("Noted date saved.", memories.StatusText);
 
             // Delete asks; declining keeps it.
             _confirmDelete = false;
@@ -215,50 +173,42 @@ namespace Chatcheology.Desktop.Tests
             Assert.Equal("1 Jun: Birthday", Assert.Single(memories.NotedDates).DisplayText);
             Assert.Null(memories.SelectedNotedDate);
             Assert.Single(Store.List());
-        }
 
-        private static async Task RunAsync(AsyncRelayCommand command, MemoriesViewModel memories) =>
-            await MemoriesViewModelTests.Run(command, memories);
+            memories.SelectedNotedDate = memories.NotedDates[0];
+            await RunAsync(memories.DeleteNotedDateCommand, memories);
+
+            Assert.Empty(memories.NotedDates);
+            Assert.False(memories.HasNotedDates);
+        }
 
         [Fact]
         public async Task SavingAnIncompleteForm_ShowsEveryProblem_AndWritesNothing()
         {
+            Seed(Draft("Our anniversary", 2, 14, 2019));
             var memories = await OpenAsync();
-            memories.NewNotedDateCommand.Execute(null);
-            var form = memories.NotedForm!;
+            var form = Edit(memories);
 
-            form.Title = "Only a title";
-            Assert.Equal(string.Empty, form.DateError);
+            form.Title = string.Empty;
+            form.SelectedMonth = null;
             Assert.True(form.SaveCommand.CanExecute(null));
 
-            await SaveFormAsync(form);
+            form.SaveCommand.Execute(null);
+            await MemoriesViewModelTests.WaitUntil(() => !form.IsSaving && !form.SaveCommand.IsRunning);
 
+            Assert.Equal("Give the date a title.", form.TitleError);
             Assert.Equal("Choose a month.", form.DateError);
-            Assert.Empty(_createAsked);
-            Assert.False(File.Exists(MemoriesPath));
             Assert.Same(form, memories.NotedForm);
-
-            // Every field shows once Save was tried.
-            memories.NewNotedDateCommand.RaiseCanExecuteChanged();
-            form.CancelCommand.Execute(null);
-            memories.NewNotedDateCommand.Execute(null);
-            var second = memories.NotedForm!;
-            await SaveFormAsync(second);
-
-            Assert.Equal("Give the date a title.", second.TitleError);
-            Assert.Equal("Choose a month.", second.DateError);
-            Assert.Empty(_createAsked);
-            Assert.False(File.Exists(MemoriesPath));
+            Assert.Equal("Our anniversary", Assert.Single(Store.List()).Title);
         }
 
         [Fact]
         public async Task TheForm_ShowsEachProblemOnItsField_AndSaveStaysAvailable()
         {
+            Seed(Draft("Our anniversary", 2, 14));
             var memories = await OpenAsync();
-            memories.NewNotedDateCommand.Execute(null);
-            var form = memories.NotedForm!;
+            var form = Edit(memories);
 
-            // Untouched: nothing is shown, Save is available.
+            // As opened: nothing is shown, Save is available.
             Assert.Equal(string.Empty, form.TitleError);
             Assert.Equal(string.Empty, form.DateError);
             Assert.True(form.SaveCommand.CanExecute(null));
@@ -272,6 +222,7 @@ namespace Chatcheology.Desktop.Tests
             form.Title = "Fine";
             Assert.Equal(string.Empty, form.TitleError);
 
+            form.SelectedMonth = null;
             form.DayText = "31";
             Assert.Equal("Choose a month.", form.DateError);
 
@@ -313,7 +264,7 @@ namespace Chatcheology.Desktop.Tests
             Assert.True(form.SaveCommand.CanExecute(null));
 
             form.CancelCommand.Execute(null);
-            Assert.False(File.Exists(MemoriesPath));
+            Assert.Equal("Our anniversary", Assert.Single(Store.List()).Title);
         }
 
         [Fact]
@@ -321,10 +272,7 @@ namespace Chatcheology.Desktop.Tests
         {
             Seed(Draft("Short lived", 5, 5));
             var memories = await OpenAsync();
-
-            memories.SelectedNotedDate = memories.NotedDates[0];
-            memories.EditNotedDateCommand.Execute(null);
-            var form = memories.NotedForm!;
+            var form = Edit(memories);
 
             Store.Delete(memories.NotedDates[0].NotedDateID);
             SqliteConnection.ClearAllPools();
@@ -340,17 +288,17 @@ namespace Chatcheology.Desktop.Tests
         [Fact]
         public async Task NothingIsWritten_WhileBlocked_OrWhileAMemoryFormIsOpen()
         {
-            Seed(Draft("Seeded", 1, 1));
+            Seed(Draft("Seeded", 1, 1, 2019));
             var memories = await OpenAsync();
             memories.SelectedNotedDate = memories.NotedDates[0];
 
-            Assert.True(memories.NewNotedDateCommand.CanExecute(null));
+            Assert.True(memories.MoveNotedDatesCommand.CanExecute(null));
             Assert.True(memories.EditNotedDateCommand.CanExecute(null));
             Assert.True(memories.DeleteNotedDateCommand.CanExecute(null));
 
             _blocked = true;
             memories.RaiseCommandStates();
-            Assert.False(memories.NewNotedDateCommand.CanExecute(null));
+            Assert.False(memories.MoveNotedDatesCommand.CanExecute(null));
             Assert.False(memories.EditNotedDateCommand.CanExecute(null));
             Assert.False(memories.DeleteNotedDateCommand.CanExecute(null));
 
@@ -366,7 +314,7 @@ namespace Chatcheology.Desktop.Tests
             // While the form is open the list's commands wait, and so do the collection commands.
             _blocked = false;
             memories.RaiseCommandStates();
-            Assert.False(memories.NewNotedDateCommand.CanExecute(null));
+            Assert.False(memories.MoveNotedDatesCommand.CanExecute(null));
             Assert.False(memories.EditNotedDateCommand.CanExecute(null));
             Assert.False(memories.DeleteNotedDateCommand.CanExecute(null));
             Assert.False(memories.AddCollectionCommand.CanExecute(null));
@@ -378,14 +326,14 @@ namespace Chatcheology.Desktop.Tests
             Seed(Draft("Seeded", 1, 1));
             var memories = await OpenAsync();
 
-            memories.NewNotedDateCommand.Execute(null);
-            var form = memories.NotedForm!;
-            await FillAsync(form, "Late", "2", 2);
+            var form = Edit(memories);
+            form.Title = "Late";
 
             memories.Close();
 
             Assert.Null(memories.NotedForm);
             Assert.Empty(memories.NotedDates);
+            Assert.False(memories.HasNotedDates);
             Assert.Null(memories.SelectedNotedDate);
             Assert.False(memories.IsOpen);
 
@@ -393,17 +341,12 @@ namespace Chatcheology.Desktop.Tests
             await MemoriesViewModelTests.Run(memories.OpenCommand, memories);
             Assert.Single(memories.NotedDates);
 
-            await SaveFormAsync(form);
-
-            Assert.Null(memories.NotedForm);
-            Assert.Single(memories.NotedDates);
-            Assert.Equal(string.Empty, memories.StatusText);
-        }
-
-        private static async Task SaveFormAsync(NotedDateFormViewModel form)
-        {
             form.SaveCommand.Execute(null);
             await MemoriesViewModelTests.WaitUntil(() => !form.IsSaving && !form.SaveCommand.IsRunning);
+
+            Assert.Null(memories.NotedForm);
+            Assert.Equal("Seeded", Assert.Single(memories.NotedDates).Title);
+            Assert.Equal(string.Empty, memories.StatusText);
         }
 
         [Fact]
@@ -411,9 +354,7 @@ namespace Chatcheology.Desktop.Tests
         {
             Seed(Draft("Seeded", 1, 1));
             var memories = await OpenAsync();
-
-            memories.NewNotedDateCommand.Execute(null);
-            await FillAsync(memories.NotedForm!, "Another", "2", 2);
+            Edit(memories).Title = "Another";
 
             var sawWriting = false;
             memories.PropertyChanged += (_, e) =>
@@ -428,7 +369,76 @@ namespace Chatcheology.Desktop.Tests
 
             Assert.True(sawWriting);
             Assert.False(memories.IsWriting);
-            Assert.Equal(2, memories.NotedDates.Count);
+            Assert.Equal("Another", Assert.Single(memories.NotedDates).Title);
+        }
+
+        // ---------------------------------------------------------------------------------------
+        // Move noted dates to memories (CH-53).
+        // ---------------------------------------------------------------------------------------
+
+        [Fact]
+        public async Task TheMove_AsksWithTheCount_AndDecliningMovesNothing()
+        {
+            Seed(Draft("Our anniversary", 2, 14, 2019), Draft("Year end", 12, 31, 2000), Draft("Birthday", 8, 2));
+            var memories = await OpenAsync();
+            var before = File.ReadAllBytes(MemoriesPath);
+            SqliteConnection.ClearAllPools();
+
+            _confirmMove = false;
+            await RunAsync(memories.MoveNotedDatesCommand, memories);
+
+            var question = Assert.Single(_moveAsked);
+            Assert.StartsWith("Move 2 noted dates to memories?", question, StringComparison.Ordinal);
+            Assert.Contains("\"Noted dates\"", question, StringComparison.Ordinal);
+            Assert.Contains("memories.db.before-CH-53 (or the next free name after it)", question, StringComparison.Ordinal);
+            Assert.Contains("1 noted date has no year and stays here.", question, StringComparison.Ordinal);
+            Assert.Equal("Nothing was moved.", memories.StatusText);
+            Assert.Equal(before, File.ReadAllBytes(MemoriesPath));
+            Assert.Equal(3, memories.NotedDates.Count);
+        }
+
+        [Fact]
+        public async Task TheMove_MakesYearlyMemories_AndTheSectionKeepsOnlyTheYearlessDate()
+        {
+            Seed(Draft("Our anniversary", 2, 14, 2019), Draft("Year end", 12, 31, 2000), Draft("Birthday", 8, 2));
+            var memories = await OpenAsync();
+            var changed = 0;
+            memories.FileChanged += (_, _) => changed++;
+
+            await RunAsync(memories.MoveNotedDatesCommand, memories);
+
+            Assert.Equal("Moved 2 noted dates to memories. The copy from before is memories.db.before-CH-53. 1 noted date has no year and stayed.", memories.StatusText);
+            Assert.Equal(1, changed);
+            Assert.True(File.Exists(Path.Combine(Path.GetDirectoryName(MemoriesPath)!, NotedDateStore.MoveBackupFileName)));
+
+            // The new collection is selected, with the two yearly memories.
+            var collection = Assert.Single(memories.Collections);
+            Assert.Equal("Noted dates", collection.Name);
+            Assert.Same(collection, memories.SelectedCollection);
+            Assert.Equal(["Year end", "Our anniversary"], memories.Entries.Select(e => e.Title));
+            Assert.All(memories.Entries, e => Assert.True(e.EveryYear));
+
+            // Only the yearless date is left: no move possible, the section still shows for edit and delete.
+            Assert.Equal("Birthday", Assert.Single(memories.NotedDates).Title);
+            Assert.True(memories.HasNotedDates);
+            Assert.Equal(0, memories.NotedDatesWithYear);
+            Assert.False(memories.MoveNotedDatesCommand.CanExecute(null));
+            Assert.Contains("1 noted date has no year", memories.NotedDatesText, StringComparison.Ordinal);
+
+            // Given a year, it can be moved too; then the section is gone. The first copy stays; the second move
+            // makes the next one.
+            var form = Edit(memories);
+            form.YearText = "2001";
+            await SaveAsync(memories);
+            Assert.True(memories.MoveNotedDatesCommand.CanExecute(null));
+
+            await RunAsync(memories.MoveNotedDatesCommand, memories);
+
+            Assert.Equal("Moved 1 noted date to memories. The copy from before is memories.db.before-CH-53-2.", memories.StatusText);
+            Assert.True(File.Exists(Path.Combine(Path.GetDirectoryName(MemoriesPath)!, NotedDateStore.MoveBackupFileName)));
+            Assert.Empty(memories.NotedDates);
+            Assert.False(memories.HasNotedDates);
+            Assert.Equal(3, Assert.Single(memories.Collections).Entries.Count);
         }
     }
 }
