@@ -17,6 +17,8 @@ namespace Chatcheology.Android.Pages
         private readonly Button _previousMonth = new() { Text = "‹" };
         private readonly Button _nextMonth = new() { Text = "›" };
         private readonly Button _nextYear = new() { Text = "»" };
+        private readonly Button _today = new() { Text = "Today", HorizontalOptions = LayoutOptions.Center };
+        private readonly DateOnly _todayDate;
         private readonly Picker _yearPicker = new() { Title = "Year" };
         private readonly Picker _monthPicker = new() { Title = "Month" };
         private readonly IReadOnlyList<int> _years;
@@ -27,9 +29,10 @@ namespace Chatcheology.Android.Pages
         /// <summary>Set while the selectors are moved to the shown month, so that move is not taken as a choice.</summary>
         private bool _syncing;
 
-        internal DatePickerPage(DayCalendar calendar, DateOnly near, Func<DateOnly, Task> jump)
+        internal DatePickerPage(DayCalendar calendar, DateOnly near, Func<DateOnly, Task> jump, TimeProvider clock)
         {
             _calendar = calendar;
+            _todayDate = OnThisDay.TodayFrom(clock);
             _jump = jump;
             _index = Math.Max(0, calendar.IndexOfMonthNear(near));
 
@@ -44,6 +47,9 @@ namespace Chatcheology.Android.Pages
             _previousMonth.Clicked += (_, _) => Show(_index - 1);
             _nextMonth.Clicked += (_, _) => Show(_index + 1);
             _nextYear.Clicked += (_, _) => Show(_calendar.YearStep(_index, +1));
+
+            // Today (CH-51): moves the grid only, never the chat; disabled when already there.
+            _today.Clicked += (_, _) => Show(_calendar.IndexOfTodayMonth(_todayDate));
 
             // The selectors (CH-31): only years and months that have messages. A year moves the grid to
             // its month nearest the one shown; a month moves it to that month.
@@ -104,6 +110,7 @@ namespace Chatcheology.Android.Pages
                     {
                         selectors,
                         header,
+                        _today,
                         _grid,
                         new Label
                         {
@@ -133,6 +140,8 @@ namespace Chatcheology.Android.Pages
             _nextMonth.IsEnabled = index < _calendar.MonthCount - 1;
             _previousYear.IsEnabled = _calendar.YearStep(index, -1) >= 0;
             _nextYear.IsEnabled = _calendar.YearStep(index, +1) >= 0;
+
+            _today.IsEnabled = index != _calendar.IndexOfTodayMonth(_todayDate);
 
             _syncing = true;
 
@@ -217,6 +226,21 @@ namespace Chatcheology.Android.Pages
                         HorizontalTextAlignment = TextAlignment.Center,
                         VerticalTextAlignment = TextAlignment.Center,
                     }.TextIn("MutedText");
+                }
+
+                if (day == _todayDate)
+                {
+                    // Today's cell is outlined, with a gap so the outline shows against a filled day.
+                    var outline = new Border
+                    {
+                        Padding = 2,
+                        StrokeThickness = 2,
+                        StrokeShape = new Microsoft.Maui.Controls.Shapes.RoundRectangle { CornerRadius = 8 },
+                        Content = view,
+                    };
+
+                    outline.SetAppTheme<Brush>(Border.StrokeProperty, new SolidColorBrush(Palette.Light("SenderText")), new SolidColorBrush(Palette.Dark("SenderText")));
+                    view = outline;
                 }
 
                 _grid.Add(view, i % 7, 1 + i / 7);

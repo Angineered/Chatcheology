@@ -98,6 +98,13 @@ namespace Chatcheology.Mobile.Conversation
         }
 
         /// <summary>
+        /// The month the picker's Today button shows (CH-51): the month with messages that holds
+        /// <paramref name="today"/>; otherwise the nearest such month, the later one on a tie (so, with
+        /// today after the whole archive, the latest month). -1 when the calendar is empty.
+        /// </summary>
+        public int IndexOfTodayMonth(DateOnly today) => IndexOfMonthNear(today);
+
+        /// <summary>
         /// The month with messages nearest to the same month a year earlier (<paramref name="years"/> = -1)
         /// or later (+1), among the months of earlier (or later) years than the month at
         /// <paramref name="index"/>; -1 when no year that way has messages.

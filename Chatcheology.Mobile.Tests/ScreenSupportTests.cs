@@ -132,6 +132,52 @@ namespace Chatcheology.Mobile.Tests
         }
 
         [Fact]
+        public void Today_shows_its_own_month_when_that_month_has_messages()
+        {
+            var calendar = Calendar(new(2024, 11, 2), new(2025, 1, 6), new(2025, 6, 1));
+
+            Assert.Equal(1, calendar.IndexOfTodayMonth(new DateOnly(2025, 1, 31)));
+            Assert.Equal(2, calendar.IndexOfTodayMonth(new DateOnly(2025, 6, 15)));
+        }
+
+        [Fact]
+        public void Today_shows_the_nearest_month_when_its_own_has_none_and_the_later_one_on_a_tie()
+        {
+            var calendar = Calendar(new(2024, 11, 2), new(2025, 1, 6), new(2025, 6, 1));
+
+            // March is closer to January (2) than to June (3).
+            Assert.Equal(1, calendar.IndexOfTodayMonth(new DateOnly(2025, 3, 15)));
+            // April is three from January and two from June.
+            Assert.Equal(2, calendar.IndexOfTodayMonth(new DateOnly(2025, 4, 15)));
+            // Tie: December 2024 is one from November 2024 and one from January 2025; the later wins.
+            Assert.Equal(1, calendar.IndexOfTodayMonth(new DateOnly(2024, 12, 10)));
+        }
+
+        [Fact]
+        public void Today_after_the_whole_archive_shows_the_latest_month()
+        {
+            var calendar = Calendar(new(2024, 11, 2), new(2025, 1, 6), new(2025, 6, 1));
+
+            Assert.Equal(2, calendar.IndexOfTodayMonth(new DateOnly(2026, 11, 3)));
+        }
+
+        [Fact]
+        public void Today_before_the_first_month_shows_the_first_month()
+        {
+            var calendar = Calendar(new(2024, 11, 2), new(2025, 1, 6), new(2025, 6, 1));
+
+            Assert.Equal(0, calendar.IndexOfTodayMonth(new DateOnly(2020, 2, 29)));
+        }
+
+        [Fact]
+        public void Today_with_one_month_shows_that_month_and_with_none_shows_nothing()
+        {
+            Assert.Equal(0, Calendar(new DateOnly(2025, 1, 6)).IndexOfTodayMonth(new DateOnly(2030, 1, 1)));
+            Assert.Equal(0, Calendar(new DateOnly(2025, 1, 6)).IndexOfTodayMonth(new DateOnly(2025, 1, 1)));
+            Assert.Equal(-1, Calendar().IndexOfTodayMonth(new DateOnly(2025, 1, 1)));
+        }
+
+        [Fact]
         public void A_year_step_goes_to_the_nearest_month_a_year_away_with_messages()
         {
             var calendar = Calendar(new(2023, 2, 1), new(2024, 1, 1), new(2024, 9, 1), new(2025, 1, 1), new(2025, 2, 1));
