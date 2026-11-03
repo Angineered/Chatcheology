@@ -41,25 +41,15 @@ namespace Chatcheology.Mobile.Memories
 
         /// <summary>
         /// The row's plain second line: the date for a memory, "date · times · label" for a period, empty for a
-        /// "different times" row (whose line is muted).
+        /// "different times" row (whose line is muted). Made once, when the list is built.
         /// </summary>
-        public string Line => Kind switch
-        {
-            MemoryListItemKind.Period => DateText + " · " + DetailText,
-            MemoryListItemKind.DifferentTimes => string.Empty,
-            _ => DateText,
-        };
+        public string Line { get; init; } = string.Empty;
 
         /// <summary>
         /// The row's muted line: the collection name for a memory, "date · at different times" for a
-        /// "different times" row, empty for a period.
+        /// "different times" row, empty for a period. Made once, when the list is built.
         /// </summary>
-        public string MutedLine => Kind switch
-        {
-            MemoryListItemKind.Period => string.Empty,
-            MemoryListItemKind.DifferentTimes => DateText + " · " + DetailText,
-            _ => DetailText,
-        };
+        public string MutedLine { get; init; } = string.Empty;
 
         /// <summary>Whether <see cref="Line"/> has text.</summary>
         public bool HasLine => Line.Length > 0;
@@ -139,6 +129,8 @@ namespace Chatcheology.Mobile.Memories
 
         private const string MonthPrecision = "Month";
 
+        private const string DifferentTimesText = "at different times";
+
         private readonly MemoryIndex _index;
         private readonly List<MemoryListItem> _items;
         private readonly Dictionary<MemoryKey, MemoryListItem> _byKey;
@@ -184,6 +176,9 @@ namespace Chatcheology.Mobile.Memories
             ArgumentNullException.ThrowIfNull(yearlyEntryIDs);
 
             var items = new List<MemoryListItem>();
+
+            // The days with messages are found here, in the background, not on the first Show in chat (UI thread).
+            _ = index.HasMessagesOn(default);
 
             foreach (var (entry, key, time) in index.AllRows())
             {
@@ -307,50 +302,60 @@ namespace Chatcheology.Mobile.Memories
             if (key.PeriodIndex is { } periodIndex)
             {
                 var period = entry.Period(periodIndex);
+                var periodDay = DateSeparatorRow.DayText(DateOnly.FromDateTime(period.StartLocal));
+                var span = MemoryWording.SpanText(period.StartLocal, period.EndLocal) + " · " + MemoryWording.PeriodLabel(period.Label);
 
                 return new MemoryListItem(
                     key,
                     title,
-                    DateSeparatorRow.DayText(DateOnly.FromDateTime(period.StartLocal)),
-                    MemoryWording.SpanText(period.StartLocal, period.EndLocal) + " · " + MemoryWording.PeriodLabel(period.Label),
+                    periodDay,
+                    span,
                     null,
                     false,
                     time)
                 {
                     Group = group,
                     Kind = MemoryListItemKind.Period,
+                    Line = periodDay + " · " + span,
                 };
             }
 
             if (entry.Periods.Count > 0)
             {
+                var day = DateSeparatorRow.DayText(DateOnly.FromDateTime(time));
+
                 return new MemoryListItem(
                     key,
                     title,
-                    DateSeparatorRow.DayText(DateOnly.FromDateTime(time)),
-                    "at different times",
+                    day,
+                    DifferentTimesText,
                     null,
                     false,
                     time)
                 {
                     Group = group,
                     Kind = MemoryListItemKind.DifferentTimes,
+                    MutedLine = day + " · " + DifferentTimesText,
                 };
             }
 
             var yearly = !imported && yearlyEntryIDs.Contains(entry.Entry.EntryID);
+            var date = MemoryWording.EntryDate(entry.Entry.DatePrecision, entry.Entry.StartLocal, entry.Entry.EndLocal);
+            var detail = yearly ? collection.Name + " · Every year" : collection.Name;
 
             return new MemoryListItem(
                 key,
                 title,
-                MemoryWording.EntryDate(entry.Entry.DatePrecision, entry.Entry.StartLocal, entry.Entry.EndLocal),
-                yearly ? collection.Name + " · Every year" : collection.Name,
+                date,
+                detail,
                 imported ? null : index.CoverOf(entry.Entry.EntryID),
                 yearly,
                 time)
             {
                 Group = group,
                 Kind = MemoryListItemKind.Entry,
+                Line = date,
+                MutedLine = detail,
             };
         }
     }

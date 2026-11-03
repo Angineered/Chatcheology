@@ -732,5 +732,60 @@ namespace Chatcheology.Mobile.Tests
             Assert.Equal(session.ReadDays(), session.ReadCalendarDays());
             Assert.Empty(session.FindMemories("Invented"));
         }
+
+        [Fact]
+        public async Task DaysWithMessages_AreExactlyTheReadDays()
+        {
+            // Messages on several days (one late at night); a personal memory on every day from 8 to 14 March.
+            var builder = new MemoryArchiveBuilder();
+            builder.Message(At(2025, 3, 9, 23, 59, 59));
+            builder.Message(At(2025, 3, 10, 0, 0));
+            builder.Message(At(2025, 3, 10, 20, 0));
+            builder.Message(At(2025, 3, 12, 9, 0));
+            builder.Message(At(2025, 3, 14, 7, 30));
+
+            for (var day = 8; day <= 14; day++)
+            {
+                builder.Memory(100 + day, "Invented day " + day.ToString(System.Globalization.CultureInfo.InvariantCulture), At(2025, 3, day));
+            }
+
+            using var session = Open(builder);
+            session.SetLayerShown(MemoryArchiveBuilder.Personal, false);
+
+            var list = await session.GetMemoryListAsync();
+            var readDays = session.ReadDays().ToHashSet();
+
+            Assert.Equal(4, readDays.Count);
+
+            for (var day = 8; day <= 14; day++)
+            {
+                var date = new DateOnly(2025, 3, day);
+                var target = session.MemoryShowInChat(list, new MemoryKey(100 + day, null));
+
+                Assert.Equal(readDays.Contains(date), target is not null);
+                Assert.Equal(readDays.Contains(date) ? date : null, target?.Day);
+            }
+        }
+
+        [Fact]
+        public async Task AnArchiveWithoutCollections_HasNoMemories_AndAnEmptyList()
+        {
+            // No version 1 builder exists in the test support; an archive written without collections reads the same way.
+            var builder = new ArchiveBuilder();
+            builder.Add("Invented message");
+
+            var library = new ArchiveLibrary(Path.Combine(_root.Path, "library-" + Guid.NewGuid().ToString("N")));
+            var staging = library.CreateStagingFolder();
+            builder.Write(staging);
+            Assert.True(library.Install(staging).Installed);
+
+            using var session = ArchiveSession.Open(library.ListArchives(_settings).Single(), _settings);
+            var list = await session.GetMemoryListAsync();
+
+            Assert.False(session.Memories.HasMemories);
+            Assert.True(list.IsEmpty);
+            Assert.Empty(list.Chips);
+            Assert.Equal(MemoryList.NothingListedText, list.EmptyText(list.Rows(MemoryList.AllChipId, null)));
+        }
     }
 }

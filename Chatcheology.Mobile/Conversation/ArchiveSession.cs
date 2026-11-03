@@ -352,11 +352,16 @@ namespace Chatcheology.Mobile.Conversation
             {
                 ObjectDisposedException.ThrowIf(_closing.IsCancellationRequested, this);
 
+                if (_memoryList is { } built)
+                {
+                    return built;
+                }
+
                 var token = _closing.Token;
                 var memories = Memories;
                 var yearly = _yearly.Select(memory => memory.EntryID).ToHashSet();
 
-                return _memoryList ??= Task.Run(() => MemoryList.Build(memories, yearly, token), token);
+                return _memoryList = Task.Run(() => MemoryList.Build(memories, yearly, token), token);
             }
         }
 

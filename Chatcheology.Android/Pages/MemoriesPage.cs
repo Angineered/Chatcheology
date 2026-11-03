@@ -53,7 +53,13 @@ namespace Chatcheology.Android.Pages
             _list.ItemTemplate = new MemoryTemplates();
             _list.SelectionChanged += OnSelected;
             _query.TextChanged += (_, _) => _ = FilterSoonAsync();
-            _query.SearchButtonPressed += (_, _) => Bind();
+            _query.SearchButtonPressed += (_, _) =>
+            {
+                // The search key filters now; the pending keystroke filter would bind (and scroll) again.
+                _typing?.Cancel();
+                _typing = null;
+                Bind();
+            };
 
             var layout = new Grid
             {
@@ -211,7 +217,18 @@ namespace Chatcheology.Android.Pages
 
         private async void OnSelected(object? sender, SelectionChangedEventArgs e)
         {
-            if (_opening || e.CurrentSelection.FirstOrDefault() is not MemoryListItem item)
+            if (e.CurrentSelection.FirstOrDefault() is not MemoryListItem item)
+            {
+                // A year heading opens nothing and must not stay selected.
+                if (e.CurrentSelection.Count > 0)
+                {
+                    _list.SelectedItem = null;
+                }
+
+                return;
+            }
+
+            if (_opening)
             {
                 return;
             }
