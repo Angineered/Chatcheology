@@ -484,9 +484,9 @@ namespace Chatcheology.Android.Pages
 
             var near = CurrentSequenceNumber() is { } sequence && _timeline.IndexOfMessage(sequence) is var row and >= 0
                 ? _timeline.Rows[row].Day
-                : DateOnly.FromDateTime(DateTime.Today);
+                : OnThisDay.TodayFrom(TimeProvider.System);
 
-            await Navigation.PushAsync(new DatePickerPage(_calendar!, near, GoToDayAsync));
+            await Navigation.PushAsync(new DatePickerPage(_calendar!, near, GoToDayAsync, TimeProvider.System));
         }
 
         /// <summary>
