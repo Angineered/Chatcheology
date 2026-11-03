@@ -637,17 +637,16 @@ namespace Chatcheology.Android.Pages
 
             if (onThisDay.Years.Count > 0)
             {
-                OnThisDayYears.Children.Add(new Label { Text = "On this day:", FontSize = 14, Padding = new Thickness(0, 4, 6, 4) });
+                OnThisDayYears.Children.Add(new Label { Text = "On this day", FontSize = 14, FontAttributes = FontAttributes.Bold, Padding = new Thickness(0, 4) });
             }
+
+            // The years wrap in equal-width cells so they line up in columns across rows.
+            var yearsFlow = new FlexLayout { Wrap = Microsoft.Maui.Layouts.FlexWrap.Wrap, AlignItems = Microsoft.Maui.Layouts.FlexAlignItems.Center };
+            OnThisDayYears.Children.Add(yearsFlow);
 
             for (var i = 0; i < onThisDay.Years.Count; i++)
             {
                 var year = onThisDay.Years[i];
-
-                if (i > 0)
-                {
-                    OnThisDayYears.Children.Add(new Label { Text = "·", FontSize = 14, Padding = new Thickness(2, 4) }.TextIn("MutedText"));
-                }
 
                 var link = new Label
                 {
@@ -655,7 +654,9 @@ namespace Chatcheology.Android.Pages
                     FontSize = 14,
                     FontAttributes = FontAttributes.Bold,
                     TextDecorations = TextDecorations.Underline,
-                    Padding = new Thickness(6, 4),
+                    Padding = new Thickness(0, 4),
+                    WidthRequest = 64,
+                    HorizontalTextAlignment = TextAlignment.Center,
                 }.TextIn("LinkText");
 
                 SemanticProperties.SetDescription(link, "Go to " + DateSeparatorRow.DayText(year.Day));
@@ -671,7 +672,7 @@ namespace Chatcheology.Android.Pages
                 };
 
                 link.GestureRecognizers.Add(tap);
-                OnThisDayYears.Children.Add(link);
+                yearsFlow.Children.Add(link);
             }
 
             OnThisDayCard.IsVisible = true;

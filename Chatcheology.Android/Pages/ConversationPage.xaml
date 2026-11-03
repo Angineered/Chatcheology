@@ -224,7 +224,7 @@
                     <VerticalStackLayout x:Name="OnThisDayYearly" Spacing="0" />
                     <!-- CH-47: today's noted dates, one row each, before the message years. -->
                     <VerticalStackLayout x:Name="OnThisDayNoted" Spacing="0" />
-                    <FlexLayout x:Name="OnThisDayYears" Wrap="Wrap" AlignItems="Center" />
+                    <VerticalStackLayout x:Name="OnThisDayYears" Spacing="0" />
                 </VerticalStackLayout>
                 <Label x:Name="OnThisDayClose" Grid.Column="1" Text="✕" FontSize="16" Padding="10,4"
                        VerticalOptions="Center" SemanticProperties.Description="Dismiss until tomorrow"
