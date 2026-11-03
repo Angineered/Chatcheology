@@ -622,7 +622,7 @@ namespace Chatcheology.Android.Pages
             }
         }
 
-        /// <summary>The card: "On this day:" and each year, a tap on which jumps to that day.</summary>
+        /// <summary>The card: an "On this day" heading and each year, a tap on which jumps to that day.</summary>
         private void ShowOnThisDayCard()
         {
             if (_onThisDay is not { ShowsIcon: true } onThisDay || _closed)
@@ -656,7 +656,7 @@ namespace Chatcheology.Android.Pages
                     TextDecorations = TextDecorations.Underline,
                     Padding = new Thickness(0, 4),
                     WidthRequest = 64,
-                    HorizontalTextAlignment = TextAlignment.Center,
+                    HorizontalTextAlignment = TextAlignment.Start,
                 }.TextIn("LinkText");
 
                 SemanticProperties.SetDescription(link, "Go to " + DateSeparatorRow.DayText(year.Day));
