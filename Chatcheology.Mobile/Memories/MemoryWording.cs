@@ -49,6 +49,37 @@ namespace Chatcheology.Mobile.Memories
             return from == to ? "at " + from : from + " to " + to;
         }
 
+        /// <summary>
+        /// A period's observed times as the Memories list shows them (CH-56): as <see cref="TimeSpan"/> within
+        /// one day; "23:40 to 00:35 next day" when the last time is on the next day; "23:40 to 3 March, 00:35"
+        /// when it is later (with the year when the year differs). The dates are compared first, so a period
+        /// from 20:18 on one day to 20:18 on a later one never reads "at 20:18". Never a duration.
+        /// </summary>
+        public static string SpanText(DateTime first, DateTime last)
+        {
+            var fromDay = DateOnly.FromDateTime(first);
+            var toDay = DateOnly.FromDateTime(last);
+
+            if (fromDay == toDay)
+            {
+                return TimeSpan(first, last);
+            }
+
+            var from = MessageRow.TimeTextOf(first);
+            var to = MessageRow.TimeTextOf(last);
+
+            if (toDay == fromDay.AddDays(1))
+            {
+                return from + " to " + to + " next day";
+            }
+
+            var day = toDay.Year == fromDay.Year
+                ? toDay.ToString("d MMMM", CultureInfo.CurrentCulture)
+                : DateSeparatorRow.DayText(toDay);
+
+            return from + " to " + day + ", " + to;
+        }
+
         /// <summary>One participant's line on a card: "Alex: 3 trophies, 20:18 to 22:15".</summary>
         public static string ParticipantLine(string name, int count, DateTime first, DateTime last) =>
             name + ": " + Trophies(count) + ", " + TimeSpan(first, last);
