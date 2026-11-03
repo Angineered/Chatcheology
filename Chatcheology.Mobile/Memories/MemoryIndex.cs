@@ -314,6 +314,7 @@ namespace Chatcheology.Mobile.Memories
         private readonly IReadOnlyList<DateTime> _prefixMaximum;
         private readonly IReadOnlyList<DateTime> _messageTimes;
         private readonly IReadOnlyList<int>? _sequenceNumbers;
+        private readonly Lazy<HashSet<DateOnly>> _messageDays;
 
         private MemoryIndex(
             IReadOnlyList<ArchiveCollection> collections,
@@ -340,6 +341,7 @@ namespace Chatcheology.Mobile.Memories
             }
 
             _prefixMaximum = prefix;
+            _messageDays = new Lazy<HashSet<DateOnly>>(() => [.. messageTimes.Select(DateOnly.FromDateTime)]);
         }
 
         /// <summary>No memories.</summary>
@@ -575,6 +577,35 @@ namespace Chatcheology.Mobile.Memories
         public IReadOnlyList<GalleryLink> GalleriesOf(long entryID) => _byID.GetValueOrDefault(entryID)?.Galleries ?? [];
 
         internal MemoryEntry? Entry(long entryID) => _byID.GetValueOrDefault(entryID);
+
+        /// <summary>
+        /// Every collection shown and no filter off, whatever Settings says (CH-56: the Memories list). Rows
+        /// of this view are the rows the chat would draw with every layer and filter on.
+        /// </summary>
+        internal MemoryView AllOnView => new(Collections.Select(c => c.CollectionID));
+
+        /// <summary>
+        /// Every row of <see cref="AllOnView"/>, entry by entry in the index's order, unplaced: the entry and
+        /// the row's key and time, by the same <see cref="MemoryEntry.Rows"/> rules as <see cref="Layout"/>.
+        /// </summary>
+        internal IEnumerable<(MemoryEntry Entry, MemoryKey Key, DateTime Time)> AllRows()
+        {
+            var view = AllOnView;
+
+            foreach (var entry in _entries)
+            {
+                foreach (var (key, time, _, _) in entry.Rows(view))
+                {
+                    yield return (entry, key, time);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Whether any message is on <paramref name="day"/> (local date), from the message times read at open: the
+        /// same days as <c>ArchiveReader.ReadDays</c>, without a read.
+        /// </summary>
+        internal bool HasMessagesOn(DateOnly day) => _messageDays.Value.Contains(day);
 
         /// <summary>The local time of a message, or <see langword="null"/> when there is no such message.</summary>
         internal DateTime? MessageTime(int sequenceNumber)

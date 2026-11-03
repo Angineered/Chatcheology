@@ -62,6 +62,7 @@ namespace Chatcheology.Mobile.Conversation
         private readonly object _searchLock = new();
         private Task<ConversationSearch>? _search;
         private Task<Gallery.PhotoGallery>? _gallery;
+        private Task<MemoryList>? _memoryList;
 
         private ArchiveSession(InstalledArchive archive, ArchiveReader reader, ArchiveSettings settings, string identity)
         {
@@ -338,6 +339,41 @@ namespace Chatcheology.Mobile.Conversation
                     },
                     token);
             }
+        }
+
+        /// <summary>
+        /// The Memories list (CH-56), built in the background the first time it is asked for, from the memories
+        /// read at open (no reader is opened). Later calls return the same task.
+        /// </summary>
+        /// <exception cref="ObjectDisposedException">The session is closed.</exception>
+        public Task<MemoryList> GetMemoryListAsync()
+        {
+            lock (_searchLock)
+            {
+                ObjectDisposedException.ThrowIf(_closing.IsCancellationRequested, this);
+
+                if (_memoryList is { } built)
+                {
+                    return built;
+                }
+
+                var token = _closing.Token;
+                var memories = Memories;
+                var yearly = _yearly.Select(memory => memory.EntryID).ToHashSet();
+
+                return _memoryList = Task.Run(() => MemoryList.Build(memories, yearly, token), token);
+            }
+        }
+
+        /// <summary>
+        /// Where Show in chat goes for a row of <paramref name="list"/> with the layers and filters as Settings
+        /// has them now, or <see langword="null"/> for no button.
+        /// </summary>
+        public MemoryShowTarget? MemoryShowInChat(MemoryList list, MemoryKey key)
+        {
+            ArgumentNullException.ThrowIfNull(list);
+
+            return list.ShowInChat(key, MemoryView, !IsEmpty);
         }
 
         /// <summary>The gallery when it has been built, so a star toggle can update it; otherwise <see langword="null"/>.</summary>
