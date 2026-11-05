@@ -1,8 +1,10 @@
 using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
+using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using Chatcheology.Data.Media;
+using Chatcheology.Mobile.Presentation;
 
 namespace Chatcheology.Desktop.Services
 {
@@ -51,7 +53,17 @@ namespace Chatcheology.Desktop.Services
         /// <summary>The width a memory photo is decoded at for the large photo view (CH-46).</summary>
         internal const int LargeWidth = 1600;
 
-        /// <summary>As <see cref="TryLoadThumbnail"/>, decoded at <paramref name="decodeWidth"/> pixels wide.</summary>
+        /// <summary>
+        /// As <see cref="TryLoadThumbnail"/>, decoded at <paramref name="decodeWidth"/> pixels wide
+        /// and shown the right way up.
+        /// </summary>
+        /// <remarks>
+        /// The EXIF orientation is read from the frame's metadata first, without decoding pixels
+        /// (CH-57). When it swaps the sides, the stored height is the upright width, so the decode is
+        /// sized by <c>DecodePixelHeight</c> instead. The decoded picture is then mirrored and
+        /// rotated as <see cref="ImageOrientation"/> defines. A tag that cannot be read leaves the
+        /// picture as stored, exactly as before.
+        /// </remarks>
         internal static BitmapSource? TryLoadImage(string fullPath, int decodeWidth)
         {
             try
@@ -64,16 +76,29 @@ namespace Chatcheology.Desktop.Services
                     bufferSize: 4096,
                     FileOptions.SequentialScan);
 
+                var orientation = ReadOrientation(stream);
+
+                stream.Position = 0;
+
                 var image = new BitmapImage();
 
                 image.BeginInit();
                 image.CacheOption = BitmapCacheOption.OnLoad;
-                image.DecodePixelWidth = decodeWidth;
+
+                if (orientation.SwapsSides)
+                {
+                    image.DecodePixelHeight = decodeWidth;
+                }
+                else
+                {
+                    image.DecodePixelWidth = decodeWidth;
+                }
+
                 image.StreamSource = stream;
                 image.EndInit();
                 image.Freeze();
 
-                return image;
+                return orientation.IsAsStored ? image : Orient(image, orientation);
             }
             catch (Exception exception) when (
                 exception is IOException
@@ -85,6 +110,88 @@ namespace Chatcheology.Desktop.Services
                     or OverflowException)
             {
                 return null;
+            }
+        }
+
+        /// <summary>The JPEG metadata path of the EXIF orientation tag.</summary>
+        private const string JpegOrientationQuery = "/app1/ifd/{ushort=274}";
+
+        /// <summary>
+        /// The EXIF orientation of the picture in <paramref name="stream"/>, read from the first
+        /// frame's metadata without decoding its pixels; as stored when the format carries none or
+        /// it cannot be read.
+        /// </summary>
+        /// <remarks>
+        /// Every failure here falls back to "as stored" rather than propagating: a picture that
+        /// showed before CH-57 must never become "Can't preview" because of its tag. The decode that
+        /// follows reports genuinely unreadable files as it always has.
+        /// </remarks>
+        private static ImageOrientation ReadOrientation(Stream stream)
+        {
+            try
+            {
+                var decoder = BitmapDecoder.Create(
+                    stream, BitmapCreateOptions.DelayCreation, BitmapCacheOption.None);
+
+                if (decoder.Frames.Count == 0 || decoder.Frames[0].Metadata is not BitmapMetadata metadata)
+                {
+                    return ImageOrientation.AsStored;
+                }
+
+                var value = metadata.GetQuery("System.Photo.Orientation");
+
+                if (value is null && metadata.Format == "jpg")
+                {
+                    value = metadata.GetQuery(JpegOrientationQuery);
+                }
+
+                return ImageOrientation.FromExif(value switch
+                {
+                    ushort number => number,
+                    short number => number,
+                    uint number when number <= int.MaxValue => (int)number,
+                    int number => number,
+                    byte number => number,
+                    _ => null,
+                });
+            }
+#pragma warning disable CA1031 // Any failure to read the tag means "as stored", by design (CH-57).
+            catch (Exception)
+#pragma warning restore CA1031
+            {
+                return ImageOrientation.AsStored;
+            }
+        }
+
+        /// <summary>
+        /// <paramref name="image"/> mirrored left-to-right when the orientation says so, then
+        /// rotated clockwise, frozen. As stored if the transform cannot be applied.
+        /// </summary>
+        private static BitmapSource Orient(BitmapSource image, ImageOrientation orientation)
+        {
+            try
+            {
+                var transform = new TransformGroup();
+
+                if (orientation.FlipHorizontal)
+                {
+                    transform.Children.Add(new ScaleTransform(-1, 1));
+                }
+
+                transform.Children.Add(new RotateTransform(orientation.RotateDegrees));
+
+                var turned = new TransformedBitmap(image, transform);
+                turned.Freeze();
+
+                return turned;
+            }
+            catch (Exception exception) when (
+                exception is ArgumentException
+                    or InvalidOperationException
+                    or NotSupportedException
+                    or System.Runtime.InteropServices.ExternalException)
+            {
+                return image;
             }
         }
 
