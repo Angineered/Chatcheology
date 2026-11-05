@@ -102,6 +102,170 @@ namespace Chatcheology.Desktop.Tests
             Assert.False(string.IsNullOrWhiteSpace(failure));
         }
 
+        // ---------------------------------------------------------------------------------------
+        // EXIF orientation (CH-57). The stored picture is 64 wide by 32 high, in four solid
+        // quadrants: top left red, top right green, bottom left blue, bottom right white.
+        // ---------------------------------------------------------------------------------------
+
+        private const int StoredWidth = 64;
+        private const int StoredHeight = 32;
+
+        private static readonly Color Red = Color.FromRgb(0xFF, 0x00, 0x00);
+        private static readonly Color Green = Color.FromRgb(0x00, 0xFF, 0x00);
+        private static readonly Color Blue = Color.FromRgb(0x00, 0x00, 0xFF);
+        private static readonly Color White = Color.FromRgb(0xFF, 0xFF, 0xFF);
+
+        /// <summary>
+        /// Each orientation comes out at its upright size, with the stored corner EXIF puts at the
+        /// top left there, and the one it puts at the top right there.
+        /// </summary>
+        [Theory]
+        [InlineData((ushort)1, "red", "green")]
+        [InlineData((ushort)2, "green", "red")]
+        [InlineData((ushort)3, "white", "blue")]
+        [InlineData((ushort)4, "blue", "white")]
+        [InlineData((ushort)5, "red", "blue")]
+        [InlineData((ushort)6, "blue", "red")]
+        [InlineData((ushort)7, "white", "green")]
+        [InlineData((ushort)8, "green", "white")]
+        public void AJpegWithAnOrientation_IsShownTheRightWayUp(ushort orientation, string topLeft, string topRight)
+        {
+            using var directory = new TemporaryDirectory();
+
+            var path = directory.WriteQuadrantJpeg("photo.jpg", orientation);
+            var swaps = orientation >= 5;
+            var (uprightWidth, uprightHeight) = swaps ? (StoredHeight, StoredWidth) : (StoredWidth, StoredHeight);
+
+            var image = MediaPresentation.TryLoadImage(path, uprightWidth);
+
+            Assert.NotNull(image);
+            Assert.True(image!.IsFrozen);
+            Assert.Equal(uprightWidth, image.PixelWidth);
+            Assert.Equal(uprightHeight, image.PixelHeight);
+            AssertNear(Named(topLeft), PixelAt(image, 2, 2));
+            AssertNear(Named(topRight), PixelAt(image, image.PixelWidth - 3, 2));
+        }
+
+        /// <summary>The decode width is the upright width, so a portrait thumbnail is not decoded twice too tall.</summary>
+        [Fact]
+        public void ARotatedThumbnail_IsDecodedAtTheThumbnailWidth()
+        {
+            using var directory = new TemporaryDirectory();
+
+            var path = directory.WriteQuadrantJpeg("portrait.jpg", 6);
+
+            var thumbnail = MediaPresentation.TryLoadThumbnail(path);
+
+            Assert.NotNull(thumbnail);
+            Assert.Equal(MediaPresentation.ThumbnailWidth, thumbnail!.PixelWidth);
+            Assert.Equal(MediaPresentation.ThumbnailWidth * 2, thumbnail.PixelHeight);
+        }
+
+        [Fact]
+        public void AJpegWithNoOrientation_LoadsAsStored()
+        {
+            using var directory = new TemporaryDirectory();
+
+            var path = directory.WriteQuadrantJpeg("plain.jpg", orientation: null);
+
+            var image = MediaPresentation.TryLoadImage(path, StoredWidth);
+
+            Assert.NotNull(image);
+            Assert.Equal(StoredWidth, image!.PixelWidth);
+            Assert.Equal(StoredHeight, image.PixelHeight);
+            AssertNear(Red, PixelAt(image, 2, 2));
+            AssertNear(Green, PixelAt(image, image.PixelWidth - 3, 2));
+        }
+
+        [Fact]
+        public void APng_LoadsAsStored()
+        {
+            using var directory = new TemporaryDirectory();
+
+            var path = directory.WriteImage("preview.png");
+
+            var image = MediaPresentation.TryLoadImage(path, 48);
+
+            Assert.NotNull(image);
+            Assert.Equal(48, image!.PixelWidth);
+            Assert.Equal(32, image.PixelHeight);
+        }
+
+        /// <remarks>
+        /// A tag that is there but cannot be used (out of range, or not a number) is read as "as
+        /// stored", and the picture still shows rather than becoming "Can't preview". A JPEG whose
+        /// Exif segment is outright corrupt is not tested here: WPF's own decode already refuses it
+        /// (reading its colour contexts) with or without CH-57, so it returns null either way.
+        /// </remarks>
+        [Theory]
+        [InlineData("out-of-range")]
+        [InlineData("not-a-number")]
+        public void AJpegWhoseOrientationCannotBeUsed_StillLoadsAsStored(string kind)
+        {
+            using var directory = new TemporaryDirectory();
+
+            object tag = kind == "out-of-range" ? (ushort)9 : "sideways";
+            var path = directory.WriteQuadrantImage("odd-tag.jpg", new JpegBitmapEncoder { QualityLevel = 95 }, tag);
+
+            var image = MediaPresentation.TryLoadImage(path, StoredWidth);
+
+            Assert.NotNull(image);
+            Assert.Equal(StoredWidth, image!.PixelWidth);
+            Assert.Equal(StoredHeight, image.PixelHeight);
+            AssertNear(Red, PixelAt(image, 2, 2));
+            AssertNear(Green, PixelAt(image, image.PixelWidth - 3, 2));
+        }
+
+        /// <summary>Formats whose frames have no metadata WPF can query load as stored.</summary>
+        [Theory]
+        [InlineData("picture.bmp")]
+        [InlineData("picture.gif")]
+        public void AFormatWithoutOrientationMetadata_LoadsAsStored(string fileName)
+        {
+            using var directory = new TemporaryDirectory();
+
+            BitmapEncoder encoder = fileName.EndsWith(".bmp", StringComparison.Ordinal)
+                ? new BmpBitmapEncoder()
+                : new GifBitmapEncoder();
+            var path = directory.WriteQuadrantImage(fileName, encoder, tag: null);
+
+            var image = MediaPresentation.TryLoadImage(path, StoredWidth);
+
+            Assert.NotNull(image);
+            Assert.Equal(StoredWidth, image!.PixelWidth);
+            Assert.Equal(StoredHeight, image.PixelHeight);
+            AssertNear(Red, PixelAt(image, 2, 2));
+            AssertNear(Green, PixelAt(image, image.PixelWidth - 3, 2));
+        }
+
+        private static Color Named(string name) => name switch
+        {
+            "red" => Red,
+            "green" => Green,
+            "blue" => Blue,
+            "white" => White,
+            _ => throw new ArgumentOutOfRangeException(nameof(name)),
+        };
+
+        private static Color PixelAt(BitmapSource image, int x, int y)
+        {
+            var converted = new FormatConvertedBitmap(image, PixelFormats.Bgra32, null, 0);
+            var pixel = new byte[4];
+            converted.CopyPixels(new System.Windows.Int32Rect(x, y, 1, 1), pixel, 4, 0);
+
+            return Color.FromRgb(pixel[2], pixel[1], pixel[0]);
+        }
+
+        /// <summary>JPEG is lossy: close enough to the solid colour, far from the others.</summary>
+        private static void AssertNear(Color expected, Color actual)
+        {
+            static bool Near(byte a, byte b) => Math.Abs(a - b) <= 48;
+
+            Assert.True(
+                Near(expected.R, actual.R) && Near(expected.G, actual.G) && Near(expected.B, actual.B),
+                $"Expected about {expected}, got {actual}.");
+        }
+
         /// <summary>An isolated directory outside the repository, removed on dispose.</summary>
         private sealed class TemporaryDirectory : IDisposable
         {
@@ -139,6 +303,63 @@ namespace Chatcheology.Desktop.Tests
 
                 var encoder = new PngBitmapEncoder();
                 encoder.Frames.Add(BitmapFrame.Create(bitmap));
+
+                var path = System.IO.Path.Combine(Path, fileName);
+
+                using var stream = File.Create(path);
+                encoder.Save(stream);
+
+                return path;
+            }
+
+            /// <summary>
+            /// Writes an invented 64 by 32 JPEG in four solid quadrants, with
+            /// <paramref name="orientation"/> as its EXIF orientation tag, or no metadata at all.
+            /// </summary>
+            internal string WriteQuadrantJpeg(string fileName, ushort? orientation) =>
+                WriteQuadrantImage(fileName, new JpegBitmapEncoder { QualityLevel = 95 }, orientation);
+
+            /// <summary>
+            /// Writes the invented quadrant picture with <paramref name="encoder"/>; for a JPEG,
+            /// <paramref name="tag"/> (when given) is written as the EXIF orientation tag's value.
+            /// </summary>
+            internal string WriteQuadrantImage(string fileName, BitmapEncoder encoder, object? tag)
+            {
+                var stride = StoredWidth * 4;
+                var pixels = new byte[stride * StoredHeight];
+
+                for (var y = 0; y < StoredHeight; y++)
+                {
+                    for (var x = 0; x < StoredWidth; x++)
+                    {
+                        var colour = (x < StoredWidth / 2, y < StoredHeight / 2) switch
+                        {
+                            (true, true) => Red,
+                            (false, true) => Green,
+                            (true, false) => Blue,
+                            _ => White,
+                        };
+
+                        var index = (y * stride) + (x * 4);
+                        pixels[index] = colour.B;
+                        pixels[index + 1] = colour.G;
+                        pixels[index + 2] = colour.R;
+                        pixels[index + 3] = 0xFF;
+                    }
+                }
+
+                var bitmap = BitmapSource.Create(
+                    StoredWidth, StoredHeight, 96, 96, PixelFormats.Bgra32, null, pixels, stride);
+
+                BitmapMetadata? metadata = null;
+
+                if (tag is not null)
+                {
+                    metadata = new BitmapMetadata("jpg");
+                    metadata.SetQuery("/app1/ifd/{ushort=274}", tag);
+                }
+
+                encoder.Frames.Add(BitmapFrame.Create(bitmap, null, metadata, null));
 
                 var path = System.IO.Path.Combine(Path, fileName);
 

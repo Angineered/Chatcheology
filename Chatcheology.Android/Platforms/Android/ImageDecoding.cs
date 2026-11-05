@@ -1,4 +1,5 @@
 using Android.Graphics;
+using Android.Media;
 using Android.Util;
 using Chatcheology.Mobile.Presentation;
 
@@ -72,9 +73,15 @@ namespace Chatcheology.Android
             return width < bitmap.Width || height < bitmap.Height ? Scale(bitmap, width, height) : bitmap;
         }
 
-        /// <summary>Reads the picture's size, then decodes it at the sample size <paramref name="sample"/> gives for it.</summary>
+        /// <summary>
+        /// Reads the picture's size and EXIF orientation, decodes it at the sample size
+        /// <paramref name="sample"/> gives for its upright size, then turns it the right way up (CH-57).
+        /// </summary>
         private static Bitmap? Decode(string path, Func<int, int, int> sample)
         {
+            Bitmap? bitmap;
+            ImageOrientation orientation;
+
             try
             {
                 var bounds = new BitmapFactory.Options { InJustDecodeBounds = true };
@@ -85,12 +92,71 @@ namespace Chatcheology.Android
                     return null;
                 }
 
-                return BitmapFactory.DecodeFile(path, new BitmapFactory.Options { InSampleSize = sample(bounds.OutWidth, bounds.OutHeight) });
+                orientation = ReadOrientation(path);
+
+                // The reduction is chosen for the shape the picture is shown at, not the one it is stored at.
+                var (width, height) = orientation.UprightSize(bounds.OutWidth, bounds.OutHeight);
+
+                bitmap = BitmapFactory.DecodeFile(path, new BitmapFactory.Options { InSampleSize = sample(width, height) });
             }
             catch (Java.Lang.Throwable)
             {
                 // Out of memory or an unreadable file: shown as "Can't preview".
                 return null;
+            }
+
+            return bitmap is null || orientation.IsAsStored ? bitmap : Orient(bitmap, orientation);
+        }
+
+        /// <summary>The picture's EXIF orientation; as stored when there is none or it cannot be read.</summary>
+        private static ImageOrientation ReadOrientation(string path)
+        {
+            try
+            {
+                using var exif = new ExifInterface(path);
+
+                return ImageOrientation.FromExif(exif.GetAttributeInt(ExifInterface.TagOrientation, 1));
+            }
+            catch (Java.Lang.Throwable)
+            {
+                return ImageOrientation.AsStored;
+            }
+            catch (Exception exception) when (exception is IOException or ArgumentException or NotSupportedException)
+            {
+                return ImageOrientation.AsStored;
+            }
+        }
+
+        /// <summary>
+        /// The bitmap turned by <paramref name="orientation"/> (mirrored first, then rotated clockwise, as
+        /// <see cref="ImageOrientation"/> defines); the original is released. When turning it fails the
+        /// picture is shown as stored, as it was before CH-57, rather than not at all.
+        /// </summary>
+        private static Bitmap Orient(Bitmap bitmap, ImageOrientation orientation)
+        {
+            try
+            {
+                using var matrix = new Matrix();
+
+                if (orientation.FlipHorizontal)
+                {
+                    matrix.PostScale(-1, 1);
+                }
+
+                matrix.PostRotate(orientation.RotateDegrees);
+
+                var turned = Bitmap.CreateBitmap(bitmap, 0, 0, bitmap.Width, bitmap.Height, matrix, filter: true);
+
+                if (!ReferenceEquals(turned, bitmap))
+                {
+                    bitmap.Recycle();
+                }
+
+                return turned;
+            }
+            catch (Java.Lang.Throwable)
+            {
+                return bitmap;
             }
         }
 
