@@ -345,9 +345,90 @@ namespace Chatcheology.Mobile.Presentation
         /// and every byte after EOI (a second image, a gain map, a motion photo's video). False, with
         /// <paramref name="target"/> to be thrown away, when the data is not a complete JPEG.
         /// </summary>
-        public static bool WriteMainJpeg(ReadOnlySpan<byte> source, Stream target)
+        public static bool WriteMainJpeg(ReadOnlySpan<byte> source, Stream target) => WriteMain(source, target, orientationOnly: false);
+
+        /// <summary>
+        /// As <see cref="WriteMainJpeg"/>, but no Exif block is copied either (CH-54, D-37: an own memory photo is
+        /// stored without its location, with no Android code). In place of the first APP1 "Exif" block, a new
+        /// minimal one is written holding only its orientation (tag 274) when that is 2 to 8, so the photo still
+        /// shows the right way up; every other Exif tag (the GPS directory among them) is left out.
+        /// </summary>
+        public static bool WriteMainJpegWithoutLocation(ReadOnlySpan<byte> source, Stream target) =>
+            WriteMain(source, target, orientationOnly: true);
+
+        /// <summary>
+        /// The EXIF orientation (tag 274) of IFD0 in a TIFF block (as inside an "Exif\0\0" APP1), or null when there
+        /// is none or it cannot be read.
+        /// </summary>
+        public static int? ReadOrientation(ReadOnlySpan<byte> tiff)
+        {
+            if (tiff.Length < 8)
+            {
+                return null;
+            }
+
+            var bigEndian = tiff[0] == (byte)'M' && tiff[1] == (byte)'M' && tiff[2] == 0 && tiff[3] == 42;
+            var littleEndian = tiff[0] == (byte)'I' && tiff[1] == (byte)'I' && tiff[2] == 42 && tiff[3] == 0;
+
+            if (!bigEndian && !littleEndian)
+            {
+                return null;
+            }
+
+            var offset = U32(tiff[4..], bigEndian);
+
+            if (offset < 8 || offset + 2 > (uint)tiff.Length)
+            {
+                return null;
+            }
+
+            var at = (int)offset;
+            var count = U16(tiff[at..], bigEndian);
+
+            for (var entry = 0; entry < count; entry++)
+            {
+                var start = at + 2 + (entry * 12);
+
+                if (start + 12 > tiff.Length)
+                {
+                    return null;
+                }
+
+                // Orientation: type SHORT (3), count 1, the value in the first two bytes of the value field.
+                if (U16(tiff[start..], bigEndian) == ImageOrientation.ExifTag
+                    && U16(tiff[(start + 2)..], bigEndian) == 3
+                    && U32(tiff[(start + 4)..], bigEndian) == 1)
+                {
+                    return U16(tiff[(start + 8)..], bigEndian);
+                }
+            }
+
+            return null;
+        }
+
+        /// <summary>An APP1 "Exif" block's data holding only an orientation: a big-endian TIFF with one IFD0 entry.</summary>
+        private static byte[] OrientationOnlyExif(int orientation)
+        {
+            var data = new byte[6 + 26];
+            "Exif\0\0"u8.CopyTo(data);
+            var t = data.AsSpan(6);
+            "MM"u8.CopyTo(t);
+            BinaryPrimitives.WriteUInt16BigEndian(t[2..], 42);
+            BinaryPrimitives.WriteUInt32BigEndian(t[4..], 8);
+            BinaryPrimitives.WriteUInt16BigEndian(t[8..], 1);
+            BinaryPrimitives.WriteUInt16BigEndian(t[10..], ImageOrientation.ExifTag);
+            BinaryPrimitives.WriteUInt16BigEndian(t[12..], 3);
+            BinaryPrimitives.WriteUInt32BigEndian(t[14..], 1);
+            BinaryPrimitives.WriteUInt16BigEndian(t[18..], (ushort)orientation);
+            BinaryPrimitives.WriteUInt32BigEndian(t[22..], 0);
+            return data;
+        }
+
+        private static bool WriteMain(ReadOnlySpan<byte> source, Stream target, bool orientationOnly)
         {
             ArgumentNullException.ThrowIfNull(target);
+
+            var exifSeen = false;
 
             if (source.Length < 4 || source[0] != 0xFF || source[1] != 0xD8)
             {
@@ -418,6 +499,23 @@ namespace Chatcheology.Mobile.Presentation
                     0xFE => false,
                     _ => true,
                 };
+
+                if (keep && orientationOnly && marker == 0xE1)
+                {
+                    // Only the first Exif block's orientation, as a new block; the block itself is never copied.
+                    keep = false;
+
+                    if (!exifSeen && ReadOrientation(data[6..]) is { } orientation and >= 2 and <= 8)
+                    {
+                        var exif = OrientationOnlyExif(orientation);
+                        var header = new byte[] { 0xFF, 0xE1, 0, 0 };
+                        BinaryPrimitives.WriteUInt16BigEndian(header.AsSpan(2), (ushort)(exif.Length + 2));
+                        target.Write(header);
+                        target.Write(exif);
+                    }
+
+                    exifSeen = true;
+                }
 
                 if (keep)
                 {

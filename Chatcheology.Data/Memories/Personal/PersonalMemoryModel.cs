@@ -1,4 +1,5 @@
 using System.Globalization;
+using Chatcheology.Archive;
 
 namespace Chatcheology.Data.Memories.Personal
 {
@@ -322,20 +323,20 @@ namespace Chatcheology.Data.Memories.Personal
     /// <summary>The rules a personal memory is checked against, before anything is written.</summary>
     public static class PersonalMemoryRules
     {
-        /// <summary>The longest title kept.</summary>
-        public const int MaxTitleLength = 200;
+        /// <summary>The longest title kept (shared with the phone: <see cref="PersonalMemoryFieldRules"/>).</summary>
+        public const int MaxTitleLength = PersonalMemoryFieldRules.MaxTitleLength;
 
         /// <summary>The longest collection name kept.</summary>
         public const int MaxCollectionNameLength = 100;
 
         /// <summary>The longest summary kept.</summary>
-        public const int MaxSummaryLength = 2000;
+        public const int MaxSummaryLength = PersonalMemoryFieldRules.MaxSummaryLength;
 
         /// <summary>The longest source line kept.</summary>
-        public const int MaxSourceLength = 200;
+        public const int MaxSourceLength = PersonalMemoryFieldRules.MaxSourceLength;
 
         /// <summary>The longest photo caption kept.</summary>
-        public const int MaxCaptionLength = 500;
+        public const int MaxCaptionLength = PersonalMemoryFieldRules.MaxCaptionLength;
 
         /// <summary>The stored precision word for a precision.</summary>
         public static string StoredPrecision(PersonalDatePrecision precision) => precision switch
@@ -364,7 +365,10 @@ namespace Chatcheology.Data.Memories.Personal
 
         /// <summary>A day as stored at a precision: the day itself, or the first of its month.</summary>
         public static DateOnly Normalise(DateOnly day, PersonalDatePrecision precision) =>
-            precision == PersonalDatePrecision.Month ? new DateOnly(day.Year, day.Month, 1) : day;
+            PersonalMemoryFieldRules.Normalise(day, Shared(precision));
+
+        /// <summary>The shared precision for a desktop precision (same values; an undefined one stays undefined).</summary>
+        private static MemoryDatePrecision Shared(PersonalDatePrecision precision) => (MemoryDatePrecision)(int)precision;
 
         /// <summary>A collection name's problem, or null when it is fine.</summary>
         public static string? CollectionNameError(string? name)
@@ -390,26 +394,19 @@ namespace Chatcheology.Data.Memories.Personal
             ArgumentNullException.ThrowIfNull(draft);
 
             var errors = new Dictionary<string, string>();
-            var title = draft.Title?.Trim() ?? string.Empty;
-            var source = draft.Source?.Trim() ?? string.Empty;
 
-            if (title.Length == 0)
+            if (PersonalMemoryFieldRules.TitleError(draft.Title) is { } titleError)
             {
-                errors[PersonalFields.Title] = "Give the memory a title.";
-            }
-            else if (title.Length > MaxTitleLength)
-            {
-                errors[PersonalFields.Title] = $"Keep the title to {MaxTitleLength.ToString(CultureInfo.CurrentCulture)} characters.";
+                errors[PersonalFields.Title] = titleError;
             }
 
             if (draft.Start is null)
             {
                 errors[PersonalFields.Start] = "Choose the date it starts.";
             }
-            else if (draft.End is { } end
-                     && Normalise(end, draft.Precision) < Normalise(draft.Start.Value, draft.Precision))
+            else if (PersonalMemoryFieldRules.EndError(draft.Start.Value, draft.End, Shared(draft.Precision)) is { } endError)
             {
-                errors[PersonalFields.End] = "The end cannot be before the start.";
+                errors[PersonalFields.End] = endError;
             }
 
             if (!Enum.IsDefined(draft.Precision))
@@ -422,18 +419,14 @@ namespace Chatcheology.Data.Memories.Personal
                 errors[PersonalFields.EveryYear] = everyYear;
             }
 
-            if (source.Length == 0)
+            if (PersonalMemoryFieldRules.SourceError(draft.Source) is { } sourceError)
             {
-                errors[PersonalFields.Source] = "Say where this memory comes from.";
-            }
-            else if (source.Length > MaxSourceLength)
-            {
-                errors[PersonalFields.Source] = $"Keep the source to {MaxSourceLength.ToString(CultureInfo.CurrentCulture)} characters.";
+                errors[PersonalFields.Source] = sourceError;
             }
 
-            if ((draft.Summary?.Trim().Length ?? 0) > MaxSummaryLength)
+            if (PersonalMemoryFieldRules.SummaryError(draft.Summary) is { } summaryError)
             {
-                errors[PersonalFields.Summary] = $"Keep the description to {MaxSummaryLength.ToString(CultureInfo.CurrentCulture)} characters.";
+                errors[PersonalFields.Summary] = summaryError;
             }
 
             var photos = draft.ExtraPhotos ?? [];
@@ -446,9 +439,9 @@ namespace Chatcheology.Data.Memories.Personal
             {
                 errors[PersonalFields.Image] = "Every photo needs an image.";
             }
-            else if (photos.Any(p => (p.Caption?.Trim().Length ?? 0) > MaxCaptionLength))
+            else if (photos.Select(p => PersonalMemoryFieldRules.CaptionError(p.Caption)).FirstOrDefault(e => e is not null) is { } captionError)
             {
-                errors[PersonalFields.Image] = $"Keep each caption to {MaxCaptionLength.ToString(CultureInfo.CurrentCulture)} characters.";
+                errors[PersonalFields.Image] = captionError;
             }
 
             return errors;
@@ -459,20 +452,8 @@ namespace Chatcheology.Data.Memories.Personal
         /// off: Every year needs a memory dated to the day without an end date (the store checks it is in a
         /// personal collection).
         /// </summary>
-        public static string? EveryYearError(bool everyYear, PersonalDatePrecision precision, DateOnly? end)
-        {
-            if (!everyYear)
-            {
-                return null;
-            }
-
-            if (precision != PersonalDatePrecision.Day)
-            {
-                return "Every year needs a memory dated to the day, not a month.";
-            }
-
-            return end is null ? null : "Every year is only for a memory without an end date.";
-        }
+        public static string? EveryYearError(bool everyYear, PersonalDatePrecision precision, DateOnly? end) =>
+            PersonalMemoryFieldRules.EveryYearError(everyYear, Shared(precision), end);
 
         /// <summary>A date as the desktop lists it: "2 January 2018", "January 2018", or a range "… to …".</summary>
         public static string DateText(string precision, DateTime start, DateTime? end)
