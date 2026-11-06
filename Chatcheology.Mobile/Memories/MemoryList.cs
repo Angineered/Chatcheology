@@ -30,8 +30,8 @@ namespace Chatcheology.Mobile.Memories
     public sealed record MemoryListItem(
         MemoryKey Key, string Title, string DateText, string DetailText, string? ImagePath, bool IsYearly, DateTime SortTime) : MemoryListRow
     {
-        /// <summary>The group a chip selects: <c>personal</c> or <c>collection:&lt;id&gt;</c>.</summary>
-        public string Group { get; init; } = MemoryList.PersonalChipId;
+        /// <summary>The Saved tab the row is listed under: <c>personal</c> or <c>collection:&lt;id&gt;</c>.</summary>
+        public string Group { get; init; } = MemoryList.PersonalGroup;
 
         /// <summary>The kind of row, which decides the two text lines.</summary>
         public MemoryListItemKind Kind { get; init; }
@@ -71,11 +71,6 @@ namespace Chatcheology.Mobile.Memories
         DifferentTimes,
     }
 
-    /// <summary>One filter chip of the Memories list.</summary>
-    /// <param name="Id"><c>all</c>, <c>personal</c> or <c>collection:&lt;id&gt;</c>.</param>
-    /// <param name="Name">What the chip shows.</param>
-    public sealed record MemoryListChip(string Id, string Name);
-
     /// <summary>Where Show in chat goes from a memory opened from the list: its row, or its day.</summary>
     public sealed class MemoryShowTarget
     {
@@ -100,7 +95,8 @@ namespace Chatcheology.Mobile.Memories
 
     /// <summary>
     /// The Memories list (CH-56): every memory row the chat would draw with every layer and filter on, newest
-    /// first, with year headings, chips and a title search. Built once from the in-memory index; reads nothing.
+    /// first, with year headings and a title search, one group per Saved tab (CH-59): the personal collections
+    /// together, and each imported collection. Built once from the in-memory index; reads nothing.
     /// </summary>
     /// <remarks>
     /// <para><strong>What is listed.</strong> Exactly the rows the chat's rules give (<c>MemoryEntry.Rows</c>) with an all-on
@@ -112,16 +108,16 @@ namespace Chatcheology.Mobile.Memories
     /// </remarks>
     public sealed class MemoryList
     {
-        /// <summary>The chip that lists everything.</summary>
-        public const string AllChipId = "all";
+        /// <summary>The group of every personal collection together: the Memories tab.</summary>
+        public const string PersonalGroup = "personal";
 
-        /// <summary>The chip that lists every personal collection together.</summary>
-        public const string PersonalChipId = "personal";
+        /// <summary>The Memories tab's empty line when no personal memory is listed.</summary>
+        public const string NoPersonalText = "No memories yet. Memories you add will show here.";
 
-        /// <summary>The empty line when nothing is listed at all.</summary>
-        public const string NothingListedText = "No memories in this archive.";
+        /// <summary>An imported collection's empty line when nothing of it is listed.</summary>
+        public const string NothingSharedText = "Nothing shared to list in this collection.";
 
-        /// <summary>The empty line when the chip and search match nothing.</summary>
+        /// <summary>The empty line when the search matches nothing in the group.</summary>
         public const string NoMatchText = "No titles match.";
 
         /// <summary>The empty line when the list could not be built (the archive closed under the page).</summary>
@@ -135,36 +131,34 @@ namespace Chatcheology.Mobile.Memories
         private readonly List<MemoryListItem> _items;
         private readonly Dictionary<MemoryKey, MemoryListItem> _byKey;
 
-        private MemoryList(MemoryIndex index, List<MemoryListItem> items, IReadOnlyList<MemoryListChip> chips)
+        private MemoryList(MemoryIndex index, List<MemoryListItem> items)
         {
             _index = index;
             _items = items;
             _byKey = items.ToDictionary(item => item.Key);
-            Chips = chips;
         }
 
         /// <summary>Whether nothing is listed.</summary>
         public bool IsEmpty => _items.Count == 0;
 
-        /// <summary>
-        /// The chips: none when <see cref="IsEmpty"/> (the page then shows only the empty line); otherwise
-        /// All first, then Memories (when there is a personal row), then each imported collection with a row,
-        /// by identifier.
-        /// </summary>
-        public IReadOnlyList<MemoryListChip> Chips { get; }
+        /// <summary>Every listed memory, all groups together, in the list's order (newest first).</summary>
+        public IReadOnlyList<MemoryListItem> Items => _items;
 
         /// <summary>How many memory rows are listed.</summary>
         public int Count => _items.Count;
 
         /// <summary>How many rows belong to personal collections.</summary>
-        public int PersonalCount => _items.Count(item => item.Group == PersonalChipId);
+        public int PersonalCount => CountIn(PersonalGroup);
 
         /// <summary>How many rows belong to imported collections.</summary>
         public int ImportedCount => _items.Count - PersonalCount;
 
-        /// <summary>The chip id of an imported collection.</summary>
-        public static string CollectionChipId(long collectionID) =>
+        /// <summary>The group of an imported collection: its own Saved tab.</summary>
+        public static string CollectionGroup(long collectionID) =>
             "collection:" + collectionID.ToString(CultureInfo.InvariantCulture);
+
+        /// <summary>How many memory rows <paramref name="group"/> lists, whatever the search.</summary>
+        public int CountIn(string group) => _items.Count(item => item.Group == group);
 
         /// <summary>
         /// Builds the list from <paramref name="index"/>. <paramref name="yearlyEntryIDs"/> are the archive's
@@ -194,37 +188,17 @@ namespace Chatcheology.Mobile.Memories
                 return compare != 0 ? compare : (a.Key.PeriodIndex ?? -1).CompareTo(b.Key.PeriodIndex ?? -1);
             });
 
-            var chips = new List<MemoryListChip>();
-
-            if (items.Count > 0)
-            {
-                chips.Add(new MemoryListChip(AllChipId, "All"));
-
-                var groups = items.Select(item => item.Group).ToHashSet(StringComparer.Ordinal);
-
-                if (groups.Contains(PersonalChipId))
-                {
-                    chips.Add(new MemoryListChip(PersonalChipId, "Memories"));
-                }
-
-                chips.AddRange(index.Collections
-                    .Where(c => c.Kind == ArchiveMemoryVocabulary.KindImported)
-                    .OrderBy(c => c.CollectionID)
-                    .Where(c => groups.Contains(CollectionChipId(c.CollectionID)))
-                    .Select(c => new MemoryListChip(CollectionChipId(c.CollectionID), c.Name)));
-            }
-
-            return new MemoryList(index, items, chips);
+            return new MemoryList(index, items);
         }
 
         /// <summary>
-        /// The rows for <paramref name="chipId"/> whose titles contain <paramref name="query"/> (trimmed; case and
+        /// The rows of <paramref name="group"/> whose titles contain <paramref name="query"/> (trimmed; case and
         /// accents ignored, as message search; blank is everything), newest first, each year's rows after its
-        /// heading. An unknown chip lists nothing.
+        /// heading. An unknown group lists nothing.
         /// </summary>
-        public IReadOnlyList<MemoryListRow> Rows(string chipId, string? query)
+        public IReadOnlyList<MemoryListRow> Rows(string group, string? query)
         {
-            ArgumentNullException.ThrowIfNull(chipId);
+            ArgumentNullException.ThrowIfNull(group);
 
             var needle = (query ?? string.Empty).Trim();
             var rows = new List<MemoryListRow>();
@@ -232,7 +206,7 @@ namespace Chatcheology.Mobile.Memories
 
             foreach (var item in _items)
             {
-                if (chipId != AllChipId && item.Group != chipId)
+                if (item.Group != group)
                 {
                     continue;
                 }
@@ -254,12 +228,27 @@ namespace Chatcheology.Mobile.Memories
             return rows;
         }
 
-        /// <summary>The empty line for <paramref name="rows"/>, or empty when there are rows.</summary>
-        public string EmptyText(IReadOnlyList<MemoryListRow> rows)
+        /// <summary>
+        /// The empty line for <paramref name="rows"/> of <paramref name="group"/>, or empty when there are rows: the
+        /// group's own line when it lists nothing at all (<see cref="NoPersonalText"/> for the personal group,
+        /// <see cref="NothingSharedText"/> for a collection), otherwise <see cref="NoMatchText"/>.
+        /// </summary>
+        public string EmptyText(string group, IReadOnlyList<MemoryListRow> rows)
         {
+            ArgumentNullException.ThrowIfNull(group);
             ArgumentNullException.ThrowIfNull(rows);
 
-            return rows.Count > 0 ? string.Empty : IsEmpty ? NothingListedText : NoMatchText;
+            if (rows.Count > 0)
+            {
+                return string.Empty;
+            }
+
+            if (CountIn(group) > 0)
+            {
+                return NoMatchText;
+            }
+
+            return group == PersonalGroup ? NoPersonalText : NothingSharedText;
         }
 
         /// <summary>
@@ -296,7 +285,7 @@ namespace Chatcheology.Mobile.Memories
         {
             var collection = entry.Collection;
             var imported = collection.Kind == ArchiveMemoryVocabulary.KindImported;
-            var group = imported ? CollectionChipId(collection.CollectionID) : PersonalChipId;
+            var group = imported ? CollectionGroup(collection.CollectionID) : PersonalGroup;
             var title = entry.Entry.Title;
 
             if (key.PeriodIndex is { } periodIndex)

@@ -19,14 +19,15 @@ namespace Chatcheology.Android.Pages
     /// <para>Everything that reads the archive runs off the UI thread, one read at a time: the pager's
     /// pages, and the reopen for a date jump, a search hit or a change of "me", which builds a new
     /// timeline on a worker thread and swaps it in only when it is ready.</para>
-    /// <para>The top bar (CH-37 to CH-39) has icons for Photos, Starred, the date picker and search,
+    /// <para>The top bar (CH-37 to CH-39, CH-59) has icons for Photos, Saved, the date picker and search,
     /// with Settings in the overflow menu; on a day with earlier years to remember, a discreet On this day
     /// icon reopens that card. Stars live in the app's settings; a toggle updates the loaded bubbles.</para>
     /// <para>Memory rows (CH-42) come with the timeline; a tap opens their details. A layer or filter
     /// switched in Settings rebuilds the timeline at the same place, like a change of "me", and the date
     /// picker's days are read again.</para>
-    /// <para>An archive with memories has Memories in the overflow menu (CH-56): every memory in one list,
-    /// whatever the layers say, each opening its details over the list.</para>
+    /// <para>The Saved icon (CH-59), for an archive with messages or memories, opens one screen with tabs: Starred,
+    /// Memories and one per imported collection (CH-38, CH-56). Every memory is listed whatever the layers say, each
+    /// opening its details over the list.</para>
     /// </remarks>
     public partial class ConversationPage : ContentPage
     {
@@ -96,7 +97,12 @@ namespace Chatcheology.Android.Pages
             if (!_session.IsEmpty)
             {
                 ToolbarItems.Add(new ToolbarItem("Photos", "toolbar_photos.png", () => _ = OpenGalleryAsync()));
-                ToolbarItems.Add(new ToolbarItem("Starred", "toolbar_starred.png", () => _ = OpenStarredAsync()));
+            }
+
+            // CH-59: stars and every memory on one screen, whatever the layer switches say.
+            if (_session.HasSaved)
+            {
+                ToolbarItems.Add(new ToolbarItem("Saved", "toolbar_saved.png", () => _ = OpenSavedAsync()));
             }
 
             if (_session.CanPickDate)
@@ -107,12 +113,6 @@ namespace Chatcheology.Android.Pages
             if (_session.CanSearch)
             {
                 ToolbarItems.Add(new ToolbarItem("Search", "toolbar_search.png", () => _ = OpenSearchAsync()));
-            }
-
-            // CH-56: every memory in one list, whatever the layer switches say.
-            if (_session.Memories.HasMemories)
-            {
-                ToolbarItems.Add(new ToolbarItem("Memories", null, () => _ = OpenMemoriesAsync()) { Order = ToolbarItemOrder.Secondary });
             }
 
             ToolbarItems.Add(new ToolbarItem("Settings", null, () => _ = OpenSettingsAsync()) { Order = ToolbarItemOrder.Secondary });
@@ -912,28 +912,18 @@ namespace Chatcheology.Android.Pages
             await Navigation.PushAsync(new GalleryPage(_state, _session, this));
         }
 
-        private async Task OpenStarredAsync()
+        private async Task OpenSavedAsync()
         {
             if (_closed || Navigation.NavigationStack.LastOrDefault() != this)
             {
                 return;
             }
 
-            await Navigation.PushAsync(new StarredPage(_state, _session, this));
-        }
-
-        private async Task OpenMemoriesAsync()
-        {
-            if (_closed || Navigation.NavigationStack.LastOrDefault() != this)
-            {
-                return;
-            }
-
-            await Navigation.PushAsync(new MemoriesPage(_session, this));
+            await Navigation.PushAsync(new SavedPage(_state, _session, this));
         }
 
         /// <summary>
-        /// A row of the Memories list (CH-56) was tapped: its details (read-only, whatever its layer says), pushed
+        /// A row of a Saved memory tab (CH-56, CH-59) was tapped: its details (read-only, whatever its layer says), pushed
         /// over the list, with Show in chat when there is a target (<see cref="MemoryList.ShowInChat"/>).
         /// </summary>
         internal async Task OpenMemoryDetailsAsync(MemoryKey key)
@@ -956,7 +946,7 @@ namespace Chatcheology.Android.Pages
         }
 
         /// <summary>
-        /// Show in chat from a memory opened from the Memories list: back to this page, at the row when it is
+        /// Show in chat from a memory opened from the Saved screen: back to this page, at the row when it is
         /// visible, otherwise at its day; the On this day card goes once there, whichever it was.
         /// </summary>
         private async Task ShowMemoryInChatAsync(MemoryShowTarget target)

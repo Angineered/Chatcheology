@@ -9,7 +9,8 @@ namespace Chatcheology.Mobile.Tests
 {
     /// <summary>
     /// The Memories list on the phone (CH-56): what is listed with every layer and filter ignored, order and
-    /// headings, row text, covers, chips, title search, Show in chat, and the session's cached build.
+    /// headings, row text, covers, groups (the Saved tabs, CH-59), title search, Show in chat, and the session's
+    /// cached build.
     /// Invented titles, games, names and dates only.
     /// </summary>
     public sealed class MemoryListTests : IDisposable
@@ -119,8 +120,8 @@ namespace Chatcheology.Mobile.Tests
                 MessageTimes = messages ?? [],
             });
 
-        private static List<MemoryListItem> Items(MemoryList list, string chip = MemoryList.AllChipId, string? query = null) =>
-            list.Rows(chip, query).OfType<MemoryListItem>().ToList();
+        private static List<MemoryListItem> Items(MemoryList list, string? group = null, string? query = null) =>
+            group is null ? [.. list.Items] : list.Rows(group, query).OfType<MemoryListItem>().ToList();
 
         private static List<string> Describe(IEnumerable<MemoryListRow> rows) =>
             rows.Select(row => row switch
@@ -194,9 +195,9 @@ namespace Chatcheology.Mobile.Tests
 
             var list = await session.GetMemoryListAsync();
 
-            Assert.Equal(
-                ["Y 2025", "E 20", "E 11", "P 10:2", "P 10:0"],
-                Describe(list.Rows(MemoryList.AllChipId, null)));
+            Assert.Equal(["E 20", "E 11", "P 10:2", "P 10:0"], Describe(list.Items));
+            Assert.Equal(["Y 2025", "E 20"], Describe(list.Rows(MemoryList.PersonalGroup, null)));
+            Assert.Equal(["Y 2025", "E 11", "P 10:2", "P 10:0"], Describe(list.Rows(MemoryList.CollectionGroup(MemoryArchiveBuilder.Gaming), null)));
 
             // Nothing was written to Settings by building the list.
             Assert.True(session.MemoryView.IsEmpty);
@@ -314,9 +315,11 @@ namespace Chatcheology.Mobile.Tests
 
             var list = MemoryList.Build(index, NoYearly);
 
+            Assert.Equal(["E 4", "E 5", "P 10:0", "P 10:1", "E 7", "E 8", "E 6", "E 9"], Describe(list.Items));
             Assert.Equal(
-                ["Y 2021", "E 4", "E 5", "P 10:0", "P 10:1", "E 7", "E 8", "E 6", "Y 2018", "E 9"],
-                Describe(list.Rows(MemoryList.AllChipId, string.Empty)));
+                ["Y 2021", "E 4", "E 5", "E 7", "E 8", "E 6", "Y 2018", "E 9"],
+                Describe(list.Rows(MemoryList.PersonalGroup, string.Empty)));
+            Assert.Equal(["Y 2021", "P 10:0", "P 10:1"], Describe(list.Rows(MemoryList.CollectionGroup(1), string.Empty)));
 
             // A Month memory sorts at its 1st, below that month's dated rows, and says only the month.
             var month = Items(list).Single(i => i.Key.EntryID == 6);
@@ -417,9 +420,9 @@ namespace Chatcheology.Mobile.Tests
             Assert.Equal(MemoryWording.EntryDate("Day", At(2020, 5, 6), null), item.DateText);
             Assert.Equal("Invented imports", item.DetailText);
             Assert.Null(item.ImagePath);
-            Assert.Equal(MemoryList.CollectionChipId(1), item.Group);
-            Assert.Equal([MemoryList.AllChipId, MemoryList.CollectionChipId(1)], list.Chips.Select(c => c.Id));
-            Assert.Single(Items(list, MemoryList.CollectionChipId(1)));
+            Assert.Equal(MemoryList.CollectionGroup(1), item.Group);
+            Assert.Single(Items(list, MemoryList.CollectionGroup(1)));
+            Assert.Empty(Items(list, MemoryList.PersonalGroup));
         }
 
         // ---------------------------------------------------------------------------------------
@@ -453,11 +456,11 @@ namespace Chatcheology.Mobile.Tests
         }
 
         // ---------------------------------------------------------------------------------------
-        // 9, 13: chips and empty lists.
+        // 9, 13: groups (the Saved tabs) and empty lists.
         // ---------------------------------------------------------------------------------------
 
         [Fact]
-        public void Chips_AllThenMemoriesThenImportedByID_WithoutEmptyGroups()
+        public void Groups_PersonalTogether_EachImportedOnItsOwn()
         {
             var index = Index(
                 [Imported(1, "Shared gaming"), Personal(2, "Holidays"), Personal(3, "Firsts"), Imported(4, "Invented other source"), Imported(5, "Only one account")],
@@ -471,33 +474,39 @@ namespace Chatcheology.Mobile.Tests
 
             var list = MemoryList.Build(index, NoYearly);
 
-            Assert.Equal(
-                [("all", "All"), ("personal", "Memories"), ("collection:1", "Shared gaming"), ("collection:4", "Invented other source")],
-                list.Chips.Select(c => (c.Id, c.Name)));
-
             // Memories folds the personal collections together.
-            Assert.Equal([2L, 1L], Items(list, MemoryList.PersonalChipId).Select(i => i.Key.EntryID));
+            Assert.Equal([2L, 1L], Items(list, MemoryList.PersonalGroup).Select(i => i.Key.EntryID));
             Assert.Equal([3L], Items(list, "collection:1").Select(i => i.Key.EntryID));
             Assert.Equal([4L], Items(list, "collection:4").Select(i => i.Key.EntryID));
+            Assert.Empty(list.Rows("collection:5", null));
             Assert.Empty(list.Rows("collection:99", null));
 
             Assert.Equal(4, list.Count);
             Assert.Equal(2, list.PersonalCount);
             Assert.Equal(2, list.ImportedCount);
+            Assert.Equal(2, list.CountIn(MemoryList.PersonalGroup));
+            Assert.Equal(0, list.CountIn("collection:5"));
         }
 
         [Fact]
-        public void NoPersonalRow_NoMemoriesChip()
+        public void AnEmptyGroup_HasItsOwnEmptyLine()
         {
             var index = Index(
-                [Imported(1), Personal(2)],
-                [Game(3, "Racer", Period("strong", (Local, At(2020, 1, 3)), (Other, At(2020, 1, 3))))]);
+                [Imported(1), Personal(2), Imported(3, "Only one account")],
+                [
+                    Game(3, "Racer", Period("strong", (Local, At(2020, 1, 3)), (Other, At(2020, 1, 3)))),
+                    GameIn(3, 5, "Solo", Period("one-account", (Local, At(2020, 1, 5)))),
+                ]);
 
-            Assert.Equal([MemoryList.AllChipId, "collection:1"], MemoryList.Build(index, NoYearly).Chips.Select(c => c.Id));
+            var list = MemoryList.Build(index, NoYearly);
+
+            Assert.Equal("No memories yet. Memories you add will show here.", list.EmptyText(MemoryList.PersonalGroup, list.Rows(MemoryList.PersonalGroup, null)));
+            Assert.Equal("Nothing shared to list in this collection.", list.EmptyText("collection:3", list.Rows("collection:3", null)));
+            Assert.Equal(string.Empty, list.EmptyText("collection:1", list.Rows("collection:1", null)));
         }
 
         [Fact]
-        public void NoCollections_IsEmpty_WithoutChips()
+        public void NoCollections_IsEmpty()
         {
             foreach (var index in new[] { MemoryIndex.Empty, Index([], []) })
             {
@@ -506,17 +515,16 @@ namespace Chatcheology.Mobile.Tests
                 var list = MemoryList.Build(index, NoYearly);
 
                 Assert.True(list.IsEmpty);
-                Assert.Empty(list.Chips);
-                Assert.Empty(list.Rows(MemoryList.AllChipId, null));
-                Assert.Equal(MemoryList.NothingListedText, list.EmptyText(list.Rows(MemoryList.AllChipId, null)));
+                Assert.Empty(list.Items);
+                Assert.Empty(list.Rows(MemoryList.PersonalGroup, null));
+                Assert.Equal(MemoryList.NoPersonalText, list.EmptyText(MemoryList.PersonalGroup, list.Rows(MemoryList.PersonalGroup, null)));
             }
 
-            // Collections whose only records are one-account: nothing listed, no chips.
+            // Collections whose only records are one-account: nothing listed.
             var oneAccount = MemoryList.Build(Index([Imported(1)], [Game(5, "Solo", Period("one-account", (Local, At(2020, 1, 5))))]), NoYearly);
 
             Assert.True(oneAccount.IsEmpty);
-            Assert.Empty(oneAccount.Chips);
-            Assert.Equal("No memories in this archive.", oneAccount.EmptyText(oneAccount.Rows(MemoryList.AllChipId, null)));
+            Assert.Equal(MemoryList.NothingSharedText, oneAccount.EmptyText("collection:1", oneAccount.Rows("collection:1", null)));
         }
 
         // ---------------------------------------------------------------------------------------
@@ -524,7 +532,7 @@ namespace Chatcheology.Mobile.Tests
         // ---------------------------------------------------------------------------------------
 
         [Fact]
-        public void Search_MatchesTitlesOnly_InsideTheChip()
+        public void Search_MatchesTitlesOnly_InsideTheGroup()
         {
             var index = Index(
                 [Imported(1, "Café games"), Personal(2, "Holidays")],
@@ -537,23 +545,24 @@ namespace Chatcheology.Mobile.Tests
             var list = MemoryList.Build(index, NoYearly);
 
             // Case and accents ignored; trimmed.
-            Assert.Equal(["Y 2021", "E 1", "Y 2020", "P 3:0"], Describe(list.Rows(MemoryList.AllChipId, "  cafe ")));
+            Assert.Equal(["Y 2021", "E 1"], Describe(list.Rows(MemoryList.PersonalGroup, "  cafe ")));
+            Assert.Equal(["Y 2020", "P 3:0"], Describe(list.Rows("collection:1", "  cafe ")));
 
-            // Inside the chip; headings follow the result.
-            Assert.Equal(["Y 2021", "E 1"], Describe(list.Rows(MemoryList.PersonalChipId, "café")));
+            // Inside the group; headings follow the result.
+            Assert.Equal(["Y 2021", "E 1"], Describe(list.Rows(MemoryList.PersonalGroup, "café")));
 
             // Blank is everything.
-            Assert.Equal(3, Items(list, MemoryList.AllChipId, "   ").Count);
-            Assert.Equal(3, Items(list, MemoryList.AllChipId, null).Count);
+            Assert.Equal(2, Items(list, MemoryList.PersonalGroup, "   ").Count);
+            Assert.Equal(2, Items(list, MemoryList.PersonalGroup, null).Count);
 
             // Collection names are not searched.
-            Assert.Empty(list.Rows(MemoryList.AllChipId, "Holidays"));
+            Assert.Empty(list.Rows(MemoryList.PersonalGroup, "Holidays"));
 
             // No match: the no-match line, without the typed text.
-            var none = list.Rows(MemoryList.PersonalChipId, "racer");
+            var none = list.Rows(MemoryList.PersonalGroup, "racer");
             Assert.Empty(none);
-            Assert.Equal(MemoryList.NoMatchText, list.EmptyText(none));
-            Assert.Equal(string.Empty, list.EmptyText(list.Rows(MemoryList.AllChipId, null)));
+            Assert.Equal(MemoryList.NoMatchText, list.EmptyText(MemoryList.PersonalGroup, none));
+            Assert.Equal(string.Empty, list.EmptyText(MemoryList.PersonalGroup, list.Rows(MemoryList.PersonalGroup, null)));
         }
 
         // ---------------------------------------------------------------------------------------
@@ -693,7 +702,7 @@ namespace Chatcheology.Mobile.Tests
             Assert.Equal(new MemoryKey(1, 0), items[^1].Key);
             Assert.True(items.Zip(items.Skip(1)).All(pair => pair.First.SortTime >= pair.Second.SortTime));
 
-            var rows = list.Rows(MemoryList.AllChipId, null);
+            var rows = list.Rows(MemoryList.CollectionGroup(1), null);
             Assert.Equal(items.Select(i => i.SortTime.Year).Distinct().Count(), rows.OfType<MemoryListYearRow>().Count());
         }
 
@@ -784,8 +793,7 @@ namespace Chatcheology.Mobile.Tests
 
             Assert.False(session.Memories.HasMemories);
             Assert.True(list.IsEmpty);
-            Assert.Empty(list.Chips);
-            Assert.Equal(MemoryList.NothingListedText, list.EmptyText(list.Rows(MemoryList.AllChipId, null)));
+            Assert.Equal(MemoryList.NoPersonalText, list.EmptyText(MemoryList.PersonalGroup, list.Rows(MemoryList.PersonalGroup, null)));
         }
     }
 }

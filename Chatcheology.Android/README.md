@@ -115,8 +115,8 @@ in the memory photo viewer never hands out the archive file: the app copies it i
 copy, photo only (never the caption or the memory's title). The archive file is only read, and a
 photo outside `files/archives/` is refused. Copies older than 24 hours are deleted when the app
 starts and before each share (a messenger may read the copy a little later); a copy that fails or is
-refused is deleted at once. A JPEG copy is rebuilt from the main image only: JFIF, Exif and ICC
-profile blocks and the image itself are kept; XMP, multi-picture (MPF), IPTC, comments, other blocks
+refused is deleted at once. A JPEG copy is rebuilt from the main image only: JFIF, Exif, ICC
+profile and Adobe colour-transform blocks and the image itself are kept; XMP, multi-picture (MPF), IPTC, comments, other blocks
 and everything after the main image (a second image, a gain map, a motion photo's video) are left
 out, so a motion photo shares as its still image. What is done depends on the file's real format
 (its first bytes, not its name; `PhotoShare` in `Chatcheology.Mobile`):

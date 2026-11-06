@@ -6,59 +6,66 @@ using Chatcheology.Mobile.Memories;
 namespace Chatcheology.Android.Pages
 {
     /// <summary>
-    /// The Memories list (CH-56): every memory the chat would show with every layer and filter on, newest
-    /// first under year headings, whatever Settings says. Chips pick All, Memories (the personal collections)
-    /// or one imported collection; the search box matches titles only. A tap opens the memory's details,
-    /// read-only, with Show in chat when there is somewhere to go.
+    /// The Memories tab and each imported collection's tab of the Saved screen (CH-56, CH-59): every memory the chat
+    /// would show with every layer and filter on, newest first under year headings, whatever Settings says. The
+    /// search box matches titles only. A tap opens the memory's details, read-only, with Show in chat when there is
+    /// somewhere to go.
     /// </summary>
     /// <remarks>
     /// <para>Built once per session in the background from the memories read at open
     /// (<see cref="ArchiveSession.GetMemoryListAsync"/>); nothing is read from the archive here, and nothing is
-    /// written to Settings. The chip and search are not stored: they reset when the page is opened again.</para>
-    /// <para>The list is bound the first time only, and again on a chip or search change; Back from the details
-    /// keeps the chip, the search and the scroll position.</para>
+    /// written to Settings. One view serves every memory tab: each tab's search and first visible row are kept in its
+    /// <see cref="SavedTabState"/> while the screen is open.</para>
+    /// <para>The rows are bound when a tab is shown and on a search change only; Back from the details keeps the
+    /// tab, the search and the scroll position.</para>
     /// </remarks>
-    internal sealed class MemoriesPage : ContentPage
+    internal sealed class SavedMemoriesView : ContentView
     {
         /// <summary>How long after the last keystroke the list is filtered again.</summary>
         private const int SearchDelayMilliseconds = 200;
 
         private readonly ArchiveSession _session;
         private readonly ConversationPage _conversation;
+        private readonly Page _page;
         private readonly SearchBar _query = new() { Placeholder = "Search memory titles" };
-        private readonly HorizontalStackLayout _chips = new() { Spacing = 8, Padding = new Thickness(12, 4) };
-        private readonly ScrollView _chipRow;
         private readonly CollectionView _list = new() { SelectionMode = SelectionMode.Single };
         private readonly Label _status = new() { FontSize = 14, Margin = new Thickness(16), HorizontalTextAlignment = TextAlignment.Center };
         private readonly ActivityIndicator _working = new() { IsVisible = false, IsRunning = false, HorizontalOptions = LayoutOptions.Center, VerticalOptions = LayoutOptions.Center };
-        private readonly List<(MemoryListChip Chip, Button Button)> _chipButtons = [];
         private MemoryList? _memories;
-        private string _chip = MemoryList.AllChipId;
+        private SavedTab? _tab;
+        private SavedTabState? _state;
+        private IReadOnlyList<MemoryListRow> _rows = [];
         private CancellationTokenSource? _typing;
-        private bool _loading;
+        private int _first;
+        private bool _settingQuery;
         private bool _opening;
 
-        internal MemoriesPage(ArchiveSession session, ConversationPage conversation)
+        internal SavedMemoriesView(ArchiveSession session, ConversationPage conversation, Page page)
         {
             _session = session;
             _conversation = conversation;
+            _page = page;
 
-            Title = "Memories";
             _status.TextIn("MutedText");
             _status.IsVisible = false;
             _query.IsVisible = false;
 
-            _chipRow = new ScrollView { Orientation = ScrollOrientation.Horizontal, HorizontalScrollBarVisibility = ScrollBarVisibility.Never, Content = _chips, IsVisible = false };
-
             _list.ItemTemplate = new MemoryTemplates();
             _list.SelectionChanged += OnSelected;
-            _query.TextChanged += (_, _) => _ = FilterSoonAsync();
+            _list.Scrolled += (_, e) => _first = Math.Max(0, e.FirstVisibleItemIndex);
+            _query.TextChanged += (_, _) =>
+            {
+                if (!_settingQuery)
+                {
+                    _ = FilterSoonAsync();
+                }
+            };
             _query.SearchButtonPressed += (_, _) =>
             {
                 // The search key filters now; the pending keystroke filter would bind (and scroll) again.
                 _typing?.Cancel();
                 _typing = null;
-                Bind();
+                BindSearch();
             };
 
             var layout = new Grid
@@ -67,114 +74,121 @@ namespace Chatcheology.Android.Pages
                 {
                     new RowDefinition(GridLength.Auto),
                     new RowDefinition(GridLength.Auto),
-                    new RowDefinition(GridLength.Auto),
                     new RowDefinition(GridLength.Star),
                 },
             };
 
             layout.Add(_query, 0, 0);
-            layout.Add(_chipRow, 0, 1);
-            layout.Add(_status, 0, 2);
-            layout.Add(_list, 0, 3);
-            layout.Add(_working, 0, 3);
+            layout.Add(_status, 0, 1);
+            layout.Add(_list, 0, 2);
+            layout.Add(_working, 0, 2);
 
             Content = layout;
         }
 
-        /// <inheritdoc />
-        protected override async void OnAppearing()
+        /// <summary>The screen is back on top (from a memory's details): a row can be opened again.</summary>
+        internal void Reopened()
         {
-            base.OnAppearing();
-
-            // Back from the details: a second tap may open again, and the same row can be tapped again.
             _opening = false;
             _list.SelectedItem = null;
+        }
 
-            if (_memories is not null || _loading)
+        /// <summary>
+        /// Shows <paramref name="tab"/> with the search and first visible row <paramref name="state"/> keeps; the list is
+        /// built the first time.
+        /// </summary>
+        internal async Task ShowAsync(SavedTab tab, SavedTabState state)
+        {
+            _tab = tab;
+            _state = state;
+            _typing?.Cancel();
+            _typing = null;
+
+            SetQuery(state.Search);
+
+            if (_memories is null)
+            {
+                _rows = [];
+                _list.ItemsSource = _rows;
+                _status.IsVisible = false;
+                _query.IsVisible = false;
+                _working.IsVisible = _working.IsRunning = true;
+
+                var watch = Stopwatch.StartNew();
+
+                try
+                {
+                    var memories = await _session.GetMemoryListAsync();
+                    AppState.LogTiming(
+                        "memories",
+                        watch.Elapsed,
+                        $"rows={memories.Count} personal={memories.PersonalCount} imported={memories.ImportedCount} tab={tab.LogName}");
+
+                    _memories = memories;
+                }
+                catch (Exception exception) when (exception is OperationCanceledException or ObjectDisposedException)
+                {
+                    // Nothing is read here, so only the session closing under the page can stop the build.
+                    _status.Text = MemoryList.NotReadText;
+                    _status.IsVisible = true;
+                    return;
+                }
+                finally
+                {
+                    _working.IsVisible = _working.IsRunning = false;
+                }
+
+                // Another tab was chosen while the list was built: that one is shown instead.
+                if (!ReferenceEquals(_state, state))
+                {
+                    return;
+                }
+            }
+
+            Bind(state);
+        }
+
+        /// <summary>The tab is left: its search and first visible row are kept.</summary>
+        internal void Hide()
+        {
+            _typing?.Cancel();
+            _typing = null;
+            Remember();
+            _state = null;
+            _tab = null;
+        }
+
+        private void Remember()
+        {
+            if (_state is not { } state)
             {
                 return;
             }
 
-            _loading = true;
-            _working.IsVisible = _working.IsRunning = true;
+            state.Search = _query.Text ?? string.Empty;
 
-            var watch = Stopwatch.StartNew();
+            if (_rows.Count > 0)
+            {
+                var index = Math.Min(_first, _rows.Count - 1);
+                state.Remember(SavedTabs.KeyOf(_rows[index]), index);
+            }
+            else
+            {
+                state.Remember(null, 0);
+            }
+        }
+
+        private void SetQuery(string text)
+        {
+            _settingQuery = true;
 
             try
             {
-                var memories = await _session.GetMemoryListAsync();
-                AppState.LogTiming(
-                    "memories",
-                    watch.Elapsed,
-                    $"rows={memories.Count} personal={memories.PersonalCount} imported={memories.ImportedCount} chips={memories.Chips.Count}");
-
-                _memories = memories;
-                ShowChips(memories);
-                _query.IsVisible = !memories.IsEmpty;
-                Bind();
-            }
-            catch (Exception exception) when (exception is OperationCanceledException or ObjectDisposedException)
-            {
-                // Nothing is read here, so only the session closing under the page can stop the build.
-                _status.Text = MemoryList.NotReadText;
-                _status.IsVisible = true;
+                _query.Text = text;
             }
             finally
             {
-                _loading = false;
-                _working.IsVisible = _working.IsRunning = false;
-            }
-        }
-
-        /// <summary>One button per chip, the chosen one filled; none when nothing is listed.</summary>
-        private void ShowChips(MemoryList memories)
-        {
-            _chips.Children.Clear();
-            _chipButtons.Clear();
-
-            foreach (var chip in memories.Chips)
-            {
-                var button = new Button { Text = chip.Name, Padding = new Thickness(14, 0), HeightRequest = 36, CornerRadius = 18 };
-
-                button.Clicked += (_, _) =>
-                {
-                    if (_chip == chip.Id)
-                    {
-                        return;
-                    }
-
-                    _chip = chip.Id;
-                    MarkChosenChip();
-                    Bind();
-                };
-
-                _chipButtons.Add((chip, button));
-                _chips.Children.Add(button);
-            }
-
-            _chipRow.IsVisible = _chipButtons.Count > 0;
-            MarkChosenChip();
-        }
-
-        private void MarkChosenChip()
-        {
-            foreach (var (chip, button) in _chipButtons)
-            {
-                var chosen = chip.Id == _chip;
-
-                button.Themed(BackgroundColorProperty, chosen ? "Primary" : "ButtonBackground");
-
-                if (chosen)
-                {
-                    button.SetAppThemeColor(Button.TextColorProperty, Colors.White, Colors.White);
-                }
-                else
-                {
-                    button.Themed(Button.TextColorProperty, "BodyText");
-                }
-
-                button.FontAttributes = chosen ? FontAttributes.Bold : FontAttributes.None;
-                SemanticProperties.SetDescription(button, chosen ? chip.Name + ", chosen" : "Show " + chip.Name);
+                _settingQuery = false;
             }
         }
 
@@ -195,24 +209,48 @@ namespace Chatcheology.Android.Pages
 
             if (ReferenceEquals(_typing, typing))
             {
-                Bind();
+                BindSearch();
             }
         }
 
-        /// <summary>The rows for the chosen chip and search, or the empty line.</summary>
-        private void Bind()
+        /// <summary>A new search: its rows from the top.</summary>
+        private void BindSearch()
         {
-            if (_memories is not { } memories)
+            if (_state is { } state)
+            {
+                state.Search = _query.Text ?? string.Empty;
+                state.Remember(null, 0);
+            }
+
+            Bind(restore: null);
+        }
+
+        /// <summary>
+        /// The rows for the shown tab and search, or its empty line: at the row <paramref name="restore"/> keeps, or
+        /// from the top.
+        /// </summary>
+        private void Bind(SavedTabState? restore)
+        {
+            if (_memories is not { } memories || _tab is not { } tab)
             {
                 return;
             }
 
-            var rows = memories.Rows(_chip, _query.Text);
-            var empty = memories.EmptyText(rows);
+            var rows = memories.Rows(tab.Id, _query.Text);
+            var empty = memories.EmptyText(tab.Id, rows);
+            var scrollTo = Math.Max(0, restore?.RestoreIndex(rows.Select(SavedTabs.KeyOf).ToList()) ?? 0);
 
+            _rows = rows;
+            _first = Math.Max(0, scrollTo);
+            _query.IsVisible = memories.CountIn(tab.Id) > 0;
             _status.Text = empty;
             _status.IsVisible = empty.Length > 0;
             _list.ItemsSource = rows;
+
+            if (scrollTo > 0)
+            {
+                Dispatcher.Dispatch(() => _list.ScrollTo(scrollTo, position: ScrollToPosition.Start, animate: false));
+            }
         }
 
         private async void OnSelected(object? sender, SelectionChangedEventArgs e)
@@ -244,8 +282,8 @@ namespace Chatcheology.Android.Pages
                 // The conversation reports its own failures; nothing else may end the app.
             }
 
-            // Nothing was opened (the page is still on top): the row can be tapped again.
-            if (Navigation.NavigationStack.LastOrDefault() == this)
+            // Nothing was opened (the screen is still on top): the row can be tapped again.
+            if (_page.Navigation.NavigationStack.LastOrDefault() == _page)
             {
                 _opening = false;
                 _list.SelectedItem = null;

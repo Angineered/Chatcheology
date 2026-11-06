@@ -169,6 +169,26 @@ namespace Chatcheology.Mobile.Tests
         }
 
         [Fact]
+        public void An_Adobe_APP14_block_is_kept_so_a_CMYK_JPEG_keeps_its_colours()
+        {
+            // APP14 "Adobe": version, flags0, flags1, colour transform (2 = YCCK).
+            byte[] adobe = [.. "Adobe"u8, 0x00, 0x64, 0x00, 0x00, 0x00, 0x00, 0x02];
+            byte[] image = [.. Segment(0xDB, new byte[65]), .. Segment(0xDA, new byte[10]), 0x12, 0x34, 0xFF, 0xD9];
+
+            byte[] source =
+            [
+                0xFF, 0xD8,
+                .. Segment(0xEE, adobe),
+                .. Segment(0xEE, Encoding.ASCII.GetBytes("Other\0invented")),
+                .. image,
+            ];
+
+            var rebuilt = MainImage(source);
+
+            Assert.Equal([0xFF, 0xD8, .. Segment(0xEE, adobe), .. image], rebuilt);
+        }
+
+        [Fact]
         public void A_scan_with_stuffed_bytes_restart_markers_and_fill_bytes_is_kept_whole()
         {
             byte[] scan = [0x12, 0xFF, 0x00, 0x34, 0xFF, 0xD0, 0x56, 0xFF, 0xD7, 0x78];

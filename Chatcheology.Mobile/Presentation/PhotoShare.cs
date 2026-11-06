@@ -48,8 +48,8 @@ namespace Chatcheology.Mobile.Presentation
     /// <list type="bullet">
     /// <item>JPEG: <see cref="PhotoShareMethod.RemoveLocation"/> on every supported Android (8.0 and later). The
     /// copy is rebuilt from the main image only (<see cref="WriteMainJpeg"/>): APP0 JFIF, APP1 Exif, APP2 ICC
-    /// profile and the image segments up to the main image's EOI. XMP, MPF, IPTC, comments, other APPn blocks and
-    /// everything after EOI (a second image, a gain map, a motion photo's video) are left out; then
+    /// profile, APP14 Adobe (colour transform) and the image segments up to the main image's EOI. XMP, MPF, IPTC,
+    /// comments, other APPn blocks and everything after EOI (a second image, a gain map, a motion photo's video) are left out; then
     /// <c>ExifInterface</c> clears the GPS tags of the one Exif block left.</item>
     /// <item>PNG and WebP: <see cref="PhotoShareMethod.RemoveLocation"/> on Android 11 (API 30) and later, where
     /// <c>ExifInterface</c> can write them. Below that, <see cref="PhotoShareMethod.PlainCopy"/>, but the copy is
@@ -333,9 +333,9 @@ namespace Chatcheology.Mobile.Presentation
             bigEndian ? BinaryPrimitives.ReadUInt32BigEndian(at) : BinaryPrimitives.ReadUInt32LittleEndian(at);
 
         /// <summary>
-        /// Writes a JPEG's main image only to <paramref name="target"/>: SOI; APP0 "JFIF", APP1 "Exif" and APP2
-        /// "ICC_PROFILE" blocks; every other non-APPn segment (DQT, SOFn, DHT, DRI, SOS with its scan data, ...); and
-        /// the main image's EOI. Everything else is left out: APP1 XMP, APP2 MPF, APP13 IPTC, other APPn, comments,
+        /// Writes a JPEG's main image only to <paramref name="target"/>: SOI; APP0 "JFIF", APP1 "Exif", APP2
+        /// "ICC_PROFILE" and APP14 "Adobe" blocks; every other non-APPn segment (DQT, SOFn, DHT, DRI, SOS with its
+        /// scan data, ...); and the main image's EOI. Everything else is left out: APP1 XMP, APP2 MPF, APP13 IPTC, other APPn, comments,
         /// and every byte after EOI (a second image, a gain map, a motion photo's video). False, with
         /// <paramref name="target"/> to be thrown away, when the data is not a complete JPEG.
         /// </summary>
@@ -404,6 +404,9 @@ namespace Chatcheology.Mobile.Presentation
                     0xE0 => data.StartsWith("JFIF\0"u8),
                     0xE1 => data.StartsWith("Exif\0\0"u8),
                     0xE2 => data.StartsWith("ICC_PROFILE\0"u8),
+
+                    // Adobe's colour transform (no location): without it a CMYK or YCCK JPEG shows wrong colours.
+                    0xEE => data.StartsWith("Adobe"u8),
                     >= 0xE3 and <= 0xEF => false,
                     0xFE => false,
                     _ => true,
