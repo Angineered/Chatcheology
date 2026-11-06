@@ -8,7 +8,8 @@ namespace Chatcheology.Mobile.OwnMemories
     /// <c>archive.&lt;hash&gt;</c>: a re-import or removing an archive leaves them as they are.
     /// </summary>
     /// <remarks>
-    /// Stored only; nothing reads them yet (step 1b wires them in). Keys of <c>OwnSetting</c>: <c>layer</c>
+    /// Read by <c>ArchiveSession</c> (the layer switch, step 1b) and <c>NotedDateSchedule.ReadOwn</c> (reminders, mutes,
+    /// posted day); the alarm receiver records the posted day with <see cref="PostedDay"/>. Keys of <c>OwnSetting</c>: <c>layer</c>
     /// (<c>off</c> when the My memories layer is turned off), <c>reminders</c> (<c>off</c> when their daily
     /// notification is turned off) and <c>postedDay</c> (<c>yyyy-MM-dd</c>). Notify mutes are rows of
     /// <c>OwnNotifyMute</c> by memory identity, removed with the memory.

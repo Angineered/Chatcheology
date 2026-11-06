@@ -3,13 +3,32 @@ using Chatcheology.Mobile.Memories;
 
 namespace Chatcheology.Mobile.Conversation
 {
+    /// <summary>Whose a memory is (CH-54): the open archive's, or the phone owner's own.</summary>
+    /// <remarks>
+    /// The two keep their own identifiers: an archive entry's id from the desktop, an own memory's local row id. The
+    /// same number in both is two different memories; nothing is offset or reused.
+    /// </remarks>
+    public enum MemoryOwner
+    {
+        /// <summary>A memory of the open archive (the default).</summary>
+        Archive = 0,
+
+        /// <summary>One of the phone owner's own memories, kept apart from every archive.</summary>
+        Own = 1,
+    }
+
     /// <summary>
     /// Which memory row: an entry, and for an imported entry's period card the period. A personal card
     /// and a "different times" line have no period.
     /// </summary>
-    /// <param name="EntryID">The entry.</param>
+    /// <param name="EntryID">The entry (for an own memory, its local row id).</param>
     /// <param name="PeriodIndex">The period of a period card; otherwise <see langword="null"/>.</param>
-    public readonly record struct MemoryKey(long EntryID, int? PeriodIndex);
+    /// <param name="Owner">Whose memory it is (CH-54); an archive's unless said otherwise.</param>
+    public readonly record struct MemoryKey(long EntryID, int? PeriodIndex, MemoryOwner Owner = MemoryOwner.Archive)
+    {
+        /// <summary>Whether it is one of the phone owner's own memories.</summary>
+        public bool IsOwn => Owner == MemoryOwner.Own;
+    }
 
     /// <summary>
     /// One memory row of the conversation list (CH-42): never a message. It is centred and drawn
@@ -65,7 +84,7 @@ namespace Chatcheology.Mobile.Conversation
     public sealed class PeriodCardRow : MemoryRow
     {
         internal PeriodCardRow(MemoryEntry entry, int periodIndex)
-            : base(new MemoryKey(entry.Entry.EntryID, periodIndex), entry.Period(periodIndex).StartLocal, entry.Collection.CollectionID)
+            : base(entry.KeyOf(periodIndex), entry.Period(periodIndex).StartLocal, entry.Collection.CollectionID)
         {
             var period = entry.Period(periodIndex);
 
@@ -109,7 +128,7 @@ namespace Chatcheology.Mobile.Conversation
     public sealed class DifferentTimesRow : MemoryRow
     {
         internal DifferentTimesRow(MemoryEntry entry)
-            : base(new MemoryKey(entry.Entry.EntryID, null), entry.FirstItemLocal, entry.Collection.CollectionID)
+            : base(entry.KeyOf(null), entry.FirstItemLocal, entry.Collection.CollectionID)
         {
             Text = MemoryWording.DifferentTimesLine(entry.Entry.Title);
         }
@@ -125,7 +144,7 @@ namespace Chatcheology.Mobile.Conversation
     public sealed class EntryCardRow : MemoryRow
     {
         internal EntryCardRow(MemoryEntry entry)
-            : base(new MemoryKey(entry.Entry.EntryID, null), entry.Entry.StartLocal, entry.Collection.CollectionID)
+            : base(entry.KeyOf(null), entry.Entry.StartLocal, entry.Collection.CollectionID)
         {
             Title = entry.Entry.Title;
             DateText = MemoryWording.EntryDate(entry.Entry.DatePrecision, entry.Entry.StartLocal, entry.Entry.EndLocal);

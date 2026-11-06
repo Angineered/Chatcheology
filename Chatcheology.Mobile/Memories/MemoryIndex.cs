@@ -149,6 +149,49 @@ namespace Chatcheology.Mobile.Memories
 
         /// <summary>The days that have a visible row.</summary>
         public IEnumerable<DateOnly> Days => _placements.Select(p => DateOnly.FromDateTime(p.TimeLocal)).Distinct();
+
+        /// <summary>
+        /// The rows of <paramref name="archive"/> and <paramref name="own"/> (CH-54: the archive's and the phone owner's
+        /// own memories, two indexes over the same messages) together, in placement order. When either is empty the other
+        /// is returned as it is, so an archive alone is laid out exactly as before.
+        /// </summary>
+        public static MemoryLayout Combine(MemoryLayout archive, MemoryLayout own)
+        {
+            ArgumentNullException.ThrowIfNull(archive);
+            ArgumentNullException.ThrowIfNull(own);
+
+            if (own.IsEmpty)
+            {
+                return archive;
+            }
+
+            if (archive.IsEmpty)
+            {
+                return own;
+            }
+
+            var placements = new List<MemoryPlacement>(archive._placements.Count + own._placements.Count);
+            placements.AddRange(archive._placements);
+            placements.AddRange(own._placements);
+            placements.Sort(Compare);
+
+            return new MemoryLayout(placements);
+        }
+
+        /// <summary>
+        /// Placement order: after which message, then time, then kind, then owner (an archive's row before an own one at
+        /// the same moment), then entry and period.
+        /// </summary>
+        internal static int Compare(MemoryPlacement a, MemoryPlacement b)
+        {
+            var compare = a.After.CompareTo(b.After);
+            compare = compare != 0 ? compare : a.TimeLocal.CompareTo(b.TimeLocal);
+            compare = compare != 0 ? compare : a.KindOrder.CompareTo(b.KindOrder);
+            compare = compare != 0 ? compare : a.Key.Owner.CompareTo(b.Key.Owner);
+            compare = compare != 0 ? compare : a.Key.EntryID.CompareTo(b.Key.EntryID);
+
+            return compare != 0 ? compare : (a.Key.PeriodIndex ?? -1).CompareTo(b.Key.PeriodIndex ?? -1);
+        }
     }
 
     /// <summary>One memory found by search: an entry title, opening the entry's first visible row.</summary>
@@ -158,7 +201,11 @@ namespace Chatcheology.Mobile.Memories
     /// <param name="CollectionName">The layer it belongs to.</param>
     /// <param name="Highlights">Every match in the title.</param>
     public sealed record MemorySearchHit(
-        MemoryKey Key, string Title, string DateText, string CollectionName, IReadOnlyList<MatchRange> Highlights);
+        MemoryKey Key, string Title, string DateText, string CollectionName, IReadOnlyList<MatchRange> Highlights)
+    {
+        /// <summary>The time of the row it opens: hits are listed newest first by it (CH-54: across archive and own).</summary>
+        public DateTime SortTime { get; init; }
+    }
 
     /// <summary>One entry as a <see cref="MemorySource"/> gives it.</summary>
     /// <param name="Entry">The entry.</param>
@@ -288,6 +335,9 @@ namespace Chatcheology.Mobile.Memories
         /// when they are 1 to the number of messages (an archive's).
         /// </summary>
         public IReadOnlyList<int>? MessageSequenceNumbers { get; init; }
+
+        /// <summary>Whose memories these are (CH-54): every key the index gives carries it. An archive's by default.</summary>
+        public MemoryOwner Owner { get; init; } = MemoryOwner.Archive;
     }
 
     /// <summary>
@@ -320,13 +370,15 @@ namespace Chatcheology.Mobile.Memories
             IReadOnlyList<ArchiveCollection> collections,
             List<MemoryEntry> entries,
             IReadOnlyList<DateTime> messageTimes,
-            IReadOnlyList<int>? sequenceNumbers = null)
+            IReadOnlyList<int>? sequenceNumbers = null,
+            MemoryOwner owner = MemoryOwner.Archive)
         {
             if (sequenceNumbers is not null && sequenceNumbers.Count != messageTimes.Count)
             {
                 throw new ArgumentException("Every message time needs its sequence number.", nameof(sequenceNumbers));
             }
 
+            Owner = owner;
             Collections = collections;
             _entries = entries;
             _byID = entries.ToDictionary(e => e.Entry.EntryID);
@@ -349,6 +401,18 @@ namespace Chatcheology.Mobile.Memories
 
         /// <summary>The collections, ordered by identifier.</summary>
         public IReadOnlyList<ArchiveCollection> Collections { get; }
+
+        /// <summary>Whose memories these are (CH-54); every key of this index carries it.</summary>
+        public MemoryOwner Owner { get; }
+
+        /// <summary>How many entries the index holds.</summary>
+        public int EntryCount => _entries.Count;
+
+        /// <summary>The local time of every message, in chat order, as the index was given them (CH-54: reused for the own index).</summary>
+        internal IReadOnlyList<DateTime> MessageTimes => _messageTimes;
+
+        /// <summary>The sequence numbers of <see cref="MessageTimes"/>, or <see langword="null"/> when they are 1 to the count.</summary>
+        internal IReadOnlyList<int>? MessageSequenceNumbers => _sequenceNumbers;
 
         /// <summary>Whether the archive has any collection.</summary>
         public bool HasMemories => Collections.Count > 0;
@@ -453,6 +517,7 @@ namespace Chatcheology.Mobile.Memories
                     item.Links,
                     item.ExtraPhotos)
                 {
+                    Owner = source.Owner,
                     // Imported (PSN) memories get no link (CH-48), whatever the source gives; each link is
                     // checked against the shared rules again.
                     Galleries = collection.Kind == ArchiveMemoryVocabulary.KindPersonal
@@ -465,7 +530,7 @@ namespace Chatcheology.Mobile.Memories
                 });
             }
 
-            return new MemoryIndex(source.Collections, entries, source.MessageTimes, source.MessageSequenceNumbers);
+            return new MemoryIndex(source.Collections, entries, source.MessageTimes, source.MessageSequenceNumbers, source.Owner);
         }
 
         /// <summary>The collection an entry belongs to, or <see langword="null"/> when the entry is not in the index.</summary>
@@ -491,15 +556,7 @@ namespace Chatcheology.Mobile.Memories
                 }
             }
 
-            placements.Sort((a, b) =>
-            {
-                var compare = a.After.CompareTo(b.After);
-                compare = compare != 0 ? compare : a.TimeLocal.CompareTo(b.TimeLocal);
-                compare = compare != 0 ? compare : a.KindOrder.CompareTo(b.KindOrder);
-                compare = compare != 0 ? compare : a.Key.EntryID.CompareTo(b.Key.EntryID);
-
-                return compare != 0 ? compare : (a.Key.PeriodIndex ?? -1).CompareTo(b.Key.PeriodIndex ?? -1);
-            });
+            placements.Sort(MemoryLayout.Compare);
 
             return new MemoryLayout(placements);
         }
@@ -546,15 +603,21 @@ namespace Chatcheology.Mobile.Memories
                     entry.Entry.Title,
                     DateSeparatorRow.DayText(DateOnly.FromDateTime(first.Time)),
                     entry.Collection.Name,
-                    matches)));
+                    matches)
+                {
+                    SortTime = first.Time,
+                }));
             }
 
             return hits.OrderByDescending(h => h.Time).Select(h => h.Hit).ToList();
         }
 
-        /// <summary>What a tap on a memory row opens, or <see langword="null"/> when the entry is not in the archive.</summary>
+        /// <summary>
+        /// What a tap on a memory row opens, or <see langword="null"/> when the entry is not in the index (or the key is
+        /// another owner's, CH-54: the same number there is a different memory).
+        /// </summary>
         public MemoryDetails? Details(MemoryKey key) =>
-            _byID.TryGetValue(key.EntryID, out var entry) ? entry.Details(key.PeriodIndex, this) : null;
+            key.Owner == Owner && _byID.TryGetValue(key.EntryID, out var entry) ? entry.Details(key.PeriodIndex, this) : null;
 
         /// <summary>The first visible row of an entry, or <see langword="null"/> (for a link to an entry).</summary>
         public MemoryKey? FirstRowOf(long entryID, MemoryView view)
@@ -745,6 +808,12 @@ namespace Chatcheology.Mobile.Memories
 
         internal DateTime FirstItemLocal { get; }
 
+        /// <summary>Whose memory it is (CH-54).</summary>
+        internal MemoryOwner Owner { get; init; }
+
+        /// <summary>The key of this entry's row for <paramref name="periodIndex"/>, with its owner.</summary>
+        internal MemoryKey KeyOf(int? periodIndex) => new(Entry.EntryID, periodIndex, Owner);
+
         internal ArchiveEntryPeriod Period(int index) => Periods.First(p => p.PeriodIndex == index);
 
         /// <summary>
@@ -757,7 +826,7 @@ namespace Chatcheology.Mobile.Memories
 
             if (Periods.Count == 0)
             {
-                yield return (new MemoryKey(Entry.EntryID, null), Entry.StartLocal, 2, () => new EntryCardRow(this));
+                yield return (KeyOf(null), Entry.StartLocal, 2, () => new EntryCardRow(this));
                 yield break;
             }
 
@@ -770,7 +839,7 @@ namespace Chatcheology.Mobile.Memories
 
                 if (participants >= 2 && view.IsOn(id, MemoryFilters.DifferentTimes))
                 {
-                    yield return (new MemoryKey(Entry.EntryID, null), FirstItemLocal, 1, () => new DifferentTimesRow(this));
+                    yield return (KeyOf(null), FirstItemLocal, 1, () => new DifferentTimesRow(this));
                 }
 
                 yield break;
@@ -781,7 +850,7 @@ namespace Chatcheology.Mobile.Memories
                 if (view.IsOn(id, period.Label))
                 {
                     var index = period.PeriodIndex;
-                    yield return (new MemoryKey(Entry.EntryID, index), period.StartLocal, 0, () => new PeriodCardRow(this, index));
+                    yield return (KeyOf(index), period.StartLocal, 0, () => new PeriodCardRow(this, index));
                 }
             }
         }
@@ -837,7 +906,7 @@ namespace Chatcheology.Mobile.Memories
 
             return new MemoryDetails
             {
-                Key = new MemoryKey(Entry.EntryID, selected?.PeriodIndex),
+                Key = KeyOf(selected?.PeriodIndex),
                 Title = Entry.Title,
                 DateText = selected is not null
                     ? DateSeparatorRow.DayText(DateOnly.FromDateTime(selected.StartLocal))

@@ -96,7 +96,8 @@ namespace Chatcheology.Mobile.Conversation
             IEnumerable<ArchiveNotedDate>? gifted = null,
             IReadOnlyDictionary<long, IReadOnlyList<Memories.GalleryLink>>? giftedLinks = null,
             IEnumerable<YearlyMemory>? yearly = null,
-            Memories.MemoryIndex? memories = null)
+            Memories.MemoryIndex? memories = null,
+            Memories.MemoryIndex? ownMemories = null)
         {
             ArgumentNullException.ThrowIfNull(settings);
             ArgumentException.ThrowIfNullOrWhiteSpace(contentsSha256);
@@ -109,7 +110,7 @@ namespace Chatcheology.Mobile.Conversation
                 today);
 
             return new OnThisDay(
-                settings, contentsSha256, today, Find(dayList, today), noted, YearlyMemories.For(yearly ?? [], daySet, today, memories));
+                settings, contentsSha256, today, Find(dayList, today), noted, YearlyMemories.For(yearly ?? [], daySet, today, memories, ownMemories));
         }
 
         /// <summary>Records that the card was shown today, so it does not open by itself again until tomorrow.</summary>
