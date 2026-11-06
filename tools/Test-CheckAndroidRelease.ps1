@@ -1,12 +1,12 @@
 <#
 .SYNOPSIS
-    Shows that tools\Check-AndroidRelease.ps1 fails on what it must refuse (CH-47): builds small
+    Shows that tools\Check-AndroidRelease.ps1 fails on what it must refuse (CH-47, CH-58): builds small
     synthetic APKs (a manifest only, linked with the SDK's aapt2) and checks the result line of the
     permission, INTERNET and exported-component checks for each.
 
 .DESCRIPTION
     Each case is a manifest with the allowed shape (POST_NOTIFICATIONS, RECEIVE_BOOT_COMPLETED,
-    AndroidX's signature-level guard, an exported launcher activity, two receivers not exported, the
+    ACCESS_MEDIA_LOCATION, AndroidX's signature-level guard, an exported launcher activity, two receivers not exported, the
     boot one with a BOOT_COMPLETED filter) and one change. The other checks (backup rules, FileProvider)
     fail on these bare APKs by design and are not looked at. Nothing outside a temporary folder is
     written; the folder is removed at the end. Prints one line per expectation and exits 1 if any
@@ -61,6 +61,7 @@ $package = 'org.chatcheology.viewer'
 $allowedPermissions = @(
     '<uses-permission android:name="android.permission.POST_NOTIFICATIONS" />',
     '<uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />',
+    '<uses-permission android:name="android.permission.ACCESS_MEDIA_LOCATION" />',
     "<permission android:name=""$package.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION"" android:protectionLevel=""signature"" />",
     "<uses-permission android:name=""$package.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION"" />"
 )
@@ -86,7 +87,7 @@ $allowed = @($launcher, $alarm, $boot)
 $cases = @(
     @{ Name = 'allowed shape'; Manifest = (New-Manifest $allowedPermissions $allowed)
        Expect = @{ 'No INTERNET permission' = 'PASS'; 'Only the launcher activity is exported' = 'PASS'; 'Permissions are exactly the allowed ones' = 'PASS' } },
-    @{ Name = 'allowed without the AndroidX guard'; Manifest = (New-Manifest $allowedPermissions[0..1] $allowed)
+    @{ Name = 'allowed without the AndroidX guard'; Manifest = (New-Manifest $allowedPermissions[0..2] $allowed)
        Expect = @{ 'Permissions are exactly the allowed ones' = 'PASS' } },
     @{ Name = 'INTERNET'; Manifest = (New-Manifest ($allowedPermissions + '<uses-permission android:name="android.permission.INTERNET" />') $allowed)
        Expect = @{ 'No INTERNET permission' = 'FAIL'; 'Permissions are exactly the allowed ones' = 'FAIL' } },
@@ -102,9 +103,17 @@ $cases = @(
        Expect = @{ 'Permissions are exactly the allowed ones' = 'FAIL' } },
     @{ Name = 'another declared permission'; Manifest = (New-Manifest ($allowedPermissions + "<permission android:name=""$package.OTHER"" android:protectionLevel=""normal"" />") $allowed)
        Expect = @{ 'Permissions are exactly the allowed ones' = 'FAIL' } },
-    @{ Name = 'POST_NOTIFICATIONS missing'; Manifest = (New-Manifest $allowedPermissions[1..3] $allowed)
+    @{ Name = 'POST_NOTIFICATIONS missing'; Manifest = (New-Manifest $allowedPermissions[1..4] $allowed)
        Expect = @{ 'Permissions are exactly the allowed ones' = 'FAIL' } },
-    @{ Name = 'RECEIVE_BOOT_COMPLETED missing'; Manifest = (New-Manifest @($allowedPermissions[0]) $allowed)
+    @{ Name = 'RECEIVE_BOOT_COMPLETED missing'; Manifest = (New-Manifest $allowedPermissions[0, 2, 3, 4] $allowed)
+       Expect = @{ 'Permissions are exactly the allowed ones' = 'FAIL' } },
+    @{ Name = 'ACCESS_MEDIA_LOCATION missing'; Manifest = (New-Manifest $allowedPermissions[0, 1, 3, 4] $allowed)
+       Expect = @{ 'Permissions are exactly the allowed ones' = 'FAIL' } },
+    @{ Name = 'READ_EXTERNAL_STORAGE'; Manifest = (New-Manifest ($allowedPermissions + '<uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />') $allowed)
+       Expect = @{ 'Permissions are exactly the allowed ones' = 'FAIL' } },
+    @{ Name = 'READ_MEDIA_IMAGES'; Manifest = (New-Manifest ($allowedPermissions + '<uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />') $allowed)
+       Expect = @{ 'Permissions are exactly the allowed ones' = 'FAIL' } },
+    @{ Name = 'MANAGE_EXTERNAL_STORAGE'; Manifest = (New-Manifest ($allowedPermissions + '<uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />') $allowed)
        Expect = @{ 'Permissions are exactly the allowed ones' = 'FAIL' } },
     @{ Name = 'no permissions at all'; Manifest = (New-Manifest @() $allowed)
        Expect = @{ 'No INTERNET permission' = 'PASS'; 'Permissions are exactly the allowed ones' = 'FAIL' } },

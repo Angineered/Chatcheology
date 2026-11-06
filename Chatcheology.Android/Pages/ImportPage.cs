@@ -14,6 +14,8 @@ namespace Chatcheology.Android.Pages
         private readonly AppState _state;
         private readonly IImportSource _source;
         private readonly StartPage _start;
+        private readonly ImportReadCounts _readCounts;
+        private readonly bool _locationRefused;
         private readonly CancellationTokenSource _cancel = new();
 
         private readonly Label _stage = new() { FontSize = 18, FontAttributes = FontAttributes.Bold };
@@ -25,11 +27,13 @@ namespace Chatcheology.Android.Pages
         private bool _running;
         private bool _leaving;
 
-        internal ImportPage(AppState state, IImportSource source, StartPage start)
+        internal ImportPage(AppState state, IImportSource source, StartPage start, ImportReadCounts readCounts, bool locationRefused)
         {
             _state = state;
             _source = source;
             _start = start;
+            _readCounts = readCounts;
+            _locationRefused = locationRefused;
 
             Title = "Import";
             NavigationPage.SetHasBackButton(this, false);
@@ -73,7 +77,7 @@ namespace Chatcheology.Android.Pages
             try
             {
                 result = await Task.Run(() => _state.Importer.Import(_source, progress, _cancel.Token));
-                AppState.LogTiming("import", watch.Elapsed, $"outcome={result.Outcome}");
+                AppState.LogTiming("import", watch.Elapsed, $"outcome={result.Outcome} {_readCounts}");
             }
             catch (Exception)
             {
@@ -150,6 +154,12 @@ namespace Chatcheology.Android.Pages
                             ? $"{check.Name}: {check.Problems.ToString("N0", CultureInfo.CurrentCulture)} problems in {check.Examined.ToString("N0", CultureInfo.CurrentCulture)} examined"
                             : $"{check.Name}: could not be run",
                     });
+                }
+
+                // CH-58: refused photo-location access may be why; one generic line, nothing per file.
+                if (MediaLocationAccess.ShowsRefusedLine(_locationRefused, result))
+                {
+                    _outcome.Children.Add(new Label { FontSize = 14, Text = MediaLocationAccess.RefusedLine });
                 }
             }
 

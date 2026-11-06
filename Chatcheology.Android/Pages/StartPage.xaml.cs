@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Globalization;
 using Chatcheology.Archive;
 using Chatcheology.Mobile.Conversation;
+using Chatcheology.Mobile.Import;
 using Chatcheology.Mobile.Library;
 using Microsoft.Data.Sqlite;
 #if DEBUG
@@ -243,7 +244,12 @@ namespace Chatcheology.Android.Pages
                     return;
                 }
 
-                var page = new ImportPage(_state, new DocumentTreeSource(activity.ContentResolver!, tree), this);
+                // CH-58: Android 10+ asks for photo-location access once the folder is picked and before the
+                // copy starts. Granted or refused, the import goes ahead; refused, photos may come back changed.
+                var granted = await MediaLocationPermission.AskBeforeImportAsync();
+                var apiLevel = MediaLocationPermission.ApiLevel;
+                var source = new DocumentTreeSource(activity, tree, MediaLocationAccess.ChooseReadPath(apiLevel, granted));
+                var page = new ImportPage(_state, source, this, source.ReadCounts, MediaLocationAccess.IsRefused(apiLevel, granted));
 
                 // The import page clears the flag when it is done.
                 await Navigation.PushAsync(page);
