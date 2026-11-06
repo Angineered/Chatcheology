@@ -1,8 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Two permissions, both for noted-date notifications (CH-47): POST_NOTIFICATIONS (asked for once on
+<!-- Three permissions. Two for noted-date notifications (CH-47): POST_NOTIFICATIONS (asked for once on
      Android 13+, the first time a noted date would notify) and RECEIVE_BOOT_COMPLETED (to set the
-     noted-date alarm again after a restart). The alarm is inexact (setAndAllowWhileIdle), so there is no
-     exact-alarm permission, and there is no foreground service. AndroidX adds its own signature-level
+     noted-date alarm again after a restart). One for import (CH-58): ACCESS_MEDIA_LOCATION, asked for on
+     Android 10+ after a folder is picked, because without it Android blanks the location in photos read
+     from the picked folder and their hash check fails. It gives no access to any file; the folder pick
+     still decides what can be read. There is no storage or READ_MEDIA_* permission. The alarm is
+     inexact (setAndAllowWhileIdle), so there is no exact-alarm permission, and there is no foreground service. AndroidX adds its own signature-level
      DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION. Debug builds also get INTERNET from the .NET Android
      tooling, for the debugger only; a Release build has none, and tools\Check-AndroidRelease.ps1 fails on
      any permission beyond these. Nothing is backed up or carried to another device: allowBackup is off,
@@ -24,6 +27,7 @@
           xmlns:tools="http://schemas.android.com/tools">
 	<uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 	<uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+	<uses-permission android:name="android.permission.ACCESS_MEDIA_LOCATION" />
 	<application
 		android:allowBackup="false"
 		android:fullBackupContent="@xml/backup_rules"

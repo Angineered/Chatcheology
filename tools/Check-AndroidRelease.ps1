@@ -13,8 +13,9 @@
       5. every FileProvider is not exported, grants per-URI permissions, and its paths file allows
          only files-path "archives/";
       6. zipalign -c -P 16 passes (16 KB page alignment of native libraries);
-      7. the permissions are exactly the allowed ones (CH-47): POST_NOTIFICATIONS and
-         RECEIVE_BOOT_COMPLETED for noted-date notifications, both required, plus AndroidX's own
+      7. the permissions are exactly the allowed ones (CH-47, CH-58): POST_NOTIFICATIONS and
+         RECEIVE_BOOT_COMPLETED for noted-date notifications and ACCESS_MEDIA_LOCATION so photos are read
+         with their location intact on import, all three required, plus AndroidX's own
          signature-level <package>.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION, which may be there. Any
          other requested or declared permission fails (INTERNET, an exact-alarm or foreground-service
          permission, anything else), from uses-permission and uses-permission-sdk-23 alike.
@@ -271,10 +272,10 @@ foreach ($provider in $providers) {
 $align = Invoke-Native $zipalign @('-c', '-P', '16', '-v', '4', $Apk)
 Report ($align.ExitCode -eq 0) 'zipalign -c -P 16 passes' (($align.Output | Select-Object -Last 1) -join '')
 
-# 7. Exactly the allowed permissions (CH-47). Requested (uses-permission, uses-permission-sdk-23) and
+# 7. Exactly the allowed permissions (CH-47, CH-58). Requested (uses-permission, uses-permission-sdk-23) and
 #    declared (permission) alike; the only declared one allowed is AndroidX's signature-level guard.
 $package = [string]@(Find-Elements $manifest 'manifest')[0].Attributes['package']
-$required = @('android.permission.POST_NOTIFICATIONS', 'android.permission.RECEIVE_BOOT_COMPLETED')
+$required = @('android.permission.POST_NOTIFICATIONS', 'android.permission.RECEIVE_BOOT_COMPLETED', 'android.permission.ACCESS_MEDIA_LOCATION')
 $optional = @("$package.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION")
 $requested = @(
     @(Find-Elements $manifest 'uses-permission') + @(Find-Elements $manifest 'uses-permission-sdk-23') |
