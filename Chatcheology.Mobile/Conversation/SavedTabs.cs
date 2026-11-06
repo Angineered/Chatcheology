@@ -252,13 +252,15 @@ namespace Chatcheology.Mobile.Conversation
 
         /// <summary>
         /// A Memories list row's key: <c>y:&lt;year&gt;</c> for a year heading, <c>t:&lt;title&gt;</c> for a title's
-        /// heading (grouped by title; in memory only, never logged), <c>e:&lt;entry&gt;[:&lt;period&gt;]</c> for a memory.
+        /// heading (grouped by title; in memory only, never logged), <c>e:&lt;entry&gt;[:&lt;period&gt;]</c> for an archive's
+        /// memory and <c>o:&lt;row&gt;</c> for one of the phone owner's own (CH-54: own row 1 and archive entry 1 are
+        /// different memories in the same Memories tab).
         /// </summary>
         public static string KeyOf(MemoryListRow row) => row switch
         {
             MemoryListYearRow year => "y:" + year.Text,
             MemoryListTitleRow title => "t:" + title.Title,
-            MemoryListItem item => "e:" + item.Key.EntryID.ToString(CultureInfo.InvariantCulture)
+            MemoryListItem item => (item.Key.IsOwn ? "o:" : "e:") + item.Key.EntryID.ToString(CultureInfo.InvariantCulture)
                 + (item.Key.PeriodIndex is { } period ? ":" + period.ToString(CultureInfo.InvariantCulture) : string.Empty),
             _ => throw new ArgumentException("Unknown row.", nameof(row)),
         };

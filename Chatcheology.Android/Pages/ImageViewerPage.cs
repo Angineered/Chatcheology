@@ -33,17 +33,19 @@ namespace Chatcheology.Android.Pages
         private readonly Border _info;
         private readonly CornerIcon? _star;
         private readonly Label? _caption;
-        private readonly string? _archivesFolder;
+        private readonly IReadOnlyList<string>? _shareRoots;
         private bool _leaving;
         private bool _sharing;
 
         /// <summary>A viewer over one memory's photos (CH-46), at the browser's current one.</summary>
         /// <param name="photos">The memory's photos.</param>
-        /// <param name="archivesFolder">The installed archives; Share (CH-59) refuses any photo outside it.</param>
-        internal ImageViewerPage(MemoryPhotoBrowser photos, string archivesFolder)
+        /// <param name="shareRoots">
+        /// The installed archives and the own photos folder (CH-54); Share (CH-59) refuses any photo outside them.
+        /// </param>
+        internal ImageViewerPage(MemoryPhotoBrowser photos, IReadOnlyList<string> shareRoots)
         {
             _memoryPhotos = photos;
-            _archivesFolder = archivesFolder;
+            _shareRoots = shareRoots;
 
             BackgroundColor = Colors.Black;
 
@@ -322,7 +324,7 @@ namespace Chatcheology.Android.Pages
         /// </summary>
         private async Task ShareMemoryPhotoAsync()
         {
-            if (_sharing || _memoryPhotos?.Current.Path is not { } path || _archivesFolder is null)
+            if (_sharing || _memoryPhotos?.Current.Path is not { } path || _shareRoots is null)
             {
                 return;
             }
@@ -331,7 +333,7 @@ namespace Chatcheology.Android.Pages
 
             try
             {
-                switch (await PhotoShareCopies.ShareAsync(path, _archivesFolder))
+                switch (await PhotoShareCopies.ShareAsync(path, _shareRoots))
                 {
                     case PhotoShareOutcome.NoApp:
                         await DisplayAlertAsync("Share", "No app on this phone can receive this file.", "OK");

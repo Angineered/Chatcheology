@@ -197,6 +197,17 @@ namespace Chatcheology.Mobile.Presentation
         }
 
         /// <summary>
+        /// True when <paramref name="fullPath"/> is a file inside one of <paramref name="folders"/> (<see cref="IsInside"/>):
+        /// the share roots, <c>files/archives/</c> and, for the phone owner's own memories (CH-54), <c>files/own/photos/</c>.
+        /// </summary>
+        public static bool IsInsideAny(string? fullPath, IEnumerable<string?> folders)
+        {
+            ArgumentNullException.ThrowIfNull(folders);
+
+            return folders.Any(folder => IsInside(fullPath, folder));
+        }
+
+        /// <summary>
         /// The shared copy's file name: "photo-" and <paramref name="unique"/>, with the source's extension in lower
         /// case (so the MIME type from <see cref="MediaMimeTypes"/> matches). Never the archive's own file name.
         /// </summary>

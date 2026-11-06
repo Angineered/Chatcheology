@@ -31,9 +31,6 @@ namespace Chatcheology.Mobile.Tests
         private static ArchiveNotedDate Gifted(long id, string title, int month, int day, int? year = null, string? note = null) =>
             new() { NotedDateID = id, Title = title, Month = month, Day = day, Year = year, Note = note };
 
-        private static OwnNotedDate Own(string id, string title, int month, int day, int? year = null, string? note = null) =>
-            new(id, title, month, day, year, note);
-
         private InstalledArchive Install(ArchiveBuilder builder)
         {
             var staging = _library.CreateStagingFolder();
@@ -46,15 +43,16 @@ namespace Chatcheology.Mobile.Tests
         }
 
         [Fact]
-        public void Gifted_and_own_dates_on_the_same_day_show_together_by_title_before_the_years()
+        public void Gifted_dates_on_the_same_day_show_by_title_before_the_years_and_a_leftover_own_date_is_never_read()
         {
-            _settings.SetOwnNotedDates("hash", [Own("a", "Zebra day", 6, 1, 2020), Own("b", "Apple day", 6, 1)]);
+            // CH-54 step 2 removed the phone's own noted dates: a value left under the old key shows nowhere.
+            _store.Set("archive.hash.ownNotedDates", "[{\"Id\":\"a\",\"Title\":\"Leftover day\",\"Month\":6,\"Day\":1}]");
             DateOnly[] days = [D(2019, 6, 1)];
 
-            var card = OnThisDay.For(_settings, "hash", days, D(2026, 6, 1), [Gifted(7, "Middle day", 6, 1, 2022), Gifted(8, "Other day", 6, 2)]);
+            var card = OnThisDay.For(_settings, "hash", days, D(2026, 6, 1), [Gifted(7, "Middle day", 6, 1, 2022), Gifted(9, "Apple day", 6, 1), Gifted(8, "Other day", 6, 2)]);
 
-            Assert.Equal(["Apple day", "Middle day", "Zebra day"], card.Noted.Select(n => n.Title).ToList());
-            Assert.Equal(["Apple day", "Middle day · 4 years", "Zebra day · 6 years"], card.Noted.Select(n => n.Text).ToList());
+            Assert.Equal(["Apple day", "Middle day"], card.Noted.Select(n => n.Title).ToList());
+            Assert.Equal(["Apple day", "Middle day · 4 years"], card.Noted.Select(n => n.Text).ToList());
             Assert.Equal([2019], card.Years.Select(y => y.Year).ToList());
             Assert.True(card.ShowsIcon);
         }
@@ -163,46 +161,28 @@ namespace Chatcheology.Mobile.Tests
         }
 
         [Fact]
-        public void Own_dates_round_trip_and_a_damaged_value_reads_as_empty()
+        public void Damaged_mutes_keep_only_the_numbers()
         {
-            _settings.SetOwnNotedDates("hash", [Own("x", "Trip", 9, 3, 2018, "Note"), Own("y", "Another", 1, 31)]);
-
-            Assert.Equal(
-                [Own("y", "Another", 1, 31), Own("x", "Trip", 9, 3, 2018, "Note")],
-                _settings.GetOwnNotedDates("hash"));
-
-            foreach (var damaged in new[] { "not json", "{\"a\":1}", "[1,2]", "[null]", "[{\"Id\":\"a\",\"Title\":\"T\",\"Month\":13,\"Day\":1}]", "[{\"Id\":\"a\"}]", "[" })
-            {
-                _store.Set("archive.hash.ownNotedDates", damaged);
-                Assert.Empty(_settings.GetOwnNotedDates("hash"));
-            }
-
-            // One bad entry does not take the good ones with it; a duplicate id is dropped.
-            _store.Set(
-                "archive.hash.ownNotedDates",
-                "[{\"Id\":\"a\",\"Title\":\"Good\",\"Month\":2,\"Day\":29},{\"Id\":\"b\",\"Title\":\"\",\"Month\":1,\"Day\":1},{\"Id\":\"a\",\"Title\":\"Dup\",\"Month\":1,\"Day\":2}]");
-            Assert.Equal([Own("a", "Good", 2, 29)], _settings.GetOwnNotedDates("hash"));
-
             _store.Set("archive.hash.mutedNotedDates", "x,,3,4:5");
             Assert.Equal([3L], _settings.GetMutedNotedDates("hash").ToList());
         }
 
         [Fact]
-        public void Forget_clears_own_dates_and_mutes()
+        public void Forget_clears_a_leftover_own_dates_key_and_the_mutes()
         {
-            _settings.SetOwnNotedDates("hash", [Own("x", "Trip", 9, 3)]);
+            _store.Set("archive.hash.ownNotedDates", "[]");
             _settings.SetNotedDateMuted("hash", 4, true);
             _settings.SetStarredMessages("hash", [1]);
 
             _settings.Forget("hash");
 
-            Assert.Empty(_settings.GetOwnNotedDates("hash"));
+            Assert.False(_store.Values.ContainsKey("archive.hash.ownNotedDates"));
             Assert.Empty(_settings.GetMutedNotedDates("hash"));
             Assert.Equal([1], _settings.GetStarredMessages("hash"));
         }
 
         [Fact]
-        public void The_session_reads_gifted_dates_from_the_archive_and_keeps_own_ones_outside_it()
+        public void The_session_reads_gifted_dates_from_the_archive_and_writes_only_their_mutes_outside_it()
         {
             var builder = new ArchiveBuilder();
             builder.Add("Long ago", ArchiveBuilder.Other, new DateTime(2019, 7, 4, 10, 0, 0));
@@ -214,66 +194,22 @@ namespace Chatcheology.Mobile.Tests
 
             using (var session = ArchiveSession.Open(archive, _settings))
             {
-                Assert.Empty(session.SaveOwnNotedDate(null, "  My own  ", 7, 4, 2020, "  ", today));
                 session.SetNotedDateMuted(5, true);
                 session.SetNotedDateMuted(99, true);
 
                 var listings = session.NotedDateListings;
-                Assert.Equal(["Invented anniversary", "My own"], listings.Select(l => l.Title).ToList());
-                Assert.Equal([true, false], listings.Select(l => l.IsGifted).ToList());
+                Assert.Equal(["Invented anniversary"], listings.Select(l => l.Title).ToList());
+                Assert.True(listings[0].IsGifted);
                 Assert.False(listings[0].Notify);
                 Assert.Equal("4 July 2019", listings[0].DateText);
-                Assert.Null(listings[1].Note);
 
                 var card = session.OnThisDayFor(session.ReadDays(), today);
-                Assert.Equal(["Invented anniversary · 7 years", "My own · 6 years"], card.Noted.Select(n => n.Text).ToList());
+                Assert.Equal(["Invented anniversary · 7 years"], card.Noted.Select(n => n.Text).ToList());
                 Assert.Equal(D(2019, 7, 4), card.Noted[0].JumpDay);
-                Assert.Null(card.Noted[1].JumpDay);
-
-                // Edit keeps the id; delete removes only own dates.
-                var id = listings[1].Id;
-                Assert.Empty(session.SaveOwnNotedDate(id, "Renamed", 7, 5, null, "Kept", today));
-                Assert.Equal(["Renamed"], session.NotedDateListings.Where(l => !l.IsGifted).Select(l => l.Title).ToList());
-                Assert.Equal(id, session.NotedDateListings.Single(l => !l.IsGifted).Id);
-
-                session.DeleteOwnNotedDate("5");
-                Assert.Equal(2, session.NotedDateListings.Count);
-                session.DeleteOwnNotedDate(id);
-                Assert.Equal(["Invented anniversary"], session.NotedDateListings.Select(l => l.Title).ToList());
             }
 
             // Nothing was written into the archive's folder.
             Assert.Equal(before, ArchiveContents.Build(folder));
-        }
-
-        [Fact]
-        public void A_bad_own_date_is_refused_with_the_shared_rules_and_nothing_is_stored()
-        {
-            var archive = Install(new ArchiveBuilder());
-            var today = D(2026, 7, 4);
-
-            using var session = ArchiveSession.Open(archive, _settings);
-
-            Assert.Equal([NotedDateField.Title], session.SaveOwnNotedDate(null, " ", 7, 4, null, null, today).Keys);
-            Assert.Equal([NotedDateField.Date], session.SaveOwnNotedDate(null, "T", 2, 29, 2021, null, today).Keys);
-            Assert.Equal([NotedDateField.Year], session.SaveOwnNotedDate(null, "T", 7, 4, 2027, null, today).Keys);
-            Assert.Empty(session.SaveOwnNotedDate(null, "Leap", 2, 29, 2024, null, today));
-            Assert.Empty(session.SaveOwnNotedDate(null, "Leap, no year", 2, 29, null, null, today));
-            Assert.Equal(2, session.NotedDateListings.Count);
-        }
-
-        [Fact]
-        public void Saving_a_new_date_twice_under_the_same_id_does_not_duplicate_it()
-        {
-            var archive = Install(new ArchiveBuilder());
-            var today = D(2026, 7, 4);
-
-            using var session = ArchiveSession.Open(archive, _settings);
-
-            Assert.Empty(session.SaveOwnNotedDate("fixed", "Once", 7, 4, null, null, today));
-            Assert.Empty(session.SaveOwnNotedDate("fixed", "Once", 7, 4, null, null, today));
-
-            Assert.Equal(["fixed"], session.NotedDateListings.Select(l => l.Id).ToList());
         }
 
         [Fact]

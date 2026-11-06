@@ -317,6 +317,63 @@ namespace Chatcheology.Mobile.Tests
         }
 
         [Fact]
+        public async Task A_BMP_with_BI_BITFIELDS_after_a_40_byte_header_keeps_its_12_mask_bytes_and_zeroes_only_the_gap()
+        {
+            // 1b review S4: zeroed masks would garble a 16/32-bit picture.
+            var masks = (byte[])[0x00, 0xF8, 0, 0, 0xE0, 0x07, 0, 0, 0x1F, 0, 0, 0];
+            var bmp = BmpWithHeader(40, bitsPerPixel: 16, compression: 3, tables: masks, gap: "12.58N"u8.ToArray());
+
+            var stored = await StoredBytes(bmp, OwnPhotoStatus.Stored);
+
+            Assert.Equal(masks, stored[54..66]);
+            Assert.Equal(new byte[6], stored[66..72]);
+            Assert.Equal(bmp[72..], stored[72..]);
+            Assert.Equal(bmp[..54], stored[..54]);
+        }
+
+        [Fact]
+        public async Task A_BMP_with_BI_ALPHABITFIELDS_after_a_40_byte_header_keeps_its_16_mask_bytes()
+        {
+            var masks = Enumerable.Range(1, 16).Select(i => (byte)i).ToArray();
+            var bmp = BmpWithHeader(40, bitsPerPixel: 32, compression: 6, tables: masks, gap: "12.58N"u8.ToArray());
+
+            var stored = await StoredBytes(bmp, OwnPhotoStatus.Stored);
+
+            Assert.Equal(masks, stored[54..70]);
+            Assert.Equal(new byte[6], stored[70..76]);
+        }
+
+        [Fact]
+        public async Task An_OS2_BMP_keeps_its_3_byte_palette_and_zeroes_the_gap_after_it()
+        {
+            // 12-byte core header, 1 bit per pixel: two 3-byte palette entries.
+            var palette = (byte[])[0x10, 0x20, 0x30, 0x40, 0x50, 0x60];
+            var bmp = BmpWithHeader(12, bitsPerPixel: 1, compression: 0, tables: palette, gap: "12.58N"u8.ToArray());
+
+            var stored = await StoredBytes(bmp, OwnPhotoStatus.Stored);
+
+            Assert.Equal(bmp[..26], stored[..26]);
+            Assert.Equal(palette, stored[26..32]);
+            Assert.Equal(new byte[6], stored[32..38]);
+            Assert.Equal(bmp[38..], stored[38..]);
+        }
+
+        [Fact]
+        public async Task A_V4_BMP_keeps_its_header_masks_and_palette_and_zeroes_the_gap()
+        {
+            // V4 (108 bytes): the masks are inside the header, so only the palette follows it.
+            var palette = Enumerable.Range(0, 8).Select(i => (byte)(0x80 + i)).ToArray();
+            var bmp = BmpWithHeader(108, bitsPerPixel: 1, compression: 0, tables: palette, gap: "12.58N"u8.ToArray());
+
+            var stored = await StoredBytes(bmp, OwnPhotoStatus.Stored);
+
+            Assert.Equal(bmp[..122], stored[..122]);
+            Assert.Equal(palette, stored[122..130]);
+            Assert.Equal(new byte[6], stored[130..136]);
+            Assert.Equal(bmp[136..], stored[136..]);
+        }
+
+        [Fact]
         public async Task A_BMP_V5_embedded_profile_in_the_gap_is_kept_and_the_rest_of_the_gap_zeroed()
         {
             var profile = "ICC-PROFILE-BYTES"u8.ToArray();
@@ -905,6 +962,53 @@ namespace Chatcheology.Mobile.Tests
             for (var i = pixelOffset; i < bytes.Length; i++)
             {
                 bytes[i] = 1;
+            }
+
+            return bytes;
+        }
+
+        /// <summary>
+        /// A 2 x 2 BMP with a <paramref name="headerSize"/>-byte info header, then <paramref name="tables"/> (masks and
+        /// palette), then <paramref name="gap"/>, then 8 pixel bytes. The colour count is left 0 (the default for the bits).
+        /// </summary>
+        private static byte[] BmpWithHeader(int headerSize, ushort bitsPerPixel, uint compression, byte[] tables, byte[] gap)
+        {
+            const int info = 14;
+            var pixelOffset = info + headerSize + tables.Length + gap.Length;
+            var bytes = new byte[pixelOffset + 8];
+            "BM"u8.CopyTo(bytes);
+            BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(2), (uint)bytes.Length);
+            BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(10), (uint)pixelOffset);
+            BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(info), (uint)headerSize);
+
+            if (headerSize == 12)
+            {
+                BinaryPrimitives.WriteUInt16LittleEndian(bytes.AsSpan(info + 4), 2);
+                BinaryPrimitives.WriteUInt16LittleEndian(bytes.AsSpan(info + 6), 2);
+                BinaryPrimitives.WriteUInt16LittleEndian(bytes.AsSpan(info + 8), 1);
+                BinaryPrimitives.WriteUInt16LittleEndian(bytes.AsSpan(info + 10), bitsPerPixel);
+            }
+            else
+            {
+                BinaryPrimitives.WriteInt32LittleEndian(bytes.AsSpan(info + 4), 2);
+                BinaryPrimitives.WriteInt32LittleEndian(bytes.AsSpan(info + 8), 2);
+                BinaryPrimitives.WriteUInt16LittleEndian(bytes.AsSpan(info + 12), 1);
+                BinaryPrimitives.WriteUInt16LittleEndian(bytes.AsSpan(info + 14), bitsPerPixel);
+                BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(info + 16), compression);
+
+                // Header bytes after the common fields (V4 masks, colour space) are not zero, so a wrong gap start shows.
+                for (var i = info + 40; i < info + headerSize; i++)
+                {
+                    bytes[i] = 0x5A;
+                }
+            }
+
+            tables.CopyTo(bytes, info + headerSize);
+            gap.CopyTo(bytes, info + headerSize + tables.Length);
+
+            for (var i = pixelOffset; i < bytes.Length; i++)
+            {
+                bytes[i] = 3;
             }
 
             return bytes;

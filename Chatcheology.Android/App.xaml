@@ -45,6 +45,9 @@
             <Color x:Key="MemoryCardBackgroundDark">#28233A</Color>
             <Color x:Key="MemoryAccentLight">#6A4C9C</Color>
             <Color x:Key="MemoryAccentDark">#C2B0EC</Color>
+            <!-- CH-54: a form field's problem, readable on either page background. -->
+            <Color x:Key="ErrorTextLight">#B3261E</Color>
+            <Color x:Key="ErrorTextDark">#F2B8B5</Color>
 
             <!-- Pages and the controls that do not set a colour of their own. -->
             <Style TargetType="ContentPage" ApplyToDerivedTypes="True">
@@ -56,6 +59,18 @@
             <Style TargetType="Picker">
                 <Setter Property="TextColor" Value="{AppThemeBinding Light={StaticResource BodyTextLight}, Dark={StaticResource BodyTextDark}}" />
                 <Setter Property="TitleColor" Value="{AppThemeBinding Light={StaticResource MutedTextLight}, Dark={StaticResource MutedTextDark}}" />
+            </Style>
+            <!-- CH-54: the memory form's fields follow the phone's mode. -->
+            <Style TargetType="Entry">
+                <Setter Property="TextColor" Value="{AppThemeBinding Light={StaticResource BodyTextLight}, Dark={StaticResource BodyTextDark}}" />
+                <Setter Property="PlaceholderColor" Value="{AppThemeBinding Light={StaticResource MutedTextLight}, Dark={StaticResource MutedTextDark}}" />
+            </Style>
+            <Style TargetType="Editor">
+                <Setter Property="TextColor" Value="{AppThemeBinding Light={StaticResource BodyTextLight}, Dark={StaticResource BodyTextDark}}" />
+                <Setter Property="PlaceholderColor" Value="{AppThemeBinding Light={StaticResource MutedTextLight}, Dark={StaticResource MutedTextDark}}" />
+            </Style>
+            <Style TargetType="DatePicker">
+                <Setter Property="TextColor" Value="{AppThemeBinding Light={StaticResource BodyTextLight}, Dark={StaticResource BodyTextDark}}" />
             </Style>
             <Style TargetType="SearchBar">
                 <Setter Property="TextColor" Value="{AppThemeBinding Light={StaticResource BodyTextLight}, Dark={StaticResource BodyTextDark}}" />

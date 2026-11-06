@@ -21,6 +21,8 @@ namespace Chatcheology.Android
         private static string? _pendingArchive;
         private ActivityResultLauncher? _pickFolder;
         private TaskCompletionSource<AndroidUri?>? _picking;
+        private ActivityResultLauncher? _pickPhoto;
+        private TaskCompletionSource<AndroidUri?>? _pickingPhoto;
 
         /// <summary>The running activity, while it exists.</summary>
         internal static MainActivity? Current { get; private set; }
@@ -42,6 +44,32 @@ namespace Chatcheology.Android
             _pickFolder.Launch(null);
 
             return _picking.Task;
+        }
+
+        /// <summary>
+        /// Opens the system photo picker for one picture (CH-54: AndroidX <c>PickVisualMedia</c>, images only) and returns
+        /// its content address, or <see langword="null"/> when nothing was picked. No permission is involved: the app may
+        /// read that one picture. Where the system picker is missing (before Android 11 without the SDK extension), the
+        /// contract falls back to the document picker; there is no Play-services backport, so nothing is added to the
+        /// manifest.
+        /// </summary>
+        internal Task<AndroidUri?> PickPhotoAsync()
+        {
+            if (_pickPhoto is null)
+            {
+                return Task.FromResult<AndroidUri?>(null);
+            }
+
+            _pickingPhoto?.TrySetResult(null);
+            _pickingPhoto = new TaskCompletionSource<AndroidUri?>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+            var request = new PickVisualMediaRequest.Builder()
+                .SetMediaType(ActivityResultContracts.PickVisualMedia.ImageOnly.Instance)
+                .Build();
+
+            _pickPhoto.Launch(request);
+
+            return _pickingPhoto.Task;
         }
 
         /// <summary>
@@ -67,6 +95,7 @@ namespace Chatcheology.Android
 
             // Registered before the activity starts, as the result API requires.
             _pickFolder = RegisterForActivityResult(new ActivityResultContracts.OpenDocumentTree(), new FolderPicked(this));
+            _pickPhoto = RegisterForActivityResult(new ActivityResultContracts.PickVisualMedia(), new PhotoPicked(this));
         }
 
         /// <summary>
@@ -136,6 +165,7 @@ namespace Chatcheology.Android
             }
 
             _picking?.TrySetResult(null);
+            _pickingPhoto?.TrySetResult(null);
             base.OnDestroy();
         }
 
@@ -143,6 +173,12 @@ namespace Chatcheology.Android
         {
             public void OnActivityResult(Java.Lang.Object? result) =>
                 activity._picking?.TrySetResult(result as AndroidUri);
+        }
+
+        private sealed class PhotoPicked(MainActivity activity) : Java.Lang.Object, IActivityResultCallback
+        {
+            public void OnActivityResult(Java.Lang.Object? result) =>
+                activity._pickingPhoto?.TrySetResult(result as AndroidUri);
         }
     }
 }

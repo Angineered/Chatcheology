@@ -98,6 +98,18 @@ namespace Chatcheology.Mobile.OwnMemories
             _maxBytes = maxPhotoBytes;
         }
 
+        /// <summary>
+        /// What the form says when a photo is refused (CH-54 step 2), plainly and never with a file name; null when it was
+        /// stored. A photo that still looked as if it held a location gets only "This photo couldn't be added."
+        /// </summary>
+        public static string? MessageFor(OwnPhotoStatus status) => status switch
+        {
+            OwnPhotoStatus.Stored or OwnPhotoStatus.AlreadyStored => null,
+            OwnPhotoStatus.TooLarge => "This photo couldn't be added: it is larger than 20 MB.",
+            OwnPhotoStatus.NotSupported => "This photo couldn't be added: this phone can't read its format.",
+            _ => "This photo couldn't be added.",
+        };
+
         /// <summary>Whether <paramref name="name"/> is a partial file's name.</summary>
         public static bool IsIncomingFileName(string? name) =>
             name is not null

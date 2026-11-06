@@ -24,7 +24,7 @@ namespace Chatcheology.Android
     /// CH-59 (D-34, option A): shares a memory photo as a temporary copy with its location removed. The copy is
     /// written to the app's cache under <see cref="PhotoShare.CopiesFolderName"/>, its GPS tags are cleared with
     /// Android's <see cref="ExifInterface"/> (on the copy only), it is checked again, and only then handed out
-    /// through <see cref="ArchiveFileProvider"/>. The archive file is opened for reading only.
+    /// through <see cref="ArchiveFileProvider"/>. The archive file (or own photo, CH-54) is opened for reading only.
     /// </summary>
     /// <remarks>
     /// Copies older than 24 hours are deleted when the app starts and before each share; a copy that failed or was
@@ -73,11 +73,13 @@ namespace Chatcheology.Android
 
         /// <summary>
         /// Makes the copy without the location and offers it to the share sheet. Photo only: never a caption or
-        /// title. <paramref name="sourcePath"/> must be inside <paramref name="archivesFolder"/>.
+        /// title. <paramref name="sourcePath"/> must be inside one of <paramref name="roots"/>: the installed archives
+        /// and, for the phone owner's own memories (CH-54), the own photos folder. The copy still goes to
+        /// <c>cache/shared-photos/</c>, so no new provider path is needed.
         /// </summary>
-        internal static async Task<PhotoShareOutcome> ShareAsync(string sourcePath, string archivesFolder)
+        internal static async Task<PhotoShareOutcome> ShareAsync(string sourcePath, IReadOnlyList<string> roots)
         {
-            if (!PhotoShare.IsInside(sourcePath, archivesFolder))
+            if (!PhotoShare.IsInsideAny(sourcePath, roots))
             {
                 return PhotoShareOutcome.NotAllowed;
             }

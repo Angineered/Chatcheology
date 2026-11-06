@@ -20,10 +20,11 @@
     <ContentPage.Resources>
         <DataTemplate x:Key="Separator" x:DataType="conv:DateSeparatorRow">
             <Grid Padding="0,8">
-                <Border HorizontalOptions="Center" BackgroundColor="{AppThemeBinding Light={StaticResource SeparatorBackgroundLight}, Dark={StaticResource SeparatorBackgroundDark}}"
+                <!-- CH-54: a long press offers "Add a memory on this day". -->
+                <controls:DaySeparator HorizontalOptions="Center" BackgroundColor="{AppThemeBinding Light={StaticResource SeparatorBackgroundLight}, Dark={StaticResource SeparatorBackgroundDark}}"
                         StrokeThickness="0" Padding="10,4" StrokeShape="RoundRectangle 8">
                     <Label Text="{Binding Text}" FontSize="12" TextColor="{AppThemeBinding Light={StaticResource MutedTextLight}, Dark={StaticResource MutedTextDark}}" />
-                </Border>
+                </controls:DaySeparator>
             </Grid>
         </DataTemplate>
 

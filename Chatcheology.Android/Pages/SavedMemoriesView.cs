@@ -22,6 +22,9 @@ namespace Chatcheology.Android.Pages
     /// <para>An imported collection's tab has a Date | Title switch (CH-59 step 3): Title lists one heading per memory
     /// (<see cref="MemoryTitleGroups"/>), closed at first; a tap opens or closes it in place. The switch and the open
     /// headings are kept in the tab's <see cref="SavedTabState"/> while the screen is open, never in Settings.</para>
+    /// <para>The phone owner's own memories (CH-54) are listed in the Memories tab with a "Mine" mark (screen readers
+    /// hear "mine"). After one is added, edited or deleted, the session builds a new list; the tab reads it when the
+    /// screen reappears, keeping its search and place.</para>
     /// </remarks>
     internal sealed class SavedMemoriesView : ContentView
     {
@@ -47,6 +50,7 @@ namespace Chatcheology.Android.Pages
         private readonly Label _status = new() { FontSize = 14, Margin = new Thickness(16), HorizontalTextAlignment = TextAlignment.Center };
         private readonly ActivityIndicator _working = new() { IsVisible = false, IsRunning = false, HorizontalOptions = LayoutOptions.Center, VerticalOptions = LayoutOptions.Center };
         private MemoryList? _memories;
+        private Task<MemoryList>? _built;
         private SavedTab? _tab;
         private SavedTabState? _state;
         private IReadOnlyList<MemoryListRow> _rows = [];
@@ -125,6 +129,41 @@ namespace Chatcheology.Android.Pages
         }
 
         /// <summary>
+        /// Whether the session has a newer list than the one shown (CH-54: an own memory was added, edited or deleted);
+        /// the shown tab is then built again with <see cref="ReloadAsync"/>.
+        /// </summary>
+        internal bool IsStale
+        {
+            get
+            {
+                try
+                {
+                    return _built is not null && !ReferenceEquals(_session.GetMemoryListAsync(), _built);
+                }
+                catch (ObjectDisposedException)
+                {
+                    return false;
+                }
+            }
+        }
+
+        /// <summary>Reads the newer list and shows the tab again where it was (its search and first visible row kept).</summary>
+        internal async Task ReloadAsync()
+        {
+            if (_tab is not { } tab || _state is not { } state)
+            {
+                _memories = null;
+                _built = null;
+                return;
+            }
+
+            Remember();
+            _memories = null;
+            _built = null;
+            await ShowAsync(tab, state);
+        }
+
+        /// <summary>
         /// Shows <paramref name="tab"/> with the search and first visible row <paramref name="state"/> keeps; the list is
         /// built the first time.
         /// </summary>
@@ -149,7 +188,8 @@ namespace Chatcheology.Android.Pages
 
                 try
                 {
-                    var memories = await _session.GetMemoryListAsync();
+                    _built = _session.GetMemoryListAsync();
+                    var memories = await _built;
                     AppState.LogTiming(
                         "memories",
                         watch.Elapsed,
@@ -528,7 +568,7 @@ namespace Chatcheology.Android.Pages
 
         /// <summary>
         /// One memory: the cover thumbnail when there is one (hidden otherwise, so every memory row recycles as
-        /// one view), the title, the plain line and the muted line.
+        /// one view), the title (with a "Mine" mark for the phone owner's own, CH-54), the plain line and the muted line.
         /// </summary>
         private sealed class MemoryItemView : ContentView
         {
@@ -536,6 +576,7 @@ namespace Chatcheology.Android.Pages
 
             private readonly DecodedImage _image = new() { WidthRequest = Thumbnail, HeightRequest = Thumbnail, FailedText = string.Empty, VerticalOptions = LayoutOptions.Center };
             private readonly Label _title = new() { FontSize = 15, FontAttributes = FontAttributes.Bold, MaxLines = 2, LineBreakMode = LineBreakMode.TailTruncation };
+            private readonly Border _mine;
             private readonly Label _line = new() { FontSize = 13 };
             private readonly Label _muted = new() { FontSize = 12 };
             private readonly Grid _grid;
@@ -544,11 +585,32 @@ namespace Chatcheology.Android.Pages
             {
                 _muted.TextIn("MutedText");
 
+                // CH-54: "Mine" on the phone owner's own memories; drawn only (the row's description says "mine").
+                _mine = new Border
+                {
+                    Padding = new Thickness(6, 0),
+                    StrokeThickness = 1,
+                    StrokeShape = new Microsoft.Maui.Controls.Shapes.RoundRectangle { CornerRadius = 8 },
+                    VerticalOptions = LayoutOptions.Center,
+                    IsVisible = false,
+                    Content = new Label { Text = MemoryWording.MineMark, FontSize = 11, FontAttributes = FontAttributes.Bold }.TextIn("MemoryAccent"),
+                }.Themed(Border.StrokeProperty, "MemoryAccent");
+                AutomationProperties.SetIsInAccessibleTree(_mine, false);
+
+                var titleRow = new Grid
+                {
+                    ColumnSpacing = 6,
+                    ColumnDefinitions = { new ColumnDefinition(GridLength.Auto), new ColumnDefinition(GridLength.Auto) },
+                };
+
+                titleRow.Add(_title, 0);
+                titleRow.Add(_mine, 1);
+
                 var text = new VerticalStackLayout
                 {
                     Spacing = 1,
                     VerticalOptions = LayoutOptions.Center,
-                    Children = { _title, _line, _muted },
+                    Children = { titleRow, _line, _muted },
                 };
 
                 _grid = new Grid
@@ -575,6 +637,8 @@ namespace Chatcheology.Android.Pages
                 }
 
                 _title.Text = item.Title;
+                _mine.IsVisible = item.IsOwn;
+                SemanticProperties.SetDescription(this, MemoryWording.ListRowScreenReaderText(item));
                 _line.Text = item.Line;
                 _line.IsVisible = item.HasLine;
                 _muted.Text = item.MutedLine;

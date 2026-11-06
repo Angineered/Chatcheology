@@ -315,6 +315,13 @@ namespace Chatcheology.Mobile.Tests
             Assert.Equal("t:Invented Racer", SavedTabs.KeyOf(new MemoryListTitleRow("Invented Racer", 1, default, default, false)));
             Assert.Equal("e:7", SavedTabs.KeyOf(new MemoryListItem(new MemoryKey(7, null), "x", "d", "x", null, false, default)));
             Assert.Equal("e:7:2", SavedTabs.KeyOf(new MemoryListItem(new MemoryKey(7, 2), "x", "d", "x", null, false, default)));
+
+            // CH-54 (1b review S1): own row 1 and archive entry 1 are different rows of the same Memories tab.
+            var archiveOne = SavedTabs.KeyOf(new MemoryListItem(new MemoryKey(1, null), "x", "d", "x", null, false, default));
+            var ownOne = SavedTabs.KeyOf(new MemoryListItem(new MemoryKey(1, null, MemoryOwner.Own), "x", "d", "x", null, false, default));
+            Assert.Equal("e:1", archiveOne);
+            Assert.Equal("o:1", ownOne);
+            Assert.NotEqual(archiveOne, ownOne);
         }
 
         [Fact]

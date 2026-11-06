@@ -5,6 +5,7 @@ using Android.OS;
 using AndroidX.Core.App;
 using Chatcheology.Mobile.Library;
 using Chatcheology.Mobile.Notifications;
+using Chatcheology.Mobile.OwnMemories;
 using Chatcheology.Mobile.Settings;
 using AndroidLog = Android.Util.Log;
 
@@ -28,6 +29,11 @@ namespace Chatcheology.Android
     /// <para><strong>Once a day per archive.</strong> Each archive's posted day is kept in its settings; an alarm
     /// that fires for today posts only the archives not yet posted today and records them, even when
     /// notifications are off (so a late-today catch-up does not repeat every minute).</para>
+    /// <para><strong>My memories (CH-54).</strong> The phone owner's own yearly memories have one notification of their
+    /// own per phone (<see cref="NotedDateSchedule.OwnNotificationId"/>, "A memory today" / "N memories today"), posted
+    /// once a day (the posted day is kept in the own store). A tap opens the last-opened archive at today's On this day
+    /// card, or the start screen when none was opened. When the own store is busy past its retries, a short retry alarm
+    /// is set (<see cref="NotedDateSchedule.WithRetry"/>) instead of leaving the reminders silent.</para>
     /// </remarks>
     internal static class NotedDateNotifier
     {
@@ -75,8 +81,11 @@ namespace Chatcheology.Android
         {
             lock (Lock)
             {
-                var archives = Read(new ArchiveSettings(new AppState.PreferencesStore()));
-                var next = NotedDateSchedule.Next(archives, Notifications.Time, DateTime.Now);
+                var settings = new ArchiveSettings(new AppState.PreferencesStore());
+                var archives = Read(settings);
+                var own = NotedDateSchedule.ReadOwnWithRetry(AppState.OwnStore, archives, settings);
+                var now = DateTime.Now;
+                var next = NotedDateSchedule.WithRetry(NotedDateSchedule.Next(archives, own.Reminders, Notifications.Time, now), own.MayPass, now);
                 var alarms = (AlarmManager?)Context.GetSystemService(Context.AlarmService);
 
                 if (alarms is not null)
@@ -94,9 +103,9 @@ namespace Chatcheology.Android
                     }
                 }
 
-                AndroidLog.Info(AppState.LogTag, "noted-dates " + NotedDateSchedule.DescribeCounts(archives, next));
+                AndroidLog.Info(AppState.LogTag, "noted-dates " + NotedDateSchedule.DescribeCounts(archives, own.Reminders, next));
 
-                return archives.Any(archive => archive.CanNotify);
+                return archives.Any(archive => archive.CanNotify) || own.Reminders?.CanNotify == true;
             }
         }
 
@@ -117,8 +126,14 @@ namespace Chatcheology.Android
                 }
 
                 var settings = new ArchiveSettings(new AppState.PreferencesStore());
-                var due = NotedDateSchedule.DueOn(Read(settings), today);
+                var archives = Read(settings);
+                var due = NotedDateSchedule.DueOn(archives, today);
                 var manager = Manager;
+
+                // CH-54: the own memories' one notification, read afresh. A store that cannot be read now posts
+                // nothing for it here; the reschedule after this sets a retry.
+                var own = NotedDateSchedule.ReadOwnWithRetry(AppState.OwnStore, archives, settings);
+                var dueOwn = NotedDateSchedule.OwnDueOn(own.Reminders, today);
 
                 // Today is done for these archives, posted or not: one per archive per day, and no catch-up loop
                 // while notifications are off.
@@ -127,9 +142,24 @@ namespace Chatcheology.Android
                     settings.SetNotedDatesPostedThrough(notification.ContentsSha256, today);
                 }
 
+                if (dueOwn is not null)
+                {
+                    try
+                    {
+                        AppState.OwnStore.Settings.PostedDay = today;
+                    }
+                    catch (Exception exception) when (exception is OwnMemoriesStoreException or Microsoft.Data.Sqlite.SqliteException or IOException or UnauthorizedAccessException)
+                    {
+                        // Not recorded: it may be posted once more today, never lost.
+                        AndroidLog.Info(AppState.LogTag, "noted-dates own-posted-day=unrecorded");
+                    }
+                }
+
+                var posted = due.Count + (dueOwn is null ? 0 : 1);
+
                 if (manager is null || !manager.AreNotificationsEnabled())
                 {
-                    AndroidLog.Info(AppState.LogTag, $"noted-dates posted=0 due={due.Count} notifications=off");
+                    AndroidLog.Info(AppState.LogTag, $"noted-dates posted=0 due={posted} notifications=off");
                     return;
                 }
 
@@ -140,7 +170,12 @@ namespace Chatcheology.Android
                     manager.Notify(NotedDateSchedule.NotificationId(notification.ArchiveId), Build(notification));
                 }
 
-                AndroidLog.Info(AppState.LogTag, $"noted-dates posted={due.Count}");
+                if (dueOwn is not null)
+                {
+                    manager.Notify(NotedDateSchedule.OwnNotificationId, BuildOwn(dueOwn));
+                }
+
+                AndroidLog.Info(AppState.LogTag, $"noted-dates posted={posted} own={(dueOwn is null ? 0 : 1)}");
             }
         }
 
@@ -222,24 +257,38 @@ namespace Chatcheology.Android
             manager.CreateNotificationChannel(channel);
         }
 
-        private static Notification Build(DueNotification due)
+        private static Notification Build(DueNotification due) =>
+            Build(NotedDateSchedule.NotificationId(due.ArchiveId), due.Text, due.ArchiveId);
+
+        /// <summary>
+        /// The own memories notification (CH-54): generic text, never a title; a tap opens the last-opened archive at
+        /// today's On this day card, or, with none, the start screen (no archive extra).
+        /// </summary>
+        private static Notification BuildOwn(DueOwnNotification due) =>
+            Build(NotedDateSchedule.OwnNotificationId, due.Text, due.TapArchiveId);
+
+        private static Notification Build(int id, string text, string? archiveId)
         {
-            var id = NotedDateSchedule.NotificationId(due.ArchiveId);
             var open = new Intent(Context, typeof(MainActivity))
-                .PutExtra(ArchiveExtra, due.ArchiveId)
                 .SetFlags(ActivityFlags.NewTask | ActivityFlags.SingleTop | ActivityFlags.ClearTop);
+
+            if (archiveId is not null)
+            {
+                open.PutExtra(ArchiveExtra, archiveId);
+            }
+
             var tap = PendingIntent.GetActivity(Context, id, open, PendingIntentFlags.Immutable | PendingIntentFlags.UpdateCurrent);
 
             // Nothing sensitive is in it (no title, no conversation), so the public version says the same.
             var publicBuilder = new NotificationCompat.Builder(Context, ChannelId);
             publicBuilder.SetSmallIcon(Resource.Drawable.ic_stat_chatcheology);
-            publicBuilder.SetContentTitle(due.Text);
+            publicBuilder.SetContentTitle(text);
             publicBuilder.SetContentIntent(tap);
             publicBuilder.SetAutoCancel(true);
 
             var builder = new NotificationCompat.Builder(Context, ChannelId);
             builder.SetSmallIcon(Resource.Drawable.ic_stat_chatcheology);
-            builder.SetContentTitle(due.Text);
+            builder.SetContentTitle(text);
             builder.SetContentIntent(tap);
             builder.SetAutoCancel(true);
             builder.SetCategory(NotificationCompat.CategoryReminder);

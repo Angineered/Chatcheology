@@ -22,6 +22,10 @@ namespace Chatcheology.Mobile.OwnMemories
     /// <para>At first use in a process the store sweeps the photos folder: partial files older than
     /// <see cref="OwnPhotoIntake.PartialFileAge"/>, and photo files no memory uses that are older than
     /// <see cref="UnusedPhotoAge"/> (a photo added to a form that was then cancelled).</para>
+    /// <para><strong>Open forms (step 1a gap 6).</strong> A form holds its photos in a <see cref="OwnPhotoLease"/>
+    /// (<see cref="LeasePhotos"/>) until it closes. A leased file is never deleted, by an update, a delete, Delete all
+    /// or a sweep, even when no memory uses it yet: the form that added it (or a photo another memory had) can still
+    /// save it. Leases live in this process only; a leased file nobody saves is swept later as unused.</para>
     /// </remarks>
     public sealed class OwnMemoryStore
     {
@@ -32,9 +36,11 @@ namespace Chatcheology.Mobile.OwnMemories
 
         private static readonly ConcurrentDictionary<string, object> Locks = new(StringComparer.Ordinal);
         private static readonly ConcurrentDictionary<string, bool> Swept = new(StringComparer.Ordinal);
+        private static readonly ConcurrentDictionary<string, Dictionary<string, int>> Leased = new(StringComparer.Ordinal);
 
         private readonly object _writeLock;
         private readonly string _key;
+        private readonly Dictionary<string, int> _leased;
 
         /// <summary>The store inside <paramref name="filesFolder"/>, the app's files folder.</summary>
         public OwnMemoryStore(string filesFolder)
@@ -46,6 +52,55 @@ namespace Chatcheology.Mobile.OwnMemories
             Settings = new OwnMemorySettings(this);
             _key = Path.GetFullPath(DatabasePath);
             _writeLock = Locks.GetOrAdd(_key, _ => new object());
+            _leased = Leased.GetOrAdd(_key, _ => new Dictionary<string, int>(StringComparer.Ordinal));
+        }
+
+        /// <summary>
+        /// A lease for an open form's photos (step 1a gap 6): each photo it holds is kept on disk, whatever is updated,
+        /// deleted or swept, until the lease is disposed (the form closes).
+        /// </summary>
+        public OwnPhotoLease LeasePhotos() => new(this);
+
+        /// <summary>Whether a form holds <paramref name="fileName"/> in a lease (call under the write lock).</summary>
+        private bool IsLeased(string fileName) => _leased.ContainsKey(fileName);
+
+        /// <summary>Leases <paramref name="fileName"/> when it is a stored photo still on disk; under the write lock, so no delete is half done.</summary>
+        internal bool TryLease(string fileName)
+        {
+            if (!OwnMemoryRules.IsPhotoFileName(fileName))
+            {
+                return false;
+            }
+
+            lock (_writeLock)
+            {
+                if (!File.Exists(Path.Combine(PhotosFolder, fileName)))
+                {
+                    return false;
+                }
+
+                _leased[fileName] = _leased.GetValueOrDefault(fileName) + 1;
+                return true;
+            }
+        }
+
+        /// <summary>Gives one lease of <paramref name="fileName"/> back.</summary>
+        internal void Release(string fileName)
+        {
+            lock (_writeLock)
+            {
+                if (_leased.TryGetValue(fileName, out var count))
+                {
+                    if (count <= 1)
+                    {
+                        _leased.Remove(fileName);
+                    }
+                    else
+                    {
+                        _leased[fileName] = count - 1;
+                    }
+                }
+            }
         }
 
         /// <summary>Adds a memory with a new identity.</summary>
@@ -80,7 +135,8 @@ namespace Chatcheology.Mobile.OwnMemories
 
         /// <summary>
         /// Deletes every own memory, their mutes and every stored photo (and any photo left half-added). The other
-        /// own settings (switches, posted day) are kept.
+        /// own settings (switches, posted day) are kept. A photo an open form holds is kept until that form closes (and
+        /// then swept as unused unless the form saved it).
         /// </summary>
         /// <returns>The number of memories deleted.</returns>
         public int DeleteAll()
@@ -535,8 +591,8 @@ namespace Chatcheology.Mobile.OwnMemories
 
             foreach (var name in names)
             {
-                // Only names of the store's own patterns, never a path.
-                if (!OwnMemoryRules.IsPhotoFileName(name) && !OwnPhotoIntake.IsIncomingFileName(name))
+                // Only names of the store's own patterns, never a path; never a photo an open form holds (gap 6).
+                if ((!OwnMemoryRules.IsPhotoFileName(name) && !OwnPhotoIntake.IsIncomingFileName(name)) || IsLeased(name))
                 {
                     continue;
                 }

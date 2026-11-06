@@ -61,6 +61,18 @@ namespace Chatcheology.Mobile.Tests
             return _library.ListArchives(_settings).Single(archive => archive.Folder == outcome.InstalledFolder);
         }
 
+        /// <summary>An archive without memory collections (version 1 style, no MemoryIndex read of the message times).</summary>
+        private InstalledArchive InstallPlain(ArchiveBuilder builder)
+        {
+            var staging = _library.CreateStagingFolder();
+            builder.Write(staging);
+
+            var outcome = _library.Install(staging);
+            Assert.True(outcome.Installed, string.Join(", ", outcome.Validation.FirstProblems));
+
+            return _library.ListArchives(_settings).Single(archive => archive.Folder == outcome.InstalledFolder);
+        }
+
         private ArchiveSession Open(InstalledArchive archive, TimeProvider? clock = null) => ArchiveSession.Open(archive, _settings, clock, _own);
 
         private static OwnMemoryDraft Draft(string title, DateOnly start, bool everyYear = false, IReadOnlyList<OwnPhotoDraft>? photos = null, IReadOnlyList<OwnLink>? links = null) => new()
@@ -376,8 +388,10 @@ namespace Chatcheology.Mobile.Tests
         // ---- Refresh ----
 
         [Fact]
-        public async Task Refresh_after_add_edit_and_delete_updates_the_list_calendar_yearly_set_and_next_alarm()
+        public async Task Refresh_after_add_edit_and_delete_updates_the_list_calendar_and_yearly_set()
         {
+            // The schedule's Next() reads the own store itself, so its lines here follow the store, not the refresh
+            // (1b review S5); the page reschedules after every save or delete.
             var archive = Install(Sample());
             using var session = Open(archive);
             var today = new DateOnly(2026, 3, 15);
@@ -617,8 +631,214 @@ namespace Chatcheology.Mobile.Tests
             Directory.CreateDirectory(Path.GetDirectoryName(_own.DatabasePath)!);
             File.WriteAllText(_own.DatabasePath, "not a database, invented");
 
-            Assert.Null(NotedDateSchedule.ReadOwn(_own, [], _settings));
-            Assert.Contains("own=0", NotedDateSchedule.DescribeCounts([], null, null), StringComparison.Ordinal);
+            // One archive that notifies on 15 March (1b review S5: the archives are really there).
+            ArchiveNotedDates archive = new("a1", "hash", true, [])
+            {
+                Yearly = [new YearlyMemoryListing(7, "Invented archive day", new DateOnly(2024, 3, 15), true)],
+            };
+
+            var own = NotedDateSchedule.ReadOwnWithRetry(_own, [archive], _settings, attempts: 1);
+            Assert.Null(own.Reminders);
+            Assert.False(own.MayPass);
+            Assert.Null(NotedDateSchedule.ReadOwn(_own, [archive], _settings));
+
+            var next = NotedDateSchedule.WithRetry(NotedDateSchedule.Next([archive], own.Reminders, Nine, new DateTime(2026, 3, 2, 8, 0, 0)), own.MayPass, new DateTime(2026, 3, 2, 8, 0, 0))!;
+            Assert.Equal(new DateOnly(2026, 3, 15), next.Day);
+            Assert.False(next.IsRetry);
+            Assert.Equal("a1", Assert.Single(next.Due).ArchiveId);
+            Assert.Null(next.Own);
+            Assert.Contains("own=0", NotedDateSchedule.DescribeCounts([archive], null, next), StringComparison.Ordinal);
+        }
+
+        // ---- 1b review S2: a failure that may pass is retried, not taken for "no own memories" ----
+
+        [Fact]
+        public void A_busy_or_IO_failure_may_pass_and_a_damaged_or_newer_store_does_not()
+        {
+            Assert.True(NotedDateSchedule.MayPass(new SqliteException("invented busy", 5)));
+            Assert.True(NotedDateSchedule.MayPass(new SqliteException("invented locked", 6)));
+            Assert.True(NotedDateSchedule.MayPass(new OwnMemoriesStoreException("x", new SqliteException("invented io", 10))));
+            Assert.True(NotedDateSchedule.MayPass(new IOException("invented")));
+            Assert.False(NotedDateSchedule.MayPass(new SqliteException("invented not a database", 26)));
+            Assert.False(NotedDateSchedule.MayPass(new OwnMemoriesStoreException("The own memories file has version 99.")));
+            Assert.False(NotedDateSchedule.MayPass(new UnauthorizedAccessException()));
+        }
+
+        [Fact]
+        public async Task A_store_still_busy_after_the_retries_schedules_a_short_retry_instead_of_going_silent()
+        {
+            _own.Add(Draft("Invented anniversary", new DateOnly(2024, 3, 15), everyYear: true));
+
+            using var writer = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = _own.DatabasePath, Pooling = false }.ToString());
+            writer.Open();
+            using (var begin = writer.CreateCommand())
+            {
+                begin.CommandText = "BEGIN EXCLUSIVE;";
+                begin.ExecuteNonQuery();
+            }
+
+            // The busy timeout (5 s) passes once: still busy.
+            var read = await Task.Run(() => NotedDateSchedule.ReadOwnWithRetry(_own, [], _settings, attempts: 1));
+
+            using (var rollback = writer.CreateCommand())
+            {
+                rollback.CommandText = "ROLLBACK;";
+                rollback.ExecuteNonQuery();
+            }
+
+            Assert.Null(read.Reminders);
+            Assert.True(read.MayPass);
+
+            var now = new DateTime(2026, 3, 2, 8, 0, 0);
+            var retry = NotedDateSchedule.WithRetry(NotedDateSchedule.Next([], read.Reminders, Nine, now), read.MayPass, now)!;
+            Assert.True(retry.IsRetry);
+            Assert.Equal(now + NotedDateSchedule.RetryDelay, retry.LocalMoment);
+            Assert.Empty(retry.Due);
+            Assert.Null(retry.Own);
+            Assert.Contains("retry=yes", NotedDateSchedule.DescribeCounts([], null, retry), StringComparison.Ordinal);
+
+            // Free again: the read succeeds and the memory's own day is scheduled.
+            var again = NotedDateSchedule.ReadOwnWithRetry(_own, [], _settings);
+            Assert.False(again.MayPass);
+            Assert.Equal(new DateOnly(2026, 3, 15), NotedDateSchedule.WithRetry(NotedDateSchedule.Next([], again.Reminders, Nine, now), again.MayPass, now)!.Day);
+        }
+
+        [Fact]
+        public void A_retry_never_delays_a_moment_due_sooner()
+        {
+            var now = new DateTime(2026, 6, 1, 8, 55, 0);
+            var soon = new NextNotification(new DateOnly(2026, 6, 1), new DateTime(2026, 6, 1, 9, 0, 0), []);
+
+            Assert.Same(soon, NotedDateSchedule.WithRetry(soon, ownMayPass: true, now));
+            Assert.Same(soon, NotedDateSchedule.WithRetry(soon, ownMayPass: false, now));
+            Assert.Null(NotedDateSchedule.WithRetry(null, ownMayPass: false, now));
+            Assert.True(NotedDateSchedule.WithRetry(null, ownMayPass: true, now)!.IsRetry);
+        }
+
+        // ---- 1b review S3: what a refresh always refreshes, and what its result gates ----
+
+        [Fact]
+        public async Task Turning_Every_year_alone_needs_no_timeline_rebuild_but_On_this_day_and_the_list_follow()
+        {
+            var archive = Install(Sample());
+            using var session = Open(archive);
+            var today = new DateOnly(2026, 3, 15);
+            var memory = _own.Add(Draft("Invented day", new DateOnly(2025, 3, 15)));
+            Assert.True(session.RefreshOwnMemories());
+            Assert.Empty(session.OnThisDayFor(session.ReadDays(), today).Yearly);
+            var rows = All(session);
+
+            _own.Update(memory.Id, Draft("Invented day", new DateOnly(2025, 3, 15), everyYear: true));
+
+            // The same rows at the same places: no rebuild. The yearly set and the list are new all the same.
+            Assert.False(session.RefreshOwnMemories());
+            Assert.Equal(rows, All(session));
+            Assert.Equal("Invented day", Assert.Single(session.OnThisDayFor(session.ReadDays(), today).Yearly).Title);
+            Assert.True(Assert.Single((await session.GetMemoryListAsync()).Items, item => item.IsOwn).IsYearly);
+
+            _own.Update(memory.Id, Draft("Invented day", new DateOnly(2025, 3, 15)));
+            Assert.False(session.RefreshOwnMemories());
+            Assert.Empty(session.OnThisDayFor(session.ReadDays(), today).Yearly);
+        }
+
+        [Fact]
+        public async Task Adding_while_the_layer_is_off_needs_no_rebuild_and_the_memory_is_still_listed()
+        {
+            using var session = Open(Install(Sample()));
+            session.OwnLayerShown = false;
+            var rows = All(session);
+
+            _own.Add(Draft("Invented hidden day", new DateOnly(2025, 3, 11)));
+
+            Assert.False(session.RefreshOwnMemories());
+            Assert.Equal(rows, All(session));
+            Assert.Single((await session.GetMemoryListAsync()).Items, item => item.IsOwn);
+            Assert.Empty(session.FindMemories("hidden"));
+
+            session.OwnLayerShown = true;
+            Assert.Contains("O 1", All(session));
+        }
+
+        [Fact]
+        public void The_first_own_memory_in_an_archive_with_no_messages_or_memories_turns_Saved_on()
+        {
+            using var session = Open(InstallPlain(new ArchiveBuilder()));
+            Assert.True(session.IsEmpty);
+            Assert.False(session.HasSaved);
+            Assert.True(session.HasOwnStore);
+
+            _own.Add(Draft("Invented first", new DateOnly(2025, 3, 11)));
+
+            // The refresh result is about rows; Saved follows the own count whatever it says.
+            session.RefreshOwnMemories();
+            Assert.True(session.HasSaved);
+
+            Assert.True(_own.Delete(_own.List().Single().Id));
+            session.RefreshOwnMemories();
+            Assert.False(session.HasSaved);
+        }
+
+        // ---- 1b review N2, N3 ----
+
+        [Fact]
+        public void The_layer_switch_never_throws_when_the_store_cannot_be_written_and_keeps_its_old_value()
+        {
+            using var session = Open(Install(Sample()));
+            Assert.True(session.OwnLayerShown);
+
+            using var writer = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = _own.DatabasePath, Pooling = false, DefaultTimeout = 1 }.ToString());
+            writer.Open();
+            using (var begin = writer.CreateCommand())
+            {
+                begin.CommandText = "BEGIN EXCLUSIVE;";
+                begin.ExecuteNonQuery();
+            }
+
+            session.OwnLayerShown = false;
+            Assert.True(session.OwnLayerShown);
+
+            using (var rollback = writer.CreateCommand())
+            {
+                rollback.CommandText = "ROLLBACK;";
+                rollback.ExecuteNonQuery();
+            }
+
+            session.OwnLayerShown = false;
+            Assert.False(session.OwnLayerShown);
+        }
+
+        [Fact]
+        public async Task An_archive_without_memories_whose_message_times_cannot_be_read_still_opens_with_own_rows_not_placed()
+        {
+            var builder = new ArchiveBuilder();
+            builder.Add("Hello", ArchiveBuilder.Other, At(10, 20));
+            builder.Add("Again", ArchiveBuilder.Local, At(10, 21));
+            builder.Add("Later", ArchiveBuilder.Other, At(12, 9));
+            var archive = InstallPlain(builder);
+
+            // A gap in the sequence numbers (invented damage): reading the message times fails.
+            using (var connection = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = Path.Combine(archive.Folder, ArchiveFormat.DatabaseFileName), Pooling = false }.ToString()))
+            {
+                connection.Open();
+                using var command = connection.CreateCommand();
+                command.CommandText = "UPDATE Message SET SequenceNumber = 9 WHERE SequenceNumber = 3;";
+                command.ExecuteNonQuery();
+            }
+
+            _own.Add(Draft("Invented unplaced day", new DateOnly(2025, 3, 11), everyYear: true));
+
+            using var session = Open(archive);
+
+            Assert.False(session.OwnRowsPlaceable);
+            Assert.Equal(MemoryView.None, session.OwnMemoryView);
+            Assert.True(session.VisibleMemoryLayout().IsEmpty);
+            Assert.Empty(session.FindMemories("unplaced"));
+
+            // Still listed, with details and on On this day; never placed at a wrong row.
+            var item = Assert.Single((await session.GetMemoryListAsync()).Items, i => i.IsOwn);
+            Assert.NotNull(session.MemoryDetails(item.Key));
+            Assert.Null(session.MemoryShowInChat(await session.GetMemoryListAsync(), item.Key)?.Row);
+            Assert.Single(session.OnThisDayFor([], new DateOnly(2026, 3, 11)).Yearly);
         }
     }
 
