@@ -224,7 +224,109 @@ namespace Chatcheology.Mobile.Tests
 
             var stored = await StoredBytes(source, OwnPhotoStatus.Stored);
 
-            Assert.Equal(Png(allowed), stored);
+            // The iCCP chunk keeps its compression method and profile, under the fixed name, with its CRC recomputed (S5).
+            var expected = allowed.Select(chunk => chunk.Item1 == "iCCP" ? ("iCCP", (byte[])[.. "ICC profile\0"u8, 0, 1, 2, 3]) : chunk).ToArray();
+            Assert.Equal(WithCrc(Png(expected), "iCCP"), stored);
+        }
+
+        // ---- Step 1a re-review S5: exact forms only, and no free text in kept parts ----
+
+        [Fact]
+        public void The_PNG_CRC_is_the_standard_one()
+        {
+            // The CRC of an empty IEND chunk, as every PNG ends.
+            Assert.Equal(0xAE426082u, PhotoRebuild.Crc32("IEND"u8));
+        }
+
+        [Fact]
+        public async Task A_PNG_colour_profile_keeps_its_profile_under_a_fixed_name_and_a_nameless_one_is_refused()
+        {
+            var profile = Deflate(new byte[64]);
+            var named = Png(("IHDR", Ihdr()), ("iCCP", [.. "Taken at 12.58 N 65.72 E\0"u8, 0, .. profile]), ("IDAT", Idat()));
+
+            var stored = await StoredBytes(named, OwnPhotoStatus.Stored);
+
+            Assert.Equal(0, Count(stored, "12.58"u8.ToArray()));
+            Assert.Equal(
+                WithCrc(Png(("IHDR", Ihdr()), ("iCCP", [.. "ICC profile\0"u8, 0, .. profile]), ("IDAT", Idat())), "iCCP"),
+                stored);
+
+            var intake = new OwnPhotoIntake(_folder);
+            Assert.Equal(OwnPhotoStatus.NotSupported, (await Add(intake, Png(("IHDR", Ihdr()), ("iCCP", "no name ending"u8.ToArray()), ("IDAT", Idat())))).Status);
+            Assert.Equal(OwnPhotoStatus.NotSupported, (await Add(intake, Png(("IHDR", Ihdr()), ("iCCP", [0, 0, 1]), ("IDAT", Idat())))).Status);
+            Assert.Empty(Directory.GetFiles(_folder));
+        }
+
+        [Fact]
+        public async Task A_GIF_graphic_control_extension_not_in_its_exact_form_is_refused()
+        {
+            var intake = new OwnPhotoIntake(_folder);
+            var longBlock = Extension(0xF9, [0, 10, 0, 0, .. "12.58N"u8]);
+            var extraBlock = Extension(0xF9, [0, 10, 0, 0], "12.58N"u8.ToArray());
+            var shortBlock = Extension(0xF9, [0, 10, 0]);
+
+            Assert.Equal(OwnPhotoStatus.NotSupported, (await Add(intake, Gif(longBlock, Image()))).Status);
+            Assert.Equal(OwnPhotoStatus.NotSupported, (await Add(intake, Gif(extraBlock, Image()))).Status);
+            Assert.Equal(OwnPhotoStatus.NotSupported, (await Add(intake, Gif(shortBlock, Image()))).Status);
+            Assert.Empty(Directory.GetFiles(_folder));
+
+            var exact = Gif(Extension(0xF9, [0, 10, 0, 0]), Image());
+            Assert.Equal(exact, await StoredBytes(exact, OwnPhotoStatus.Stored));
+        }
+
+        [Fact]
+        public async Task A_WebP_VP8X_chunk_of_any_size_but_10_bytes_is_refused()
+        {
+            var intake = new OwnPhotoIntake(_folder);
+
+            Assert.Equal(OwnPhotoStatus.NotSupported, (await Add(intake, WebP(("VP8X", [.. Vp8x(0), .. "12.58N"u8]), ("VP8 ", Vp8())))).Status);
+            Assert.Equal(OwnPhotoStatus.NotSupported, (await Add(intake, WebP(("VP8X", Vp8x(0)[..9]), ("VP8 ", Vp8())))).Status);
+            Assert.Empty(Directory.GetFiles(_folder));
+        }
+
+        [Fact]
+        public async Task A_JPEG_restart_interval_not_of_exactly_4_bytes_is_refused_and_one_of_4_is_kept()
+        {
+            var plain = SyntheticJpeg.Plain();
+            byte[] With(byte[] dri) => [.. plain[..(2 + JfifLength())], .. Segment(0xDD, dri), .. plain[(2 + JfifLength())..]];
+            var intake = new OwnPhotoIntake(_folder);
+
+            Assert.Equal(OwnPhotoStatus.NotSupported, (await Add(intake, With([0, 4, .. "12.58N"u8]))).Status);
+            Assert.Empty(Directory.GetFiles(_folder));
+
+            var kept = await Add(intake, With([0, 4]));
+            Assert.Equal(OwnPhotoStatus.Stored, kept.Status);
+            Assert.Equal(1, Count(File.ReadAllBytes(StoredPath(kept)), [0xFF, 0xDD, 0, 4, 0, 4]));
+
+            // The CH-59 share rebuild is not changed: it still copies a longer DRI.
+            Assert.Equal(1, Count(MainImage(With([0, 4, .. "12.58N"u8])), "12.58N"u8.ToArray()));
+        }
+
+        [Fact]
+        public async Task A_BMP_gap_between_headers_and_pixels_is_zeroed_and_its_palette_and_pixels_kept()
+        {
+            // 8 bits per pixel, two palette colours, then 6 gap bytes of text before the pixels.
+            var bmp = Bmp(bitsPerPixel: 8, coloursUsed: 2, gap: "12.58N"u8.ToArray());
+            var stored = await StoredBytes(bmp, OwnPhotoStatus.Stored);
+
+            var expected = (byte[])bmp.Clone();
+            Array.Clear(expected, 54 + 8, 6);
+            Assert.Equal(expected, stored);
+            Assert.Equal(bmp[54..62], stored[54..62]);
+            Assert.Equal(0, Count(stored, "12.58N"u8.ToArray()));
+        }
+
+        [Fact]
+        public async Task A_BMP_V5_embedded_profile_in_the_gap_is_kept_and_the_rest_of_the_gap_zeroed()
+        {
+            var profile = "ICC-PROFILE-BYTES"u8.ToArray();
+            var bmp = BmpV5WithProfile(profile, before: "12.58N"u8.ToArray());
+
+            var stored = await StoredBytes(bmp, OwnPhotoStatus.Stored);
+
+            Assert.Equal(1, Count(stored, profile));
+            Assert.Equal(0, Count(stored, "12.58N"u8.ToArray()));
+            Assert.Equal(bmp.Length, stored.Length);
         }
 
         [Fact]
@@ -252,7 +354,7 @@ namespace Chatcheology.Mobile.Tests
         [Fact]
         public async Task A_GIF_keeps_its_images_graphic_control_and_loop_count_only()
         {
-            var control = Extension(0xF9, [4, 0, 10, 0, 0]);
+            var control = Extension(0xF9, [0, 10, 0, 0]);
             var loop = Extension(0xFF, [.. "NETSCAPE2.0"u8], [1, 0, 0]);
             var longLoop = Extension(0xFF, [.. "NETSCAPE2.0"u8], [1, 0, 0, .. "hidden"u8]);
             var plainText = Extension(0x01, new byte[12], "12.58 N"u8.ToArray());
@@ -664,6 +766,29 @@ namespace Chatcheology.Mobile.Tests
             return [.. bytes];
         }
 
+        /// <summary><paramref name="png"/> with the CRC of its first <paramref name="type"/> chunk computed (the helper writes zeros).</summary>
+        private static byte[] WithCrc(byte[] png, string type)
+        {
+            var bytes = (byte[])png.Clone();
+            var position = 8;
+
+            while (position + 12 <= bytes.Length)
+            {
+                var length = (int)BinaryPrimitives.ReadUInt32BigEndian(bytes.AsSpan(position));
+
+                if (Encoding.ASCII.GetString(bytes, position + 4, 4) == type)
+                {
+                    BinaryPrimitives.WriteUInt32BigEndian(
+                        bytes.AsSpan(position + 8 + length), PhotoRebuild.Crc32(bytes.AsSpan(position + 4, 4 + length)));
+                    return bytes;
+                }
+
+                position += 12 + length;
+            }
+
+            throw new InvalidOperationException("No such chunk.");
+        }
+
         private static byte[] Vp8() => [0x10, 0x02, 0, 0x9D, 0x01, 0x2A, 2, 0, 2, 0, 1];
 
         private static byte[] Vp8x(byte flags) => [flags, 0, 0, 0, 1, 0, 0, 1, 0, 0];
@@ -749,6 +874,66 @@ namespace Chatcheology.Mobile.Tests
             for (var i = 54; i < bytes.Length; i++)
             {
                 bytes[i] = (byte)(i * 3);
+            }
+
+            return bytes;
+        }
+
+        /// <summary>A 2 x 2 BMP (BITMAPINFOHEADER) with a palette of <paramref name="coloursUsed"/> entries, then <paramref name="gap"/>, then the pixels.</summary>
+        private static byte[] Bmp(ushort bitsPerPixel, uint coloursUsed, byte[] gap)
+        {
+            var palette = (int)(4 * coloursUsed);
+            var pixelOffset = 54 + palette + gap.Length;
+            var bytes = new byte[pixelOffset + 8];
+            "BM"u8.CopyTo(bytes);
+            BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(2), (uint)bytes.Length);
+            BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(10), (uint)pixelOffset);
+            BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(14), 40);
+            BinaryPrimitives.WriteInt32LittleEndian(bytes.AsSpan(18), 2);
+            BinaryPrimitives.WriteInt32LittleEndian(bytes.AsSpan(22), 2);
+            BinaryPrimitives.WriteUInt16LittleEndian(bytes.AsSpan(26), 1);
+            BinaryPrimitives.WriteUInt16LittleEndian(bytes.AsSpan(28), bitsPerPixel);
+            BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(46), coloursUsed);
+
+            for (var i = 54; i < 54 + palette; i++)
+            {
+                bytes[i] = (byte)(0x40 + i);
+            }
+
+            gap.CopyTo(bytes, 54 + palette);
+
+            for (var i = pixelOffset; i < bytes.Length; i++)
+            {
+                bytes[i] = 1;
+            }
+
+            return bytes;
+        }
+
+        /// <summary>A 2 x 2, 24-bit BMP with a V5 header and an embedded profile in the gap after <paramref name="before"/>.</summary>
+        private static byte[] BmpV5WithProfile(byte[] profile, byte[] before)
+        {
+            const int info = 14;
+            var profileOffset = 124 + before.Length;
+            var pixelOffset = info + profileOffset + profile.Length;
+            var bytes = new byte[pixelOffset + 16];
+            "BM"u8.CopyTo(bytes);
+            BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(2), (uint)bytes.Length);
+            BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(10), (uint)pixelOffset);
+            BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(info), 124);
+            BinaryPrimitives.WriteInt32LittleEndian(bytes.AsSpan(info + 4), 2);
+            BinaryPrimitives.WriteInt32LittleEndian(bytes.AsSpan(info + 8), 2);
+            BinaryPrimitives.WriteUInt16LittleEndian(bytes.AsSpan(info + 12), 1);
+            BinaryPrimitives.WriteUInt16LittleEndian(bytes.AsSpan(info + 14), 24);
+            BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(info + 56), 0x4D424544);
+            BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(info + 112), (uint)profileOffset);
+            BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(info + 116), (uint)profile.Length);
+            before.CopyTo(bytes, info + 124);
+            profile.CopyTo(bytes, info + profileOffset);
+
+            for (var i = pixelOffset; i < bytes.Length; i++)
+            {
+                bytes[i] = 2;
             }
 
             return bytes;

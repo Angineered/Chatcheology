@@ -13,13 +13,19 @@ namespace Chatcheology.Mobile.OwnMemories
     /// <list type="bullet">
     /// <item>JPEG: <see cref="PhotoShare.WriteMainJpegWithoutLocation"/>.</item>
     /// <item>PNG: <c>IHDR</c> first, then only <c>PLTE, IDAT, tRNS, gAMA, cHRM, sRGB, iCCP, sBIT, bKGD, pHYs, cICP</c> and
-    /// the APNG chunks <c>acTL, fcTL, fdAT</c>, up to <c>IEND</c>. Each kept chunk is copied whole, its CRC included.</item>
+    /// the APNG chunks <c>acTL, fcTL, fdAT</c>, up to <c>IEND</c>. Each kept chunk is copied whole, its CRC included,
+    /// except <c>iCCP</c>, whose free-text profile name is replaced by the fixed <see cref="IccProfileName"/> (CRC
+    /// recomputed; step 1a re-review S5).</item>
     /// <item>WebP: only <c>VP8 , VP8L, VP8X, ALPH, ANIM, ANMF, ICCP</c>; inside an <c>ANMF</c> frame only <c>ALPH, VP8 , VP8L</c>.
-    /// The <c>VP8X</c> EXIF and XMP flags are cleared and the RIFF size is rewritten.</item>
+    /// The <c>VP8X</c> EXIF and XMP flags are cleared and the RIFF size is rewritten. A <c>VP8X</c> chunk that is not
+    /// exactly 10 bytes is refused (S5).</item>
     /// <item>GIF: the header, screen descriptor, colour tables, images and graphic control extensions; the
     /// <c>NETSCAPE2.0</c> / <c>ANIMEXTS1.0</c> loop extension only in its exact 3-byte form. Comment, plain-text and
-    /// every other application extension are left out, and everything after the trailer.</item>
-    /// <item>BMP: cut to the size its file header gives; refused when the headers do not agree.</item>
+    /// every other application extension are left out, and everything after the trailer. A graphic control extension
+    /// that is not exactly one 4-byte block is refused (S5).</item>
+    /// <item>BMP: cut to the size its file header gives; refused when the headers do not agree. The bytes between the
+    /// headers (with their colour masks and palette) and the pixels are zeroed, except a V5 header's embedded colour
+    /// profile (S5).</item>
     /// </list>
     /// <para>Anything damaged or not as the format says is refused (null): missing is better than wrong.</para>
     /// </remarks>
@@ -39,6 +45,26 @@ namespace Chatcheology.Mobile.OwnMemories
         private const byte WebPMetadataFlags = 0x08 | 0x04;
 
         private static readonly byte[] PngSignature = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+
+        /// <summary>The profile name every stored PNG's <c>iCCP</c> chunk gets in place of its own (S5).</summary>
+        public const string IccProfileName = "ICC profile";
+
+        /// <summary>The only size of a WebP <c>VP8X</c> chunk's data.</summary>
+        private const int Vp8xLength = 10;
+
+        /// <summary>The only size of a GIF graphic control extension's one data block.</summary>
+        private const int GraphicControlLength = 4;
+
+        /// <summary>The <c>BI_BITFIELDS</c> compression, whose 3 masks follow a 40-byte header.</summary>
+        private const uint BitFields = 3;
+
+        /// <summary>The <c>BI_ALPHABITFIELDS</c> compression, whose 4 masks follow a 40-byte header.</summary>
+        private const uint AlphaBitFields = 6;
+
+        /// <summary>The V5 colour space type of an embedded profile, "MBED".</summary>
+        private const uint ProfileEmbedded = 0x4D424544;
+
+        private static readonly Lazy<uint[]> CrcTable = new(BuildCrcTable);
 
         /// <summary>The photo rebuilt without anything but its picture, or null when it is damaged or not of <paramref name="format"/>.</summary>
         public static byte[]? Rebuild(ReadOnlySpan<byte> source, PhotoFormat format)
@@ -103,7 +129,16 @@ namespace Chatcheology.Mobile.OwnMemories
 
                 first = false;
 
-                if (PngChunks.Contains(type))
+                if (type == "iCCP")
+                {
+                    if (IccpWithFixedName(source.Slice(position + 8, (int)length)) is not { } chunk)
+                    {
+                        return false;
+                    }
+
+                    target.Write(chunk);
+                }
+                else if (PngChunks.Contains(type))
                 {
                     target.Write(whole);
                 }
@@ -116,6 +151,64 @@ namespace Chatcheology.Mobile.OwnMemories
                     return true;
                 }
             }
+        }
+
+        /// <summary>
+        /// An <c>iCCP</c> chunk (length, type, data, CRC) whose profile name is <see cref="IccProfileName"/>, the
+        /// compression method and the compressed profile copied as they are; null when the data has no name ending.
+        /// </summary>
+        private static byte[]? IccpWithFixedName(ReadOnlySpan<byte> data)
+        {
+            // The name: 1 to 79 bytes, then a zero byte, then the compression method.
+            var end = data.IndexOf((byte)0);
+
+            if (end < 1 || end > 79 || end + 2 > data.Length)
+            {
+                return null;
+            }
+
+            var name = System.Text.Encoding.ASCII.GetBytes(IccProfileName);
+            var rest = data[end..];
+            var chunk = new byte[4 + 4 + name.Length + rest.Length + 4];
+            BinaryPrimitives.WriteUInt32BigEndian(chunk, (uint)(name.Length + rest.Length));
+            "iCCP"u8.CopyTo(chunk.AsSpan(4));
+            name.CopyTo(chunk.AsSpan(8));
+            rest.CopyTo(chunk.AsSpan(8 + name.Length));
+            BinaryPrimitives.WriteUInt32BigEndian(chunk.AsSpan(chunk.Length - 4), Crc32(chunk.AsSpan(4, chunk.Length - 8)));
+            return chunk;
+        }
+
+        /// <summary>The PNG CRC (ISO 3309) of <paramref name="bytes"/>: a chunk's type and data.</summary>
+        public static uint Crc32(ReadOnlySpan<byte> bytes)
+        {
+            var table = CrcTable.Value;
+            var crc = 0xFFFFFFFFu;
+
+            foreach (var b in bytes)
+            {
+                crc = table[(crc ^ b) & 0xFF] ^ (crc >> 8);
+            }
+
+            return crc ^ 0xFFFFFFFFu;
+        }
+
+        private static uint[] BuildCrcTable()
+        {
+            var table = new uint[256];
+
+            for (var n = 0u; n < 256; n++)
+            {
+                var c = n;
+
+                for (var k = 0; k < 8; k++)
+                {
+                    c = (c & 1) != 0 ? 0xEDB88320u ^ (c >> 1) : c >> 1;
+                }
+
+                table[n] = c;
+            }
+
+            return table;
         }
 
         /// <summary>WebP by chunk allow-list, metadata flags cleared and the RIFF size rewritten; false when damaged.</summary>
@@ -181,7 +274,8 @@ namespace Chatcheology.Mobile.OwnMemories
 
                     if (topLevel && fourcc == "VP8X")
                     {
-                        if (data.Length < 10)
+                        // Exactly 10 bytes (S5): anything longer could carry other data.
+                        if (data.Length != Vp8xLength)
                         {
                             return null;
                         }
@@ -294,6 +388,12 @@ namespace Chatcheology.Mobile.OwnMemories
                         var label = source[position + 1];
                         var blocks = source[(position + 2)..end];
 
+                        if (label == 0xF9 && !IsGraphicControl(blocks))
+                        {
+                            // Not its exact form (S5): extra bytes could carry other data. Refused, not normalised.
+                            return false;
+                        }
+
                         if (label == 0xF9 || (label == 0xFF && IsLoopExtension(blocks)))
                         {
                             target.Write(source[position..end]);
@@ -320,6 +420,10 @@ namespace Chatcheology.Mobile.OwnMemories
             && blocks[12] == 3
             && blocks[13] == 1
             && blocks[16] == 0;
+
+        /// <summary>A graphic control extension's blocks in their exact form: one 4-byte block, then the terminator.</summary>
+        private static bool IsGraphicControl(ReadOnlySpan<byte> blocks) =>
+            blocks.Length == 1 + GraphicControlLength + 1 && blocks[0] == GraphicControlLength && blocks[^1] == 0;
 
         private static int ColourTableLength(byte packed) => (packed & 0x80) == 0 ? 0 : 3 * (1 << ((packed & 0x07) + 1));
 
@@ -362,8 +466,54 @@ namespace Chatcheology.Mobile.OwnMemories
                 return false;
             }
 
-            target.Write(source[..(int)fileSize]);
+            var copy = source[..(int)fileSize].ToArray();
+            ZeroBmpGap(copy, (int)headerSize, (int)pixelOffset);
+            target.Write(copy);
             return true;
+        }
+
+        /// <summary>
+        /// Zeroes the bytes after the headers, colour masks and palette and before the pixels (S5), keeping a V5
+        /// header's embedded colour profile where it lies in that gap.
+        /// </summary>
+        private static void ZeroBmpGap(byte[] bmp, int headerSize, int pixelOffset)
+        {
+            const int info = 14;
+            long tables;
+
+            if (headerSize == 12)
+            {
+                // OS/2 core header: 3-byte palette entries, one per colour of up to 8 bits.
+                var bits = BinaryPrimitives.ReadUInt16LittleEndian(bmp.AsSpan(info + 10));
+                tables = bits is >= 1 and <= 8 ? 3L * (1 << bits) : 0;
+            }
+            else
+            {
+                var bits = BinaryPrimitives.ReadUInt16LittleEndian(bmp.AsSpan(info + 14));
+                var compression = BinaryPrimitives.ReadUInt32LittleEndian(bmp.AsSpan(info + 16));
+                var used = BinaryPrimitives.ReadUInt32LittleEndian(bmp.AsSpan(info + 32));
+                var colours = used != 0 ? used : bits is >= 1 and <= 8 ? 1u << bits : 0u;
+                var masks = headerSize == 40 ? compression switch { BitFields => 12, AlphaBitFields => 16, _ => 0 } : 0;
+                tables = masks + (4L * colours);
+            }
+
+            var gapStart = Math.Min(info + headerSize + tables, pixelOffset);
+            long keepStart = 0;
+            long keepEnd = 0;
+
+            if (headerSize == 124 && BinaryPrimitives.ReadUInt32LittleEndian(bmp.AsSpan(info + 56)) == ProfileEmbedded)
+            {
+                keepStart = info + (long)BinaryPrimitives.ReadUInt32LittleEndian(bmp.AsSpan(info + 112));
+                keepEnd = keepStart + BinaryPrimitives.ReadUInt32LittleEndian(bmp.AsSpan(info + 116));
+            }
+
+            for (var i = gapStart; i < pixelOffset; i++)
+            {
+                if (i < keepStart || i >= keepEnd)
+                {
+                    bmp[i] = 0;
+                }
+            }
         }
 
         private static bool IsAsciiLetters(ReadOnlySpan<byte> bytes)

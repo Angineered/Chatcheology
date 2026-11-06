@@ -446,6 +446,30 @@ namespace Chatcheology.Mobile.Tests
         }
 
         [Fact]
+        public void An_unused_photo_renewed_after_the_sweep_listed_it_is_not_deleted()
+        {
+            // Step 1a re-review nit: the intake may renew an old unused file (AlreadyStored) between the sweep's listing and
+            // its delete; the time is read again just before the delete. The store is used once first (its own sweep).
+            Assert.Equal(0, _store.Count());
+            var photos = Photos(2);
+            var longAgo = DateTime.UtcNow.AddDays(-2);
+            File.SetLastWriteTimeUtc(Path.Combine(_store.PhotosFolder, photos[0]), longAgo);
+            File.SetLastWriteTimeUtc(Path.Combine(_store.PhotosFolder, photos[1]), longAgo);
+
+            _store.BeforeSweepDelete = name =>
+            {
+                if (name == photos[0])
+                {
+                    File.SetLastWriteTimeUtc(Path.Combine(_store.PhotosFolder, name), DateTime.UtcNow);
+                }
+            };
+
+            Assert.Equal(1, _store.SweepPhotos(DateTime.UtcNow));
+            Assert.True(File.Exists(Path.Combine(_store.PhotosFolder, photos[0])));
+            Assert.False(File.Exists(Path.Combine(_store.PhotosFolder, photos[1])));
+        }
+
+        [Fact]
         public void The_first_use_of_a_store_in_the_process_sweeps_by_itself()
         {
             using var root = new TemporaryFolder();

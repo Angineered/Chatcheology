@@ -354,7 +354,8 @@ namespace Chatcheology.Mobile.Presentation
         /// shows the right way up; every other Exif tag (the GPS directory among them) is left out. Other segments
         /// come from an allow-list (review S1): DQT, DHT, DAC, SOFn, DRI, SOS and its scan, RSTn, APP2 ICC, the
         /// exact 12-byte APP14 Adobe block, and APP0 JFIF cut to its 14-byte header with no thumbnail. JPGn, DNL,
-        /// DHP, EXP, TEM and reserved markers are left out. <see cref="WriteMainJpeg"/> (CH-59 share) is unchanged.
+        /// DHP, EXP, TEM and reserved markers are left out. A DRI that is not exactly 4 bytes refuses the photo.
+        /// <see cref="WriteMainJpeg"/> (CH-59 share) is unchanged.
         /// </summary>
         public static bool WriteMainJpegWithoutLocation(ReadOnlySpan<byte> source, Stream target) =>
             WriteMain(source, target, orientationOnly: true);
@@ -426,6 +427,9 @@ namespace Chatcheology.Mobile.Presentation
             BinaryPrimitives.WriteUInt32BigEndian(t[22..], 0);
             return data;
         }
+
+        /// <summary>A DRI segment's only length: the length field and the restart interval.</summary>
+        private const int DriLength = 4;
 
         /// <summary>The JFIF header's length after its marker and length: "JFIF\0", version, units, density, thumbnail size.</summary>
         private const int JfifHeaderLength = 14;
@@ -526,6 +530,13 @@ namespace Chatcheology.Mobile.Presentation
                     // CH-54 (review S1): without location, only the segments a decoder needs, from an allow-list:
                     // DQT, DHT, DAC, SOFn, DRI and SOS. Every other marker (JPGn, DNL, DHP, EXP, reserved) is left out.
                     keep = IsImageSegment(marker);
+
+                    // DRI only in its exact 4-byte form (step 1a re-review S5): extra bytes could carry other data.
+                    // Refused, not normalised, so the platform step re-encodes the photo instead.
+                    if (marker == 0xDD && length != DriLength)
+                    {
+                        return false;
+                    }
                 }
 
                 if (keep && orientationOnly && marker == 0xE0)

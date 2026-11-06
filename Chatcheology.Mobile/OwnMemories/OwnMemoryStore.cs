@@ -128,9 +128,18 @@ namespace Chatcheology.Mobile.OwnMemories
                     transaction.Commit();
                 }
 
-                return deleted + DeleteFiles(unused);
+                // The time is read again just before each delete (step 1a re-review nit): a file the intake has just
+                // renewed for a new photo (AlreadyStored) is young again and stays.
+                return deleted + DeleteFiles(unused.Where(name =>
+                {
+                    BeforeSweepDelete?.Invoke(name);
+                    return File.GetLastWriteTimeUtc(Path.Combine(PhotosFolder, name)) < nowUtc - UnusedPhotoAge;
+                }));
             }
         }
+
+        /// <summary>Tests only: called with each unused old file's name just before the sweep reads its time again.</summary>
+        internal Action<string>? BeforeSweepDelete { get; set; }
 
         /// <summary>Opens a connection with the policy (creating the file on first use), sweeping the photos once per process first.</summary>
         internal SqliteConnection Open()
