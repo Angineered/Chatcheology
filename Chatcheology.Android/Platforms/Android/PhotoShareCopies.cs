@@ -27,15 +27,18 @@ namespace Chatcheology.Android
     /// through <see cref="ArchiveFileProvider"/>. The archive file is opened for reading only.
     /// </summary>
     /// <remarks>
-    /// Old copies are deleted when the app starts and before each share, so at most one is kept, for the app that
-    /// received it. Nothing is logged.
+    /// Copies older than 24 hours are deleted when the app starts and before each share; a copy that failed or was
+    /// refused is deleted at once. Nothing is logged.
     /// </remarks>
     internal static class PhotoShareCopies
     {
         /// <summary>The cache folder that holds shared copies.</summary>
         internal static string Folder => System.IO.Path.Combine(FileSystem.CacheDirectory, PhotoShare.CopiesFolderName);
 
-        /// <summary>Deletes every earlier copy. Never throws.</summary>
+        /// <summary>
+        /// Deletes copies older than <see cref="PhotoShare.CopyLifetime"/>, so an app that reads a shared copy a
+        /// little later still finds it. Never throws.
+        /// </summary>
         internal static void Clean()
         {
             try
@@ -49,6 +52,11 @@ namespace Chatcheology.Android
                 {
                     try
                     {
+                        if (!PhotoShare.IsExpired(File.GetLastWriteTimeUtc(file), DateTime.UtcNow))
+                        {
+                            continue;
+                        }
+
                         File.Delete(file);
                     }
                     catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
@@ -94,55 +102,82 @@ namespace Chatcheology.Android
             Clean();
 
             string? copyPath = null;
+            var outcome = PhotoShareOutcome.NotAllowed;
 
             try
             {
-                Directory.CreateDirectory(Folder);
-
-                PhotoFormat format;
-                copyPath = System.IO.Path.Combine(Folder, PhotoShare.CopyFileName(sourcePath, Guid.NewGuid().ToString("N")[..12]));
-
-                // The archive file: read only, and others may read it too.
-                using (var source = new FileStream(sourcePath, FileMode.Open, FileAccess.Read, FileShare.Read))
-                {
-                    var header = new byte[PhotoShare.HeaderLength];
-                    var count = source.ReadAtLeast(header, header.Length, throwOnEndOfStream: false);
-                    format = PhotoShare.Sniff(header.AsSpan(0, count));
-
-                    if (PhotoShare.MethodFor(format, (int)Build.VERSION.SdkInt) == PhotoShareMethod.Refuse)
-                    {
-                        copyPath = null;
-                        return (PhotoShareOutcome.CannotRemoveLocation, null);
-                    }
-
-                    source.Position = 0;
-
-                    using var target = new FileStream(copyPath, FileMode.CreateNew, FileAccess.Write, FileShare.None);
-                    source.CopyTo(target);
-                }
-
-                var method = PhotoShare.MethodFor(format, (int)Build.VERSION.SdkInt);
-
-                if (method == PhotoShareMethod.RemoveLocation && !RemoveLocation(copyPath))
-                {
-                    return Refused(copyPath);
-                }
-
-                using (var check = new FileStream(copyPath, FileMode.Open, FileAccess.Read, FileShare.Read))
-                {
-                    if (PhotoShare.MayStillCarryLocation(check, format, method))
-                    {
-                        return Refused(copyPath);
-                    }
-                }
-
-                return (PhotoShareOutcome.Shared, copyPath);
+                outcome = Make(sourcePath, ref copyPath);
             }
-            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or Java.Lang.Exception)
+            catch (Exception)
             {
-                Delete(copyPath);
-                return (PhotoShareOutcome.NotAllowed, null);
+                // Any failure, of any kind: nothing is shared.
+                outcome = PhotoShareOutcome.NotAllowed;
             }
+            finally
+            {
+                // A copy is kept only when it passed every check; a half-made or refused one may still hold a location.
+                if (outcome != PhotoShareOutcome.Shared)
+                {
+                    Delete(copyPath);
+                }
+            }
+
+            return outcome == PhotoShareOutcome.Shared ? (outcome, copyPath) : (outcome, null);
+        }
+
+        private static PhotoShareOutcome Make(string sourcePath, ref string? copyPath)
+        {
+            Directory.CreateDirectory(Folder);
+
+            // The archive file: read only, and others may read it too.
+            byte[] original;
+
+            using (var source = new FileStream(sourcePath, FileMode.Open, FileAccess.Read, FileShare.Read))
+            {
+                original = new byte[source.Length];
+                source.ReadExactly(original);
+            }
+
+            var format = PhotoShare.Sniff(original.AsSpan(0, Math.Min(original.Length, PhotoShare.HeaderLength)));
+            var method = PhotoShare.MethodFor(format, (int)Build.VERSION.SdkInt);
+
+            if (method == PhotoShareMethod.Refuse)
+            {
+                return PhotoShareOutcome.CannotRemoveLocation;
+            }
+
+            copyPath = System.IO.Path.Combine(Folder, PhotoShare.CopyFileName(sourcePath, Guid.NewGuid().ToString("N")[..12]));
+
+            using (var target = new FileStream(copyPath, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            {
+                if (format == PhotoFormat.Jpeg)
+                {
+                    // The main image only: no XMP, MPF, IPTC, second image, gain map or motion-photo video.
+                    if (!PhotoShare.WriteMainJpeg(original, target))
+                    {
+                        return PhotoShareOutcome.CannotRemoveLocation;
+                    }
+                }
+                else
+                {
+                    target.Write(original);
+                }
+            }
+
+            if (method == PhotoShareMethod.RemoveLocation && !RemoveLocation(copyPath))
+            {
+                return PhotoShareOutcome.CannotRemoveLocation;
+            }
+
+            using (var check = new FileStream(copyPath, FileMode.Open, FileAccess.Read, FileShare.Read))
+            {
+                if (PhotoShare.MayStillCarryLocation(check, format, method))
+                {
+                    return PhotoShareOutcome.CannotRemoveLocation;
+                }
+            }
+
+            return PhotoShareOutcome.Shared;
         }
 
         /// <summary>Clears every GPS tag on the copy and saves it, then reads it back: true only when none is left.</summary>
@@ -176,12 +211,6 @@ namespace Chatcheology.Android
                 // The format cannot be written here (a HEIC named .jpg, say): refused, never shared as it is.
                 return false;
             }
-        }
-
-        private static (PhotoShareOutcome, string?) Refused(string copyPath)
-        {
-            Delete(copyPath);
-            return (PhotoShareOutcome.CannotRemoveLocation, null);
         }
 
         private static void Delete(string? path)

@@ -46,7 +46,11 @@ namespace Chatcheology.Mobile.Presentation
     /// <para>The format comes from the file's first bytes, not its extension, so a HEIC saved as ".jpg" is
     /// still refused. Per format (<see cref="MethodFor"/>):</para>
     /// <list type="bullet">
-    /// <item>JPEG: <see cref="PhotoShareMethod.RemoveLocation"/> on every supported Android (8.0 and later).</item>
+    /// <item>JPEG: <see cref="PhotoShareMethod.RemoveLocation"/> on every supported Android (8.0 and later). The
+    /// copy is rebuilt from the main image only (<see cref="WriteMainJpeg"/>): APP0 JFIF, APP1 Exif, APP2 ICC
+    /// profile and the image segments up to the main image's EOI. XMP, MPF, IPTC, comments, other APPn blocks and
+    /// everything after EOI (a second image, a gain map, a motion photo's video) are left out; then
+    /// <c>ExifInterface</c> clears the GPS tags of the one Exif block left.</item>
     /// <item>PNG and WebP: <see cref="PhotoShareMethod.RemoveLocation"/> on Android 11 (API 30) and later, where
     /// <c>ExifInterface</c> can write them. Below that, <see cref="PhotoShareMethod.PlainCopy"/>, but the copy is
     /// refused when it carries an EXIF block (PNG <c>eXIf</c>, WebP <c>EXIF</c>), which could hold a location.</item>
@@ -55,8 +59,9 @@ namespace Chatcheology.Mobile.Presentation
     /// hold a location and <c>ExifInterface</c> cannot write it.</item>
     /// </list>
     /// <para>Whatever the method, the finished copy is checked again before it is shared
-    /// (<see cref="MayStillCarryLocation"/>): any XMP location text ("GPSLatitude", "GPSLongitude") refuses it,
-    /// as does compressed PNG text (which cannot be read for it). Android also re-reads the copy's GPS tags.</para>
+    /// (<see cref="MayStillCarryLocation"/>): any EXIF/TIFF block anywhere in the file with a non-empty GPS
+    /// directory (<see cref="HasGpsBlock"/>), any XMP location text ("GPSLatitude", "GPSLongitude") and compressed
+    /// PNG text (which cannot be read for it) all refuse it. Android also re-reads the copy's GPS tags.</para>
     /// </remarks>
     public static class PhotoShare
     {
@@ -65,6 +70,15 @@ namespace Chatcheology.Mobile.Presentation
 
         /// <summary>The folder of the app's cache that holds shared copies; the only cache folder the FileProvider serves.</summary>
         public const string CopiesFolderName = "shared-photos";
+
+        /// <summary>
+        /// How long a shared copy is kept: long enough for the receiving app to read it a little later (a messenger
+        /// may upload in the background), then it is deleted at the next app start or share.
+        /// </summary>
+        public static readonly TimeSpan CopyLifetime = TimeSpan.FromHours(24);
+
+        /// <summary>True when a copy last written at <paramref name="writtenUtc"/> is older than <see cref="CopyLifetime"/> at <paramref name="nowUtc"/>.</summary>
+        public static bool IsExpired(DateTime writtenUtc, DateTime nowUtc) => nowUtc - writtenUtc > CopyLifetime;
 
         /// <summary>The message when a photo is refused.</summary>
         public const string CannotShareText = "This photo can't be shared without its location.";
@@ -199,6 +213,16 @@ namespace Chatcheology.Mobile.Presentation
                 return true;
             }
 
+            // Independent of how the copy was made: every EXIF/TIFF block in the file, wherever it sits.
+            var bytes = new byte[copy.Length];
+            copy.Position = 0;
+            copy.ReadExactly(bytes);
+
+            if (HasGpsBlock(bytes))
+            {
+                return true;
+            }
+
             copy.Position = 0;
 
             if (format == PhotoFormat.Png && PngBlocksLocationCheck(copy, method))
@@ -216,6 +240,220 @@ namespace Chatcheology.Mobile.Presentation
             copy.Position = 0;
 
             return ContainsLocationText(copy);
+        }
+
+        /// <summary>
+        /// True when any EXIF/TIFF block anywhere in <paramref name="data"/> has a GPS directory pointer (tag
+        /// 0x8825) whose directory is not empty, or points outside the data. Every TIFF header ("MM\0*" or
+        /// "II*\0") in the file is tried, so a JPEG APP1 Exif in a trailing image or video, a PNG <c>eXIf</c> chunk
+        /// and a WebP <c>EXIF</c> chunk (with or without its "Exif\0\0" prefix) are all found. Only a GPS pointer
+        /// tag counts, so random bytes that look like a TIFF header do not refuse a photo.
+        /// </summary>
+        public static bool HasGpsBlock(ReadOnlySpan<byte> data)
+        {
+            for (var i = 0; i + 8 <= data.Length; i++)
+            {
+                var bigEndian = data[i] == (byte)'M' && data[i + 1] == (byte)'M' && data[i + 2] == 0 && data[i + 3] == 42;
+                var littleEndian = data[i] == (byte)'I' && data[i + 1] == (byte)'I' && data[i + 2] == 42 && data[i + 3] == 0;
+
+                if ((bigEndian || littleEndian) && TiffHasGps(data[i..], bigEndian))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        /// <summary>Walks a TIFF block's directory chain (IFD0, IFD1, at most 8) for a GPS pointer with a non-empty directory.</summary>
+        private static bool TiffHasGps(ReadOnlySpan<byte> tiff, bool bigEndian)
+        {
+            var offset = U32(tiff[4..], bigEndian);
+
+            for (var directory = 0; directory < 8; directory++)
+            {
+                if (offset < 8 || offset + 2 > (uint)tiff.Length)
+                {
+                    return false;
+                }
+
+                var at = (int)offset;
+                var count = U16(tiff[at..], bigEndian);
+
+                for (var entry = 0; entry < count; entry++)
+                {
+                    var start = at + 2 + (entry * 12);
+
+                    if (start + 12 > tiff.Length)
+                    {
+                        return false;
+                    }
+
+                    if (U16(tiff[start..], bigEndian) != 0x8825)
+                    {
+                        continue;
+                    }
+
+                    var gps = U32(tiff[(start + 8)..], bigEndian);
+
+                    // A GPS pointer that leads nowhere readable is a doubt, and a doubt refuses.
+                    if (gps < 8 || gps + 2 > (uint)tiff.Length)
+                    {
+                        return true;
+                    }
+
+                    if (U16(tiff[(int)gps..], bigEndian) > 0)
+                    {
+                        return true;
+                    }
+                }
+
+                var next = at + 2 + (count * 12);
+
+                if (next + 4 > tiff.Length)
+                {
+                    return false;
+                }
+
+                offset = U32(tiff[next..], bigEndian);
+
+                if (offset == 0)
+                {
+                    return false;
+                }
+            }
+
+            return false;
+        }
+
+        private static ushort U16(ReadOnlySpan<byte> at, bool bigEndian) =>
+            bigEndian ? BinaryPrimitives.ReadUInt16BigEndian(at) : BinaryPrimitives.ReadUInt16LittleEndian(at);
+
+        private static uint U32(ReadOnlySpan<byte> at, bool bigEndian) =>
+            bigEndian ? BinaryPrimitives.ReadUInt32BigEndian(at) : BinaryPrimitives.ReadUInt32LittleEndian(at);
+
+        /// <summary>
+        /// Writes a JPEG's main image only to <paramref name="target"/>: SOI; APP0 "JFIF", APP1 "Exif" and APP2
+        /// "ICC_PROFILE" blocks; every other non-APPn segment (DQT, SOFn, DHT, DRI, SOS with its scan data, ...); and
+        /// the main image's EOI. Everything else is left out: APP1 XMP, APP2 MPF, APP13 IPTC, other APPn, comments,
+        /// and every byte after EOI (a second image, a gain map, a motion photo's video). False, with
+        /// <paramref name="target"/> to be thrown away, when the data is not a complete JPEG.
+        /// </summary>
+        public static bool WriteMainJpeg(ReadOnlySpan<byte> source, Stream target)
+        {
+            ArgumentNullException.ThrowIfNull(target);
+
+            if (source.Length < 4 || source[0] != 0xFF || source[1] != 0xD8)
+            {
+                return false;
+            }
+
+            target.Write([0xFF, 0xD8]);
+            var position = 2;
+
+            while (true)
+            {
+                if (position >= source.Length || source[position] != 0xFF)
+                {
+                    return false;
+                }
+
+                // Fill bytes before a marker.
+                while (position < source.Length && source[position] == 0xFF)
+                {
+                    position++;
+                }
+
+                if (position >= source.Length)
+                {
+                    return false;
+                }
+
+                var marker = source[position++];
+
+                if (marker == 0xD9)
+                {
+                    target.Write([0xFF, 0xD9]);
+                    return true;
+                }
+
+                if (marker == 0x01 || (marker >= 0xD0 && marker <= 0xD7))
+                {
+                    // Stand-alone markers carry no length.
+                    target.Write([0xFF, marker]);
+                    continue;
+                }
+
+                if (marker == 0xD8 || position + 2 > source.Length)
+                {
+                    return false;
+                }
+
+                var length = BinaryPrimitives.ReadUInt16BigEndian(source[position..]);
+
+                if (length < 2 || position + length > source.Length)
+                {
+                    return false;
+                }
+
+                var segment = source.Slice(position, length);
+                var data = segment[2..];
+
+                var keep = marker switch
+                {
+                    0xE0 => data.StartsWith("JFIF\0"u8),
+                    0xE1 => data.StartsWith("Exif\0\0"u8),
+                    0xE2 => data.StartsWith("ICC_PROFILE\0"u8),
+                    >= 0xE3 and <= 0xEF => false,
+                    0xFE => false,
+                    _ => true,
+                };
+
+                if (keep)
+                {
+                    target.Write([0xFF, marker]);
+                    target.Write(segment);
+                }
+
+                position += length;
+
+                if (marker != 0xDA)
+                {
+                    continue;
+                }
+
+                // Scan data: up to the next marker that is not a stuffed 0x00, a restart marker or a fill byte.
+                var start = position;
+
+                while (true)
+                {
+                    if (position + 1 >= source.Length)
+                    {
+                        return false;
+                    }
+
+                    if (source[position] == 0xFF)
+                    {
+                        var next = source[position + 1];
+
+                        if (next == 0x00 || (next >= 0xD0 && next <= 0xD7))
+                        {
+                            position += 2;
+                            continue;
+                        }
+
+                        if (next != 0xFF)
+                        {
+                            break;
+                        }
+                    }
+
+                    position++;
+                }
+
+                // Up to the fill bytes; the marker loop above skips them.
+                target.Write(source[start..position]);
+            }
         }
 
         /// <summary>True when the stream holds "GPSLatitude" or "GPSLongitude" as text (XMP, a PNG text chunk, a GIF comment).</summary>

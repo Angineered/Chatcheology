@@ -17,7 +17,8 @@ namespace Chatcheology.Mobile.Synthetic
     /// records before the first and after the last message and on a day without messages; trophy
     /// definitions with icons (one hidden, and items without a definition); one personal memory with an
     /// image, three extra photos (one portrait, one without a caption, one a JPEG with an invented camera location
-    /// for CH-59) and links to a message and to a game.</para>
+    /// for CH-59, the first one a two-image JPEG with the location only in its second image) and links to a
+    /// message and to a game.</para>
     /// </remarks>
     internal static class SyntheticMemories
     {
@@ -69,7 +70,8 @@ namespace Chatcheology.Mobile.Synthetic
             var kart = Picture(writer, mediaFolder, 320, 180, (200, 60, 60), (240, 180, 40));
             var tower = Picture(writer, mediaFolder, 320, 180, (40, 90, 200), (120, 200, 240));
             var seaside = Picture(writer, mediaFolder, 640, 360, (30, 120, 180), (240, 220, 160));
-            var ferry = Picture(writer, mediaFolder, 480, 320, (20, 60, 110), (200, 200, 210));
+            // Two images in one JPEG, the location only in the second (CH-59 review): the share must drop it.
+            var ferry = Media(writer, mediaFolder, SyntheticJpeg.TwoImagesLocationInSecond(), ".jpg", SyntheticJpeg.Width, SyntheticJpeg.Height);
             var lighthouse = Picture(writer, mediaFolder, 360, 640, (230, 230, 235), (190, 50, 50));
 
             // A JPEG with an invented camera location (CH-59): sharing it must hand out a copy without it.

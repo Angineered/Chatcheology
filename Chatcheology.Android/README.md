@@ -113,9 +113,13 @@ Memory photos can be shared (CH-59, D-34; this replaces the CH-46 rule that they
 in the memory photo viewer never hands out the archive file: the app copies it into
 `cache/shared-photos/`, removes every GPS tag from the copy, checks the copy again and shares that
 copy, photo only (never the caption or the memory's title). The archive file is only read, and a
-photo outside `files/archives/` is refused. Old copies are deleted when the app starts and before
-each share. What is done depends on the file's real format (its first bytes, not its name;
-`PhotoShare` in `Chatcheology.Mobile`):
+photo outside `files/archives/` is refused. Copies older than 24 hours are deleted when the app
+starts and before each share (a messenger may read the copy a little later); a copy that fails or is
+refused is deleted at once. A JPEG copy is rebuilt from the main image only: JFIF, Exif and ICC
+profile blocks and the image itself are kept; XMP, multi-picture (MPF), IPTC, comments, other blocks
+and everything after the main image (a second image, a gain map, a motion photo's video) are left
+out, so a motion photo shares as its still image. What is done depends on the file's real format
+(its first bytes, not its name; `PhotoShare` in `Chatcheology.Mobile`):
 
 | Format | Android 8-10 (API 26-29) | Android 11+ (API 30+) |
 |---|---|---|
@@ -125,8 +129,9 @@ each share. What is done depends on the file's real format (its first bytes, not
 | HEIC/HEIF, AVIF, TIFF, raw, anything else | refused | refused |
 
 Refused means "This photo can't be shared without its location." (missing is better than wrong). The
-finished copy is also refused when it still holds location text (XMP "GPSLatitude"/"GPSLongitude"),
-compressed PNG text that cannot be searched, or any GPS tag when read back. Only GPS tags are removed;
+finished copy is also refused when any EXIF/TIFF block anywhere in it has a GPS directory, when it
+still holds location text (XMP "GPSLatitude"/"GPSLongitude") or compressed PNG text that cannot be
+searched, or when a GPS tag reads back. Only GPS tags are removed;
 other EXIF (camera, date taken) stays. Nothing about a share is logged.
 
 Stars (CH-38) and the On this day setting (CH-39) are kept in the app's private preferences, under the
@@ -144,6 +149,6 @@ A Debug build compiles in the synthetic archive generator from
 `Chatcheology.Mobile.Tests\Synthetic` and shows development tools on the start page (install a
 synthetic archive, validate) and in the conversation page's overflow menu ("Top", "Load earlier",
 with the scroll log in `adb logcat -s ChatcheologyTrial`). The synthetic memory "Invented seaside
-weekend" has a sunset photo that is a JPEG with an invented camera location, for checking that Share
-removes it (CH-59). A Release build contains none of it. A
+weekend" has a sunset photo that is a JPEG with an invented camera location and a ferry photo that is
+two JPEGs in one file with the location only in the second, for checking that Share removes it (CH-59). A Release build contains none of it. A
 Debug build uses fast deployment, so install it with `dotnet build -t:Install`, not `adb install`.

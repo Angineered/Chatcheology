@@ -84,7 +84,36 @@ namespace Chatcheology.Mobile.Synthetic
             // SOI, then the stored picture's segments after its APP0 (JFIF) header.
             var app0Length = (picture[4] << 8) | picture[5];
             var rest = picture.AsSpan(4 + app0Length);
+            var tiff = GpsTiff();
 
+            using var output = new MemoryStream();
+            output.Write([0xFF, 0xD8, 0xFF, 0xE1]);
+            Span<byte> length = stackalloc byte[2];
+            BinaryPrimitives.WriteUInt16BigEndian(length, (ushort)(2 + 6 + tiff.Length));
+            output.Write(length);
+            output.Write("Exif\0\0"u8);
+            output.Write(tiff);
+            output.Write(rest);
+
+            return output.ToArray();
+        }
+
+        /// <summary>The stored picture as it is: a JFIF JPEG with no EXIF and no location.</summary>
+        internal static byte[] Plain() => Convert.FromBase64String(Picture);
+
+        /// <summary>
+        /// Two images in one file (CH-59 review): <see cref="Plain"/> as the main image, then
+        /// <see cref="WithLocation"/> straight after its end, as a multi-picture (MPO), gain-map or motion-photo file
+        /// carries more data after the first image. Only the second image has the location.
+        /// </summary>
+        internal static byte[] TwoImagesLocationInSecond() => [.. Plain(), .. WithLocation()];
+
+        /// <summary>
+        /// A big-endian TIFF block (as inside an "Exif\0\0" APP1) whose IFD0 points to a GPS directory with seven
+        /// tags: version, latitude, longitude and altitude.
+        /// </summary>
+        internal static byte[] GpsTiff()
+        {
             var tiff = new byte[172];
             var t = tiff.AsSpan();
             "MM"u8.CopyTo(t);
@@ -111,16 +140,7 @@ namespace Chatcheology.Mobile.Synthetic
             Rationals(t[140..], Longitude.Degrees, Longitude.Minutes, Longitude.Seconds);
             Rationals(t[164..], 7);
 
-            using var output = new MemoryStream();
-            output.Write([0xFF, 0xD8, 0xFF, 0xE1]);
-            Span<byte> length = stackalloc byte[2];
-            BinaryPrimitives.WriteUInt16BigEndian(length, (ushort)(2 + 6 + tiff.Length));
-            output.Write(length);
-            output.Write("Exif\0\0"u8);
-            output.Write(tiff);
-            output.Write(rest);
-
-            return output.ToArray();
+            return tiff;
         }
 
         private static void Entry(Span<byte> at, ushort tag, ushort type, uint count, uint value)
