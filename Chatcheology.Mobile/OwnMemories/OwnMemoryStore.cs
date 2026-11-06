@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Globalization;
 using Chatcheology.Archive;
 using Microsoft.Data.Sqlite;
@@ -15,10 +16,25 @@ namespace Chatcheology.Mobile.OwnMemories
     /// file that cannot be deleted is left (it is only unused).</para>
     /// <para>Each operation opens its own connection with <see cref="OwnMemoriesDatabase"/>'s policy, so the UI and
     /// the alarm receiver can use the file at the same time.</para>
+    /// <para>Writes are also serialised in the process by one lock per file (review S4): the photo-file check, the
+    /// transaction and the deletes after the commit run under it, so a delete never removes a file another write has
+    /// just started to use.</para>
+    /// <para>At first use in a process the store sweeps the photos folder: partial files older than
+    /// <see cref="OwnPhotoIntake.PartialFileAge"/>, and photo files no memory uses that are older than
+    /// <see cref="UnusedPhotoAge"/> (a photo added to a form that was then cancelled).</para>
     /// </remarks>
     public sealed class OwnMemoryStore
     {
+        /// <summary>How old an unused photo file must be before a sweep deletes it.</summary>
+        public static readonly TimeSpan UnusedPhotoAge = TimeSpan.FromHours(24);
+
         private const string DateFormat = "yyyy'-'MM'-'dd";
+
+        private static readonly ConcurrentDictionary<string, object> Locks = new(StringComparer.Ordinal);
+        private static readonly ConcurrentDictionary<string, bool> Swept = new(StringComparer.Ordinal);
+
+        private readonly object _writeLock;
+        private readonly string _key;
 
         /// <summary>The store inside <paramref name="filesFolder"/>, the app's files folder.</summary>
         public OwnMemoryStore(string filesFolder)
@@ -28,6 +44,103 @@ namespace Chatcheology.Mobile.OwnMemories
             DatabasePath = OwnMemoriesDatabase.PathIn(filesFolder);
             PhotosFolder = OwnMemoriesDatabase.PhotosFolderIn(filesFolder);
             Settings = new OwnMemorySettings(this);
+            _key = Path.GetFullPath(DatabasePath);
+            _writeLock = Locks.GetOrAdd(_key, _ => new object());
+        }
+
+        /// <summary>Adds a memory with a new identity.</summary>
+        /// <exception cref="OwnMemoryValidationException">The draft breaks a rule; nothing was written.</exception>
+        public OwnMemory Add(OwnMemoryDraft draft)
+        {
+            lock (_writeLock)
+            {
+                return AddCore(draft);
+            }
+        }
+
+        /// <summary>Replaces every field of the memory <paramref name="id"/>; photo files it no longer uses and no other memory uses are deleted.</summary>
+        /// <exception cref="OwnMemoryValidationException">The draft breaks a rule, or the memory is no longer there; nothing was written.</exception>
+        public OwnMemory Update(Guid id, OwnMemoryDraft draft)
+        {
+            lock (_writeLock)
+            {
+                return UpdateCore(id, draft);
+            }
+        }
+
+        /// <summary>Deletes the memory <paramref name="id"/>, its mute, and the photo files no other memory uses.</summary>
+        /// <returns>False when it was not there.</returns>
+        public bool Delete(Guid id)
+        {
+            lock (_writeLock)
+            {
+                return DeleteCore(id);
+            }
+        }
+
+        /// <summary>
+        /// Deletes every own memory, their mutes and every stored photo (and any photo left half-added). The other
+        /// own settings (switches, posted day) are kept.
+        /// </summary>
+        /// <returns>The number of memories deleted.</returns>
+        public int DeleteAll()
+        {
+            lock (_writeLock)
+            {
+                return DeleteAllCore();
+            }
+        }
+
+        /// <summary>
+        /// Deletes partial files older than <see cref="OwnPhotoIntake.PartialFileAge"/> and photo files that no memory
+        /// uses and that were last written before <paramref name="nowUtc"/> minus <see cref="UnusedPhotoAge"/>. A
+        /// photo a memory uses is never deleted. Runs once by itself at first use; step 2 may call it again.
+        /// </summary>
+        /// <returns>The number of files deleted.</returns>
+        public int SweepPhotos(DateTime nowUtc)
+        {
+            lock (_writeLock)
+            {
+                var deleted = OwnPhotoIntake.SweepPartialFiles(PhotosFolder, nowUtc);
+
+                if (!Directory.Exists(PhotosFolder))
+                {
+                    return deleted;
+                }
+
+                var old = Directory.EnumerateFiles(PhotosFolder)
+                    .Where(path => OwnMemoryRules.IsPhotoFileName(Path.GetFileName(path))
+                        && File.GetLastWriteTimeUtc(path) < nowUtc - UnusedPhotoAge)
+                    .Select(path => Path.GetFileName(path)!)
+                    .ToList();
+
+                if (old.Count == 0)
+                {
+                    return deleted;
+                }
+
+                List<string> unused;
+
+                using (var connection = Open())
+                using (var transaction = connection.BeginTransaction(deferred: true))
+                {
+                    unused = Unused(connection, transaction, old);
+                    transaction.Commit();
+                }
+
+                return deleted + DeleteFiles(unused);
+            }
+        }
+
+        /// <summary>Opens a connection with the policy (creating the file on first use), sweeping the photos once per process first.</summary>
+        internal SqliteConnection Open()
+        {
+            if (Swept.TryAdd(_key, true))
+            {
+                SweepPhotos(DateTime.UtcNow);
+            }
+
+            return OwnMemoriesDatabase.Open(DatabasePath);
         }
 
         /// <summary>The own memories file.</summary>
@@ -39,12 +152,9 @@ namespace Chatcheology.Mobile.OwnMemories
         /// <summary>The per-phone own settings kept in the same file.</summary>
         public OwnMemorySettings Settings { get; }
 
-        /// <summary>Opens a connection with the policy (creating the file on first use).</summary>
-        internal SqliteConnection Open() => OwnMemoriesDatabase.Open(DatabasePath);
-
         /// <summary>Adds a memory with a new identity.</summary>
         /// <exception cref="OwnMemoryValidationException">The draft breaks a rule; nothing was written.</exception>
-        public OwnMemory Add(OwnMemoryDraft draft)
+        private OwnMemory AddCore(OwnMemoryDraft draft)
         {
             Check(draft);
 
@@ -74,7 +184,7 @@ namespace Chatcheology.Mobile.OwnMemories
 
         /// <summary>Replaces every field of the memory <paramref name="id"/>.</summary>
         /// <exception cref="OwnMemoryValidationException">The draft breaks a rule, or the memory is no longer there; nothing was written.</exception>
-        public OwnMemory Update(Guid id, OwnMemoryDraft draft)
+        private OwnMemory UpdateCore(Guid id, OwnMemoryDraft draft)
         {
             Check(draft);
 
@@ -116,7 +226,7 @@ namespace Chatcheology.Mobile.OwnMemories
 
         /// <summary>Deletes the memory <paramref name="id"/>, its mute, and the photo files no other memory uses.</summary>
         /// <returns>False when it was not there.</returns>
-        public bool Delete(Guid id)
+        private bool DeleteCore(Guid id)
         {
             IReadOnlyList<string> files;
 
@@ -158,7 +268,7 @@ namespace Chatcheology.Mobile.OwnMemories
         /// own settings (switches, posted day) are kept.
         /// </summary>
         /// <returns>The number of memories deleted.</returns>
-        public int DeleteAll()
+        private int DeleteAllCore()
         {
             int deleted;
 
@@ -316,7 +426,7 @@ namespace Chatcheology.Mobile.OwnMemories
             var errors = new Dictionary<OwnMemoryField, string>(OwnMemoryRules.Validate(draft));
 
             if (!errors.ContainsKey(OwnMemoryField.Photos)
-                && draft.Photos.Any(p => !File.Exists(Path.Combine(PhotosFolder, p.FileName))))
+                && (draft.Photos ?? []).Any(p => !File.Exists(Path.Combine(PhotosFolder, p.FileName))))
             {
                 errors[OwnMemoryField.Photos] = "A photo is no longer there: add it again.";
             }
@@ -410,8 +520,10 @@ namespace Chatcheology.Mobile.OwnMemories
             return unused;
         }
 
-        private void DeleteFiles(IEnumerable<string> names)
+        private int DeleteFiles(IEnumerable<string> names)
         {
+            var deleted = 0;
+
             foreach (var name in names)
             {
                 // Only names of the store's own patterns, never a path.
@@ -422,13 +534,21 @@ namespace Chatcheology.Mobile.OwnMemories
 
                 try
                 {
-                    File.Delete(Path.Combine(PhotosFolder, name));
+                    var path = Path.Combine(PhotosFolder, name);
+
+                    if (File.Exists(path))
+                    {
+                        File.Delete(path);
+                        deleted++;
+                    }
                 }
                 catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
                 {
                     // Left in place: it is only unused.
                 }
             }
+
+            return deleted;
         }
 
         private static SqliteCommand Command(SqliteConnection connection, SqliteTransaction? transaction, string sql)

@@ -173,14 +173,22 @@ namespace Chatcheology.Mobile.OwnMemories
                 errors[OwnMemoryField.Summary] = summary;
             }
 
-            if (PhotosError(draft.Photos ?? []) is { } photos)
+            if (draft.Photos is null)
+            {
+                errors[OwnMemoryField.Photos] = "The list of photos is missing.";
+            }
+            else if (PhotosError(draft.Photos) is { } photos)
             {
                 errors[OwnMemoryField.Photos] = photos;
             }
 
-            var links = draft.Links ?? [];
+            var links = draft.Links;
 
-            if (links.Any(l => l is null))
+            if (links is null)
+            {
+                errors[OwnMemoryField.Links] = "The list of links is missing.";
+            }
+            else if (links.Any(l => l is null))
             {
                 errors[OwnMemoryField.Links] = "Enter the link.";
             }

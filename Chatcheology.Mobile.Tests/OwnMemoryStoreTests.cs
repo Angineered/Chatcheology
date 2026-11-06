@@ -388,6 +388,78 @@ namespace Chatcheology.Mobile.Tests
             Assert.Equal(20, _store.Count());
         }
 
+        [Fact]
+        public void An_update_that_drops_a_photo_another_memory_uses_keeps_its_file()
+        {
+            var photos = Photos(2);
+            var first = _store.Add(Draft("First") with { Photos = [new OwnPhotoDraft(photos[0], null), new OwnPhotoDraft(photos[1], null)] });
+            _store.Add(Draft("Second") with { Photos = [new OwnPhotoDraft(photos[0], null)] });
+
+            _store.Update(first.Id, Draft("First") with { Photos = [] });
+
+            Assert.True(File.Exists(Path.Combine(_store.PhotosFolder, photos[0])));
+            Assert.False(File.Exists(Path.Combine(_store.PhotosFolder, photos[1])));
+        }
+
+        [Fact]
+        public void An_explicit_null_photo_or_link_list_is_a_refusal_not_a_crash()
+        {
+            var photos = Assert.Throws<OwnMemoryValidationException>(() => _store.Add(Draft("t") with { Photos = null! }));
+            var links = Assert.Throws<OwnMemoryValidationException>(() => _store.Add(Draft("t") with { Links = null! }));
+
+            Assert.Equal("The list of photos is missing.", photos.Errors[OwnMemoryField.Photos]);
+            Assert.Equal("The list of links is missing.", links.Errors[OwnMemoryField.Links]);
+            Assert.Equal(0, _store.Count());
+        }
+
+        [Fact]
+        public void At_first_use_old_partial_files_and_old_unused_photos_are_swept_and_used_ones_never()
+        {
+            // Set up through another store, then make the files old.
+            var photos = Photos(4);
+            var used = _store.Add(Draft("Uses an old photo") with { Photos = [new OwnPhotoDraft(photos[0], null)] });
+            var oldPartial = Path.Combine(_store.PhotosFolder, ".incoming-" + Guid.NewGuid().ToString("N") + ".tmp");
+            var newPartial = Path.Combine(_store.PhotosFolder, ".incoming-" + Guid.NewGuid().ToString("N") + ".tmp");
+            var other = Path.Combine(_store.PhotosFolder, "not-ours.txt");
+            File.WriteAllBytes(oldPartial, [1]);
+            File.WriteAllBytes(newPartial, [1]);
+            File.WriteAllBytes(other, [1]);
+
+            var longAgo = DateTime.UtcNow.AddDays(-2);
+            File.SetLastWriteTimeUtc(Path.Combine(_store.PhotosFolder, photos[0]), longAgo);
+            File.SetLastWriteTimeUtc(Path.Combine(_store.PhotosFolder, photos[1]), longAgo);
+            File.SetLastWriteTimeUtc(Path.Combine(_store.PhotosFolder, photos[2]), DateTime.UtcNow.AddHours(-23));
+            File.SetLastWriteTimeUtc(oldPartial, DateTime.UtcNow.AddMinutes(-11));
+            File.SetLastWriteTimeUtc(other, longAgo);
+
+            // The sweep runs once per file per process: call it as at first use.
+            Assert.Equal(2, _store.SweepPhotos(DateTime.UtcNow));
+
+            Assert.True(File.Exists(Path.Combine(_store.PhotosFolder, photos[0])));
+            Assert.False(File.Exists(Path.Combine(_store.PhotosFolder, photos[1])));
+            Assert.True(File.Exists(Path.Combine(_store.PhotosFolder, photos[2])));
+            Assert.True(File.Exists(Path.Combine(_store.PhotosFolder, photos[3])));
+            Assert.False(File.Exists(oldPartial));
+            Assert.True(File.Exists(newPartial));
+            Assert.True(File.Exists(other));
+            Assert.Single(_store.Get(used.Id)!.Photos);
+        }
+
+        [Fact]
+        public void The_first_use_of_a_store_in_the_process_sweeps_by_itself()
+        {
+            using var root = new TemporaryFolder();
+            var folder = OwnMemoriesDatabase.PhotosFolderIn(root.Path);
+            Directory.CreateDirectory(folder);
+            var unused = Path.Combine(folder, new string('c', 64) + ".png");
+            File.WriteAllBytes(unused, [1]);
+            File.SetLastWriteTimeUtc(unused, DateTime.UtcNow.AddDays(-3));
+
+            Assert.Empty(new OwnMemoryStore(root.Path).List());
+
+            Assert.False(File.Exists(unused));
+        }
+
         private static OwnMemoryDraft Draft(string title) => new()
         {
             Title = title,

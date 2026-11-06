@@ -1,18 +1,19 @@
+using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using Chatcheology.Mobile.Presentation;
 
 namespace Chatcheology.Mobile.OwnMemories
 {
     /// <summary>
-    /// The platform's part of storing a photo without its location (CH-54, D-37): the steps that need Android, such
-    /// as removing the location of a PNG or WebP with <c>ExifInterface</c>, or turning a HEIC photo into a JPEG.
-    /// Implemented by the Android app (step 2); <see cref="OwnPhotoIntake"/> checks whatever it writes.
+    /// The platform's part of storing a photo (CH-54, D-37): what pure .NET cannot do, such as turning a HEIC photo
+    /// into a JPEG, or reading a photo whose structure the pure rebuild refuses. Implemented by the Android app (step 2).
+    /// Whatever it writes is rebuilt by <see cref="PhotoRebuild"/> and checked again by <see cref="OwnPhotoIntake"/>.
     /// </summary>
     public interface IPhotoNormaliser
     {
         /// <summary>
-        /// Writes a copy of the photo at <paramref name="sourcePath"/> to <paramref name="targetPath"/> with no
-        /// location. Never logs either path.
+        /// Writes a copy of the photo at <paramref name="sourcePath"/> to <paramref name="targetPath"/> as JPEG, PNG,
+        /// WebP, GIF or BMP, with no location. Never logs either path.
         /// </summary>
         /// <param name="sourcePath">The photo as it came in.</param>
         /// <param name="format">Its format, read from its first bytes (<see cref="PhotoFormat.Other"/> for HEIC and anything unknown).</param>
@@ -36,7 +37,7 @@ namespace Chatcheology.Mobile.OwnMemories
         /// <summary>Refused: not a photo this phone can store (an unknown or damaged format, or one the platform could not convert).</summary>
         NotSupported,
 
-        /// <summary>Refused: its location could not be removed for certain. Missing is better than wrong.</summary>
+        /// <summary>Refused: the rebuilt copy still looked as if it could hold a location. Missing is better than wrong.</summary>
         HasLocation,
     }
 
@@ -55,28 +56,29 @@ namespace Chatcheology.Mobile.OwnMemories
     /// as <c>&lt;sha256&gt;.&lt;ext&gt;</c> of the stored bytes, so identical photos are one file.
     /// </summary>
     /// <remarks>
-    /// <para>Per format, read from the first bytes (<see cref="PhotoShare.Sniff"/>):</para>
-    /// <list type="bullet">
-    /// <item>JPEG: rebuilt from the main image only, with no Exif block but its orientation
-    /// (<see cref="PhotoShare.WriteMainJpegWithoutLocation"/>). No platform step.</item>
-    /// <item>GIF and BMP: kept as they are; neither has EXIF.</item>
-    /// <item>PNG and WebP: kept as they are when they carry no EXIF chunk, no compressed text and no XMP location
-    /// text. Otherwise the platform removes the location (<see cref="IPhotoNormaliser"/>).</item>
-    /// <item>Anything else (HEIC among them): the platform converts it (to JPEG, say). Without a platform step it
-    /// is refused.</item>
-    /// </list>
-    /// <para>Whatever the path, the finished file is checked again with the CH-59 checks
-    /// (<see cref="PhotoShare.MayStillCarryLocation"/>); a JPEG from the platform is rebuilt again first. Any doubt
-    /// refuses the photo. A refused or failed photo leaves no file behind: every partial file is deleted.</para>
-    /// <para>Partial files are named <c>.incoming-&lt;guid&gt;.tmp</c> in the photos folder, never in the cache.</para>
+    /// <para>Every photo is rebuilt from an allow-list of its picture's parts (<see cref="PhotoRebuild"/>); nothing is
+    /// ever stored as it came in. A photo the rebuild refuses (HEIC, an unknown format, a damaged file) goes to the
+    /// platform (<see cref="IPhotoNormaliser"/>); its output is rebuilt the same way. Without a platform step it is
+    /// refused.</para>
+    /// <para>The rebuilt bytes are then checked again with the CH-59 checks
+    /// (<see cref="PhotoShare.MayStillCarryLocation"/>) as a second line; any doubt refuses the photo. A refused or
+    /// failed photo leaves no file behind: every partial file is deleted.</para>
+    /// <para>Partial files are named <c>.incoming-&lt;guid&gt;.tmp</c> in the photos folder, never in the cache. Ones left
+    /// by a killed process (a full copy of the original) are deleted at first use, when older than
+    /// <see cref="PartialFileAge"/>.</para>
     /// </remarks>
     public sealed class OwnPhotoIntake
     {
         /// <summary>The largest photo kept (D-29): 20 MB.</summary>
         public const long MaxPhotoBytes = 20 * 1024 * 1024;
 
+        /// <summary>How old a partial file must be before a sweep deletes it.</summary>
+        public static readonly TimeSpan PartialFileAge = TimeSpan.FromMinutes(10);
+
         private const string IncomingPrefix = ".incoming-";
         private const string IncomingSuffix = ".tmp";
+
+        private static readonly ConcurrentDictionary<string, bool> Swept = new(StringComparer.Ordinal);
 
         private readonly string _folder;
         private readonly IPhotoNormaliser? _normaliser;
@@ -114,6 +116,44 @@ namespace Chatcheology.Mobile.OwnMemories
             _ => null,
         };
 
+        /// <summary>
+        /// Deletes the partial files in <paramref name="photosFolder"/> last written before <paramref name="nowUtc"/>
+        /// minus <see cref="PartialFileAge"/>. A file that cannot be deleted is left.
+        /// </summary>
+        /// <returns>The number deleted.</returns>
+        public static int SweepPartialFiles(string photosFolder, DateTime nowUtc)
+        {
+            ArgumentException.ThrowIfNullOrEmpty(photosFolder);
+
+            if (!Directory.Exists(photosFolder))
+            {
+                return 0;
+            }
+
+            var deleted = 0;
+
+            foreach (var path in Directory.EnumerateFiles(photosFolder, IncomingPrefix + "*" + IncomingSuffix))
+            {
+                if (IsIncomingFileName(Path.GetFileName(path))
+                    && File.GetLastWriteTimeUtc(path) < nowUtc - PartialFileAge
+                    && TryDelete(path))
+                {
+                    deleted++;
+                }
+            }
+
+            return deleted;
+        }
+
+        /// <summary>Sweeps old partial files the first time a folder is used in this process.</summary>
+        internal static void SweepOnce(string photosFolder)
+        {
+            if (Swept.TryAdd(Path.GetFullPath(photosFolder), true))
+            {
+                SweepPartialFiles(photosFolder, DateTime.UtcNow);
+            }
+        }
+
         /// <summary>Reads <paramref name="source"/> to its end and stores it, or refuses it.</summary>
         /// <exception cref="IOException">Reading or writing failed; no file is left behind.</exception>
         /// <exception cref="OperationCanceledException">Cancelled; no file is left behind.</exception>
@@ -122,46 +162,40 @@ namespace Chatcheology.Mobile.OwnMemories
             ArgumentNullException.ThrowIfNull(source);
 
             Directory.CreateDirectory(_folder);
+            SweepOnce(_folder);
             var partials = new List<string>();
 
             try
             {
                 var incoming = NewPartial(partials);
-                byte[] incomingHash;
 
-                using (var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256))
+                await using (var target = new FileStream(incoming, FileMode.CreateNew, FileAccess.Write, FileShare.None, 81920, useAsync: true))
                 {
-                    await using (var target = new FileStream(incoming, FileMode.CreateNew, FileAccess.Write, FileShare.None, 81920, useAsync: true))
+                    var buffer = new byte[81920];
+                    long total = 0;
+
+                    while (true)
                     {
-                        var buffer = new byte[81920];
-                        long total = 0;
+                        var read = await source.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
 
-                        while (true)
+                        if (read <= 0)
                         {
-                            var read = await source.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
-
-                            if (read <= 0)
-                            {
-                                break;
-                            }
-
-                            total += read;
-
-                            if (total > _maxBytes)
-                            {
-                                return new OwnPhotoResult(OwnPhotoStatus.TooLarge, null);
-                            }
-
-                            hash.AppendData(buffer, 0, read);
-                            await target.WriteAsync(buffer.AsMemory(0, read), cancellationToken).ConfigureAwait(false);
+                            break;
                         }
-                    }
 
-                    incomingHash = hash.GetHashAndReset();
+                        total += read;
+
+                        if (total > _maxBytes)
+                        {
+                            return new OwnPhotoResult(OwnPhotoStatus.TooLarge, null);
+                        }
+
+                        await target.WriteAsync(buffer.AsMemory(0, read), cancellationToken).ConfigureAwait(false);
+                    }
                 }
 
                 cancellationToken.ThrowIfCancellationRequested();
-                return Finish(incoming, incomingHash, partials);
+                return Finish(incoming, partials);
             }
             finally
             {
@@ -173,91 +207,72 @@ namespace Chatcheology.Mobile.OwnMemories
         }
 
         /// <summary>Turns the incoming file into the stored one, or refuses it. Every file it makes is in <paramref name="partials"/>.</summary>
-        private OwnPhotoResult Finish(string incoming, byte[] incomingHash, List<string> partials)
+        private OwnPhotoResult Finish(string incoming, List<string> partials)
         {
-            var format = SniffFile(incoming);
-            string stored;
-            byte[] storedHash;
-            PhotoShareMethod method;
+            var source = File.ReadAllBytes(incoming);
+            var format = PhotoShare.Sniff(source.AsSpan(0, Math.Min(source.Length, PhotoShare.HeaderLength)));
+            var rebuilt = PhotoRebuild.Rebuild(source, format);
 
-            switch (format)
+            if (rebuilt is null)
             {
-                case PhotoFormat.Jpeg:
-                    if (RebuildJpeg(incoming, partials) is not { } rebuilt)
-                    {
-                        return new OwnPhotoResult(OwnPhotoStatus.NotSupported, null);
-                    }
+                // Not something the pure rebuild can read: the platform's turn, if there is one.
+                if (_normaliser is null)
+                {
+                    return new OwnPhotoResult(OwnPhotoStatus.NotSupported, null);
+                }
 
-                    (stored, storedHash) = rebuilt;
-                    method = PhotoShareMethod.RemoveLocation;
-                    break;
+                var normalised = NewPartial(partials);
 
-                case PhotoFormat.Gif or PhotoFormat.Bmp:
-                    (stored, storedHash, method) = (incoming, incomingHash, PhotoShareMethod.PlainCopy);
-                    break;
+                if (_normaliser.WriteWithoutLocation(incoming, format, normalised) is not { } written || !File.Exists(normalised))
+                {
+                    return new OwnPhotoResult(OwnPhotoStatus.NotSupported, null);
+                }
 
-                case PhotoFormat.Png or PhotoFormat.WebP when !MayCarryLocation(incoming, format, PhotoShareMethod.PlainCopy):
-                    (stored, storedHash, method) = (incoming, incomingHash, PhotoShareMethod.PlainCopy);
-                    break;
+                if (new FileInfo(normalised).Length > _maxBytes)
+                {
+                    return new OwnPhotoResult(OwnPhotoStatus.TooLarge, null);
+                }
 
-                default:
-                    if (_normaliser is null)
-                    {
-                        return new OwnPhotoResult(format == PhotoFormat.Other ? OwnPhotoStatus.NotSupported : OwnPhotoStatus.HasLocation, null);
-                    }
+                // Trust the bytes, not the platform's word for them, and rebuild them the same way.
+                var output = File.ReadAllBytes(normalised);
+                format = PhotoShare.Sniff(output.AsSpan(0, Math.Min(output.Length, PhotoShare.HeaderLength)));
 
-                    var normalised = NewPartial(partials);
-
-                    if (_normaliser.WriteWithoutLocation(incoming, format, normalised) is not { } written || !File.Exists(normalised))
-                    {
-                        return new OwnPhotoResult(format == PhotoFormat.Other ? OwnPhotoStatus.NotSupported : OwnPhotoStatus.HasLocation, null);
-                    }
-
-                    if (new FileInfo(normalised).Length > _maxBytes)
-                    {
-                        return new OwnPhotoResult(OwnPhotoStatus.TooLarge, null);
-                    }
-
-                    // Trust the bytes, not the platform's word for them.
-                    format = SniffFile(normalised);
-
-                    if (format != written || ExtensionFor(format) is null)
-                    {
-                        return new OwnPhotoResult(OwnPhotoStatus.NotSupported, null);
-                    }
-
-                    if (format == PhotoFormat.Jpeg)
-                    {
-                        if (RebuildJpeg(normalised, partials) is not { } again)
-                        {
-                            return new OwnPhotoResult(OwnPhotoStatus.NotSupported, null);
-                        }
-
-                        (stored, storedHash) = again;
-                        method = PhotoShareMethod.RemoveLocation;
-                    }
-                    else
-                    {
-                        stored = normalised;
-                        storedHash = HashFile(normalised);
-                        method = format is PhotoFormat.Gif or PhotoFormat.Bmp ? PhotoShareMethod.PlainCopy : PhotoShareMethod.RemoveLocation;
-                    }
-
-                    break;
+                if (format != written || (rebuilt = PhotoRebuild.Rebuild(output, format)) is null)
+                {
+                    return new OwnPhotoResult(OwnPhotoStatus.NotSupported, null);
+                }
             }
 
-            // The CH-59 checks on the very bytes that are kept: any doubt refuses.
-            if (MayCarryLocation(stored, format, method))
+            if (rebuilt.Length > _maxBytes)
             {
-                return new OwnPhotoResult(OwnPhotoStatus.HasLocation, null);
+                return new OwnPhotoResult(OwnPhotoStatus.TooLarge, null);
             }
 
-            var name = Convert.ToHexStringLower(storedHash) + "." + ExtensionFor(format);
+            // The CH-59 checks on the very bytes that are kept, as a second line: any doubt refuses. Nothing was
+            // removed by ExifInterface, so the strict (plain copy) rules apply.
+            var method = format == PhotoFormat.Jpeg ? PhotoShareMethod.RemoveLocation : PhotoShareMethod.PlainCopy;
+
+            using (var check = new MemoryStream(rebuilt, writable: false))
+            {
+                if (PhotoShare.MayStillCarryLocation(check, format, method))
+                {
+                    return new OwnPhotoResult(OwnPhotoStatus.HasLocation, null);
+                }
+            }
+
+            var name = Convert.ToHexStringLower(SHA256.HashData(rebuilt)) + "." + ExtensionFor(format);
             var target = Path.Combine(_folder, name);
 
             if (File.Exists(target))
             {
-                return new OwnPhotoResult(OwnPhotoStatus.AlreadyStored, name);
+                return AlreadyStored(target, name);
+            }
+
+            var stored = NewPartial(partials);
+
+            using (var file = new FileStream(stored, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            {
+                file.Write(rebuilt);
             }
 
             try
@@ -267,33 +282,26 @@ namespace Chatcheology.Mobile.OwnMemories
             catch (IOException) when (File.Exists(target))
             {
                 // Stored by another add in the meantime: the same bytes.
-                return new OwnPhotoResult(OwnPhotoStatus.AlreadyStored, name);
+                return AlreadyStored(target, name);
             }
 
             partials.Remove(stored);
             return new OwnPhotoResult(OwnPhotoStatus.Stored, name);
         }
 
-        /// <summary>Rebuilds a JPEG without its location into a new partial file; null when it is not a complete JPEG or too large.</summary>
-        private (string Path, byte[] Hash)? RebuildJpeg(string path, List<string> partials)
+        /// <summary>The file is in use again: its time is renewed so the unused-photo sweep does not take it from an open form.</summary>
+        private static OwnPhotoResult AlreadyStored(string path, string name)
         {
-            var source = File.ReadAllBytes(path);
-            using var rebuilt = new MemoryStream(source.Length);
-
-            if (!PhotoShare.WriteMainJpegWithoutLocation(source, rebuilt) || rebuilt.Length > _maxBytes)
+            try
             {
-                return null;
+                File.SetLastWriteTimeUtc(path, DateTime.UtcNow);
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                // Only the sweep's age; the file is there.
             }
 
-            var output = NewPartial(partials);
-            var bytes = rebuilt.ToArray();
-
-            using (var file = new FileStream(output, FileMode.CreateNew, FileAccess.Write, FileShare.None))
-            {
-                file.Write(bytes);
-            }
-
-            return (output, SHA256.HashData(bytes));
+            return new OwnPhotoResult(OwnPhotoStatus.AlreadyStored, name);
         }
 
         private string NewPartial(List<string> partials)
@@ -303,35 +311,17 @@ namespace Chatcheology.Mobile.OwnMemories
             return path;
         }
 
-        private static PhotoFormat SniffFile(string path)
-        {
-            Span<byte> header = stackalloc byte[PhotoShare.HeaderLength];
-            using var file = File.OpenRead(path);
-            var read = file.ReadAtLeast(header, header.Length, throwOnEndOfStream: false);
-            return PhotoShare.Sniff(header[..read]);
-        }
-
-        private static bool MayCarryLocation(string path, PhotoFormat format, PhotoShareMethod method)
-        {
-            using var file = File.OpenRead(path);
-            return PhotoShare.MayStillCarryLocation(file, format, method);
-        }
-
-        private static byte[] HashFile(string path)
-        {
-            using var file = File.OpenRead(path);
-            return SHA256.HashData(file);
-        }
-
-        private static void TryDelete(string path)
+        private static bool TryDelete(string path)
         {
             try
             {
                 File.Delete(path);
+                return true;
             }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
             {
-                // Left for Delete all, which removes partial files too.
+                // Left for a later sweep or Delete all, which remove partial files too.
+                return false;
             }
         }
     }

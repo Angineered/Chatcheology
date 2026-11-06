@@ -351,7 +351,10 @@ namespace Chatcheology.Mobile.Presentation
         /// As <see cref="WriteMainJpeg"/>, but no Exif block is copied either (CH-54, D-37: an own memory photo is
         /// stored without its location, with no Android code). In place of the first APP1 "Exif" block, a new
         /// minimal one is written holding only its orientation (tag 274) when that is 2 to 8, so the photo still
-        /// shows the right way up; every other Exif tag (the GPS directory among them) is left out.
+        /// shows the right way up; every other Exif tag (the GPS directory among them) is left out. Other segments
+        /// come from an allow-list (review S1): DQT, DHT, DAC, SOFn, DRI, SOS and its scan, RSTn, APP2 ICC, the
+        /// exact 12-byte APP14 Adobe block, and APP0 JFIF cut to its 14-byte header with no thumbnail. JPGn, DNL,
+        /// DHP, EXP, TEM and reserved markers are left out. <see cref="WriteMainJpeg"/> (CH-59 share) is unchanged.
         /// </summary>
         public static bool WriteMainJpegWithoutLocation(ReadOnlySpan<byte> source, Stream target) =>
             WriteMain(source, target, orientationOnly: true);
@@ -424,6 +427,20 @@ namespace Chatcheology.Mobile.Presentation
             return data;
         }
 
+        /// <summary>The JFIF header's length after its marker and length: "JFIF\0", version, units, density, thumbnail size.</summary>
+        private const int JfifHeaderLength = 14;
+
+        /// <summary>
+        /// The segments a decoder needs, kept when a photo is stored without location: DQT, DHT, DAC, the SOFn frame
+        /// headers (not JPG, DHT or DAC, which share the range), DRI and SOS.
+        /// </summary>
+        private static bool IsImageSegment(byte marker) => marker switch
+        {
+            0xDB or 0xC4 or 0xCC or 0xDD or 0xDA => true,
+            >= 0xC0 and <= 0xCF => marker is not (0xC4 or 0xC8 or 0xCC),
+            _ => false,
+        };
+
         private static bool WriteMain(ReadOnlySpan<byte> source, Stream target, bool orientationOnly)
         {
             ArgumentNullException.ThrowIfNull(target);
@@ -466,8 +483,12 @@ namespace Chatcheology.Mobile.Presentation
 
                 if (marker == 0x01 || (marker >= 0xD0 && marker <= 0xD7))
                 {
-                    // Stand-alone markers carry no length.
-                    target.Write([0xFF, marker]);
+                    // Stand-alone markers carry no length. Without location, only restart markers are kept (TEM is not).
+                    if (!orientationOnly || marker != 0x01)
+                    {
+                        target.Write([0xFF, marker]);
+                    }
+
                     continue;
                 }
 
@@ -499,6 +520,31 @@ namespace Chatcheology.Mobile.Presentation
                     0xFE => false,
                     _ => true,
                 };
+
+                if (orientationOnly && marker is < 0xE0 or > 0xEF and not 0xFE)
+                {
+                    // CH-54 (review S1): without location, only the segments a decoder needs, from an allow-list:
+                    // DQT, DHT, DAC, SOFn, DRI and SOS. Every other marker (JPGn, DNL, DHP, EXP, reserved) is left out.
+                    keep = IsImageSegment(marker);
+                }
+
+                if (keep && orientationOnly && marker == 0xE0)
+                {
+                    // The JFIF header only (14 bytes), with no thumbnail: whatever follows it is left out.
+                    keep = false;
+
+                    if (data.Length >= JfifHeaderLength)
+                    {
+                        var jfif = new byte[4 + JfifHeaderLength];
+                        jfif[0] = 0xFF;
+                        jfif[1] = 0xE0;
+                        BinaryPrimitives.WriteUInt16BigEndian(jfif.AsSpan(2), JfifHeaderLength + 2);
+                        data[..JfifHeaderLength].CopyTo(jfif.AsSpan(4));
+                        jfif[^2] = 0;
+                        jfif[^1] = 0;
+                        target.Write(jfif);
+                    }
+                }
 
                 if (keep && orientationOnly && marker == 0xE1)
                 {
