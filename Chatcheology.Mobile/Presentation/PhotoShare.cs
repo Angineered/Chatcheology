@@ -68,6 +68,12 @@ namespace Chatcheology.Mobile.Presentation
         /// <summary>The first API level whose <c>ExifInterface</c> writes PNG and WebP (Android 11).</summary>
         public const int FirstPngWebPWriteApiLevel = 30;
 
+        /// <summary>
+        /// The length of an Adobe APP14 block's data ("Adobe", version, two flag words, colour transform): the only
+        /// APP14 block a shared JPEG keeps, and only at exactly this length.
+        /// </summary>
+        public const int AdobeSegmentLength = 12;
+
         /// <summary>The folder of the app's cache that holds shared copies; the only cache folder the FileProvider serves.</summary>
         public const string CopiesFolderName = "shared-photos";
 
@@ -406,7 +412,8 @@ namespace Chatcheology.Mobile.Presentation
                     0xE2 => data.StartsWith("ICC_PROFILE\0"u8),
 
                     // Adobe's colour transform (no location): without it a CMYK or YCCK JPEG shows wrong colours.
-                    0xEE => data.StartsWith("Adobe"u8),
+                    // Kept only in its exact 12-byte form; anything longer could carry other data and is dropped.
+                    0xEE => data.Length == AdobeSegmentLength && data.StartsWith("Adobe"u8),
                     >= 0xE3 and <= 0xEF => false,
                     0xFE => false,
                     _ => true,

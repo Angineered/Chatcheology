@@ -188,6 +188,25 @@ namespace Chatcheology.Mobile.Tests
             Assert.Equal([0xFF, 0xD8, .. Segment(0xEE, adobe), .. image], rebuilt);
         }
 
+        [Theory]
+        [InlineData(13)]
+        [InlineData(40)]
+        [InlineData(11)]
+        public void An_Adobe_APP14_block_of_any_other_length_is_dropped(int length)
+        {
+            // Starts with "Adobe" but is not the exact 12-byte block: it could carry other data.
+            var adobe = new byte[length];
+            "Adobe"u8.CopyTo(adobe);
+            adobe[^1] = 0x02;
+            byte[] image = [.. Segment(0xDB, new byte[65]), .. Segment(0xDA, new byte[10]), 0x12, 0x34, 0xFF, 0xD9];
+
+            byte[] source = [0xFF, 0xD8, .. Segment(0xEE, adobe), .. image];
+
+            var rebuilt = MainImage(source);
+
+            Assert.Equal([0xFF, 0xD8, .. image], rebuilt);
+        }
+
         [Fact]
         public void A_scan_with_stuffed_bytes_restart_markers_and_fill_bytes_is_kept_whole()
         {

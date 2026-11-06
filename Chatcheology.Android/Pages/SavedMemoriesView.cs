@@ -1,3 +1,4 @@
+using System.Collections.ObjectModel;
 using System.Diagnostics;
 using Chatcheology.Android.Controls;
 using Chatcheology.Mobile.Conversation;
@@ -18,15 +19,29 @@ namespace Chatcheology.Android.Pages
     /// <see cref="SavedTabState"/> while the screen is open.</para>
     /// <para>The rows are bound when a tab is shown and on a search change only; Back from the details keeps the
     /// tab, the search and the scroll position.</para>
+    /// <para>An imported collection's tab has a Date | Title switch (CH-59 step 3): Title lists one heading per memory
+    /// (<see cref="MemoryTitleGroups"/>), closed at first; a tap opens or closes it in place. The switch and the open
+    /// headings are kept in the tab's <see cref="SavedTabState"/> while the screen is open, never in Settings.</para>
     /// </remarks>
     internal sealed class SavedMemoriesView : ContentView
     {
         /// <summary>How long after the last keystroke the list is filtered again.</summary>
         private const int SearchDelayMilliseconds = 200;
 
+        /// <summary>The smallest touch target, in dp.</summary>
+        private const double TouchHeight = 48;
+
+        /// <summary>Where a memory heading's title starts, in dp; the rows under it start there too.</summary>
+        private const double HeadingTextStart = 48;
+
+        private readonly MemoryTemplates _templates = new();
+
         private readonly ArchiveSession _session;
         private readonly ConversationPage _conversation;
         private readonly Page _page;
+        private readonly Button _byDate = GroupButton(MemoryListGrouping.Date);
+        private readonly Button _byTitle = GroupButton(MemoryListGrouping.Title);
+        private readonly HorizontalStackLayout _groupBar;
         private readonly SearchBar _query = new() { Placeholder = "Search memory titles" };
         private readonly CollectionView _list = new() { SelectionMode = SelectionMode.Single };
         private readonly Label _status = new() { FontSize = 14, Margin = new Thickness(16), HorizontalTextAlignment = TextAlignment.Center };
@@ -50,7 +65,21 @@ namespace Chatcheology.Android.Pages
             _status.IsVisible = false;
             _query.IsVisible = false;
 
-            _list.ItemTemplate = new MemoryTemplates();
+            var groupLabel = new Label { Text = "Group by", FontSize = 13, VerticalOptions = LayoutOptions.Center, Margin = new Thickness(0, 0, 4, 0) };
+            groupLabel.TextIn("MutedText");
+
+            _groupBar = new HorizontalStackLayout
+            {
+                Spacing = 8,
+                Padding = new Thickness(16, 4, 16, 0),
+                IsVisible = false,
+                Children = { groupLabel, _byDate, _byTitle },
+            };
+
+            _byDate.Clicked += (_, _) => ChooseGrouping(MemoryListGrouping.Date);
+            _byTitle.Clicked += (_, _) => ChooseGrouping(MemoryListGrouping.Title);
+
+            _list.ItemTemplate = _templates;
             _list.SelectionChanged += OnSelected;
             _list.Scrolled += (_, e) => _first = Math.Max(0, e.FirstVisibleItemIndex);
             _query.TextChanged += (_, _) =>
@@ -74,14 +103,16 @@ namespace Chatcheology.Android.Pages
                 {
                     new RowDefinition(GridLength.Auto),
                     new RowDefinition(GridLength.Auto),
+                    new RowDefinition(GridLength.Auto),
                     new RowDefinition(GridLength.Star),
                 },
             };
 
-            layout.Add(_query, 0, 0);
-            layout.Add(_status, 0, 1);
-            layout.Add(_list, 0, 2);
-            layout.Add(_working, 0, 2);
+            layout.Add(_groupBar, 0, 0);
+            layout.Add(_query, 0, 1);
+            layout.Add(_status, 0, 2);
+            layout.Add(_list, 0, 3);
+            layout.Add(_working, 0, 3);
 
             Content = layout;
         }
@@ -146,6 +177,7 @@ namespace Chatcheology.Android.Pages
             }
 
             Bind(state);
+            LogGroups();
         }
 
         /// <summary>The tab is left: its search and first visible row are kept.</summary>
@@ -231,21 +263,29 @@ namespace Chatcheology.Android.Pages
         /// </summary>
         private void Bind(SavedTabState? restore)
         {
-            if (_memories is not { } memories || _tab is not { } tab)
+            if (_memories is not { } memories || _tab is not { } tab || _state is not { } state)
             {
                 return;
             }
 
-            var rows = memories.Rows(tab.Id, _query.Text);
+            var grouped = IsGroupedByTitle(tab, state);
+            var rows = grouped
+                ? MemoryTitleGroups.Rows(memories, tab.Id, _query.Text, state.Expanded)
+                : memories.Rows(tab.Id, _query.Text);
             var empty = memories.EmptyText(tab.Id, rows);
             var scrollTo = Math.Max(0, restore?.RestoreIndex(rows.Select(SavedTabs.KeyOf).ToList()) ?? 0);
+            var listed = memories.CountIn(tab.Id) > 0;
 
-            _rows = rows;
+            // Grouped rows change in place when a heading opens or closes, so the scroll position stays.
+            _rows = grouped ? new ObservableCollection<MemoryListRow>(rows) : rows;
             _first = Math.Max(0, scrollTo);
-            _query.IsVisible = memories.CountIn(tab.Id) > 0;
+            _query.IsVisible = listed;
+            _groupBar.IsVisible = listed && tab.Kind == SavedTabKind.Collection;
+            MarkGrouping(state.GroupBy);
             _status.Text = empty;
             _status.IsVisible = empty.Length > 0;
-            _list.ItemsSource = rows;
+            _templates.Grouped = grouped;
+            _list.ItemsSource = _rows;
 
             if (scrollTo > 0)
             {
@@ -253,8 +293,124 @@ namespace Chatcheology.Android.Pages
             }
         }
 
+        private static bool IsGroupedByTitle(SavedTab tab, SavedTabState state) =>
+            tab.Kind == SavedTabKind.Collection && state.GroupBy == MemoryListGrouping.Title;
+
+        private static Button GroupButton(MemoryListGrouping grouping) => new()
+        {
+            Text = MemoryTitleGroups.SwitchText(grouping),
+            FontSize = 14,
+            Padding = new Thickness(16, 0),
+            HeightRequest = TouchHeight,
+            MinimumHeightRequest = TouchHeight,
+            MinimumWidthRequest = TouchHeight,
+            CornerRadius = 18,
+            BorderWidth = 1,
+            BackgroundColor = Colors.Transparent,
+        };
+
+        /// <summary>The chosen side of the switch bold and in the accent colour; screen readers hear which is chosen.</summary>
+        private void MarkGrouping(MemoryListGrouping chosen)
+        {
+            foreach (var (button, grouping) in new[] { (_byDate, MemoryListGrouping.Date), (_byTitle, MemoryListGrouping.Title) })
+            {
+                var selected = grouping == chosen;
+
+                button.FontAttributes = selected ? FontAttributes.Bold : FontAttributes.None;
+                button.Themed(Button.TextColorProperty, selected ? "SenderText" : "MutedText");
+                button.Themed(Button.BorderColorProperty, selected ? "SenderText" : "MutedText");
+                SemanticProperties.SetDescription(button, MemoryTitleGroups.SwitchScreenReaderName(grouping, selected));
+            }
+        }
+
+        /// <summary>Date or Title chosen on a collection tab: its rows from the top, the open headings kept.</summary>
+        private void ChooseGrouping(MemoryListGrouping grouping)
+        {
+            if (_state is not { } state || _tab is not { Kind: SavedTabKind.Collection })
+            {
+                return;
+            }
+
+            state.Search = _query.Text ?? string.Empty;
+
+            if (!state.SetGroupBy(grouping))
+            {
+                return;
+            }
+
+            Bind(restore: null);
+            LogGroups();
+        }
+
+        /// <summary>Release log for Title: counts only, never a title.</summary>
+        private void LogGroups()
+        {
+            if (_tab is { } tab && _state is { } state && IsGroupedByTitle(tab, state))
+            {
+                AppState.LogTiming(
+                    "memories-title",
+                    TimeSpan.Zero,
+                    $"groups={_rows.OfType<MemoryListTitleRow>().Count()} open={state.Expanded.Count} tab={tab.LogName}");
+            }
+        }
+
+        /// <summary>Opens or closes a memory's heading in place: its rows inserted after it, or taken away.</summary>
+        private void ToggleHeading(MemoryListTitleRow heading)
+        {
+            if (_memories is not { } memories || _tab is not { } tab || _state is not { } state
+                || _rows is not ObservableCollection<MemoryListRow> rows)
+            {
+                return;
+            }
+
+            var index = -1;
+
+            for (var i = 0; i < rows.Count; i++)
+            {
+                if (rows[i] is MemoryListTitleRow row && row.EntryID == heading.EntryID)
+                {
+                    index = i;
+                    break;
+                }
+            }
+
+            if (index < 0)
+            {
+                return;
+            }
+
+            var open = state.Toggle(heading.EntryID);
+            rows[index] = heading with { IsExpanded = open };
+
+            if (open)
+            {
+                var items = MemoryTitleGroups.Groups(memories, tab.Id, _query.Text)
+                    .FirstOrDefault(group => group.Row.EntryID == heading.EntryID).Items ?? [];
+
+                for (var i = 0; i < items.Count; i++)
+                {
+                    rows.Insert(index + 1 + i, items[i]);
+                }
+            }
+            else
+            {
+                while (index + 1 < rows.Count && rows[index + 1] is MemoryListItem item && item.Key.EntryID == heading.EntryID)
+                {
+                    rows.RemoveAt(index + 1);
+                }
+            }
+        }
+
         private async void OnSelected(object? sender, SelectionChangedEventArgs e)
         {
+            if (e.CurrentSelection.FirstOrDefault() is MemoryListTitleRow heading)
+            {
+                // A memory's heading opens or closes in place and must not stay selected.
+                _list.SelectedItem = null;
+                ToggleHeading(heading);
+                return;
+            }
+
             if (e.CurrentSelection.FirstOrDefault() is not MemoryListItem item)
             {
                 // A year heading opens nothing and must not stay selected.
@@ -290,9 +446,15 @@ namespace Chatcheology.Android.Pages
             }
         }
 
-        /// <summary>Picks a row's template: a year heading or a memory.</summary>
+        /// <summary>
+        /// Picks a row's template: a year heading, a memory's heading (grouped by title), or a memory (indented under
+        /// its heading when grouped).
+        /// </summary>
         private sealed class MemoryTemplates : DataTemplateSelector
         {
+            /// <summary>Whether the bound rows are grouped by title.</summary>
+            internal bool Grouped { get; set; }
+
             private readonly DataTemplate _year = new(() =>
             {
                 var label = new Label { FontSize = 15, FontAttributes = FontAttributes.Bold, Padding = new Thickness(16, 14, 16, 4) };
@@ -300,10 +462,67 @@ namespace Chatcheology.Android.Pages
                 return label;
             });
 
-            private readonly DataTemplate _memory = new(() => new MemoryItemView());
+            private readonly DataTemplate _memory = new(() => new MemoryItemView(indent: 0));
 
-            protected override DataTemplate OnSelectTemplate(object item, BindableObject container) =>
-                item is MemoryListYearRow ? _year : _memory;
+            private readonly DataTemplate _indented = new(() => new MemoryItemView(indent: HeadingTextStart));
+
+            private readonly DataTemplate _title = new(() => new TitleHeadingView());
+
+            protected override DataTemplate OnSelectTemplate(object item, BindableObject container) => item switch
+            {
+                MemoryListYearRow => _year,
+                MemoryListTitleRow => _title,
+                _ => Grouped ? _indented : _memory,
+            };
+        }
+
+        /// <summary>
+        /// One memory's heading when grouped by title: an open or closed mark, the title and "N sessions · Mon YYYY -
+        /// Mon YYYY". At least 48 dp tall; screen readers hear the title, the line and expanded or collapsed.
+        /// </summary>
+        private sealed class TitleHeadingView : ContentView
+        {
+            private readonly Label _mark = new() { FontSize = 20, VerticalOptions = LayoutOptions.Center, WidthRequest = HeadingTextStart - 16 - 8 };
+            private readonly Label _title = new() { FontSize = 15, FontAttributes = FontAttributes.Bold, MaxLines = 2, LineBreakMode = LineBreakMode.TailTruncation };
+            private readonly Label _summary = new() { FontSize = 13 };
+
+            public TitleHeadingView()
+            {
+                _summary.TextIn("MutedText");
+
+                // The mark is drawn only; the heading's own description says expanded or collapsed.
+                AutomationProperties.SetIsInAccessibleTree(_mark, false);
+
+                var text = new VerticalStackLayout { Spacing = 1, VerticalOptions = LayoutOptions.Center, Children = { _title, _summary } };
+
+                var grid = new Grid
+                {
+                    Padding = new Thickness(16, 8),
+                    ColumnSpacing = 8,
+                    MinimumHeightRequest = TouchHeight,
+                    ColumnDefinitions = { new ColumnDefinition(GridLength.Auto), new ColumnDefinition(GridLength.Star) },
+                };
+
+                grid.Add(_mark, 0);
+                grid.Add(text, 1);
+
+                Content = grid;
+            }
+
+            protected override void OnBindingContextChanged()
+            {
+                base.OnBindingContextChanged();
+
+                if (BindingContext is not MemoryListTitleRow heading)
+                {
+                    return;
+                }
+
+                _mark.Text = heading.Mark;
+                _title.Text = heading.Title;
+                _summary.Text = heading.Summary;
+                SemanticProperties.SetDescription(this, heading.ScreenReaderText);
+            }
         }
 
         /// <summary>
@@ -320,7 +539,7 @@ namespace Chatcheology.Android.Pages
             private readonly Label _muted = new() { FontSize = 12 };
             private readonly Grid _grid;
 
-            public MemoryItemView()
+            public MemoryItemView(double indent)
             {
                 _muted.TextIn("MutedText");
 
@@ -333,7 +552,7 @@ namespace Chatcheology.Android.Pages
 
                 _grid = new Grid
                 {
-                    Padding = new Thickness(16, 8),
+                    Padding = new Thickness(Math.Max(16, indent), 8, 16, 8),
                     ColumnSpacing = 12,
                     ColumnDefinitions = { new ColumnDefinition(GridLength.Auto), new ColumnDefinition(GridLength.Star) },
                 };

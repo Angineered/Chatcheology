@@ -42,13 +42,52 @@ namespace Chatcheology.Mobile.Conversation
     }
 
     /// <summary>
-    /// What one Saved tab keeps while the screen is open: the first visible row (its key and place) and the search
-    /// text, so switching tabs or coming back from the details or the photo viewer finds it as it was.
+    /// What one Saved tab keeps while the screen is open: the first visible row (its key and place), the search
+    /// text and, on a collection tab, Date or Title and which memory headings are open, so switching tabs or coming
+    /// back from the details or the photo viewer finds it as it was. Never written to Settings.
     /// </summary>
     public sealed class SavedTabState
     {
+        private readonly HashSet<long> _expanded = [];
+
         /// <summary>The search text (memory tabs only); empty when none.</summary>
         public string Search { get; set; } = string.Empty;
+
+        /// <summary>How the tab lists its memories (collection tabs only; Date otherwise).</summary>
+        public MemoryListGrouping GroupBy { get; private set; } = MemoryListGrouping.Date;
+
+        /// <summary>The memories (by entry) whose headings are open when grouped by title; none at first.</summary>
+        public IReadOnlySet<long> Expanded => _expanded;
+
+        /// <summary>
+        /// Lists the tab by <paramref name="grouping"/>; false when it already is. A change starts the list from the top
+        /// (the rows are different); the open headings are kept for when Title is chosen again.
+        /// </summary>
+        public bool SetGroupBy(MemoryListGrouping grouping)
+        {
+            if (GroupBy == grouping)
+            {
+                return false;
+            }
+
+            GroupBy = grouping;
+            Remember(null, 0);
+
+            return true;
+        }
+
+        /// <summary>Opens a closed heading or closes an open one; true when it is now open.</summary>
+        public bool Toggle(long entryID)
+        {
+            if (_expanded.Remove(entryID))
+            {
+                return false;
+            }
+
+            _expanded.Add(entryID);
+
+            return true;
+        }
 
         /// <summary>The key of the first visible row (<see cref="SavedTabs.KeyOf(StarredEntry)"/>), or <see langword="null"/> at the top.</summary>
         public string? AnchorKey { get; private set; }
@@ -206,10 +245,14 @@ namespace Chatcheology.Mobile.Conversation
                 : "m:" + sequence;
         }
 
-        /// <summary>A Memories list row's key: <c>y:&lt;year&gt;</c> for a heading, <c>e:&lt;entry&gt;[:&lt;period&gt;]</c> for a memory.</summary>
+        /// <summary>
+        /// A Memories list row's key: <c>y:&lt;year&gt;</c> for a year heading, <c>t:&lt;entry&gt;</c> for a memory's
+        /// heading (grouped by title), <c>e:&lt;entry&gt;[:&lt;period&gt;]</c> for a memory.
+        /// </summary>
         public static string KeyOf(MemoryListRow row) => row switch
         {
             MemoryListYearRow year => "y:" + year.Text,
+            MemoryListTitleRow title => "t:" + title.EntryID.ToString(CultureInfo.InvariantCulture),
             MemoryListItem item => "e:" + item.Key.EntryID.ToString(CultureInfo.InvariantCulture)
                 + (item.Key.PeriodIndex is { } period ? ":" + period.ToString(CultureInfo.InvariantCulture) : string.Empty),
             _ => throw new ArgumentException("Unknown row.", nameof(row)),
