@@ -269,23 +269,23 @@ namespace Chatcheology.Mobile.Tests
             Assert.Null(tabs.StateOf(gaming).AnchorKey);
             Assert.Equal(0, tabs.StateOf(gaming).AnchorIndex);
 
-            Assert.True(tabs.StateOf(gaming).Toggle(10));
-            Assert.True(tabs.StateOf(gaming).Toggle(11));
-            Assert.False(tabs.StateOf(gaming).Toggle(11));
+            Assert.True(tabs.StateOf(gaming).Toggle("Invented Racer"));
+            Assert.True(tabs.StateOf(gaming).Toggle("invented racer"));
+            Assert.False(tabs.StateOf(gaming).Toggle("invented racer"));
 
             // Kept across switching tabs (as when going into the details and back) and per collection.
             tabs.Select(tabs.Tabs[1].Id);
             tabs.Select(gaming.Id);
 
             Assert.Equal(MemoryListGrouping.Title, tabs.StateOf(gaming).GroupBy);
-            Assert.Equal([10L], tabs.StateOf(gaming).Expanded);
+            Assert.Equal(["Invented Racer"], tabs.StateOf(gaming).Expanded);
             Assert.Equal(MemoryListGrouping.Date, tabs.StateOf(other).GroupBy);
             Assert.Empty(tabs.StateOf(other).Expanded);
 
             // Back to Date and to Title again: the open headings are still open.
             Assert.True(tabs.StateOf(gaming).SetGroupBy(MemoryListGrouping.Date));
             Assert.True(tabs.StateOf(gaming).SetGroupBy(MemoryListGrouping.Title));
-            Assert.Equal([10L], tabs.StateOf(gaming).Expanded);
+            Assert.Equal(["Invented Racer"], tabs.StateOf(gaming).Expanded);
 
             // A new Saved screen starts again from Date (nothing is written to Settings).
             Assert.Empty(_store.Values);
@@ -312,7 +312,7 @@ namespace Chatcheology.Mobile.Tests
             // Starred keys (m: and p:) are checked on read entries in the unstar test below.
             Assert.Equal("m:4", SavedTabs.KeyOf(new StarredEntry(4, "d", "t", "s", "text", null, IsPhoto: false)));
             Assert.Equal("y:2021", SavedTabs.KeyOf(new MemoryListYearRow(2021)));
-            Assert.Equal("t:7", SavedTabs.KeyOf(new MemoryListTitleRow(7, "x", 1, default, default, false)));
+            Assert.Equal("t:Invented Racer", SavedTabs.KeyOf(new MemoryListTitleRow("Invented Racer", 1, default, default, false)));
             Assert.Equal("e:7", SavedTabs.KeyOf(new MemoryListItem(new MemoryKey(7, null), "x", "d", "x", null, false, default)));
             Assert.Equal("e:7:2", SavedTabs.KeyOf(new MemoryListItem(new MemoryKey(7, 2), "x", "d", "x", null, false, default)));
         }

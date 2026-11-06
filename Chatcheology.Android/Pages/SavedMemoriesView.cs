@@ -367,7 +367,7 @@ namespace Chatcheology.Android.Pages
 
             for (var i = 0; i < rows.Count; i++)
             {
-                if (rows[i] is MemoryListTitleRow row && row.EntryID == heading.EntryID)
+                if (rows[i] is MemoryListTitleRow row && string.Equals(row.Title, heading.Title, StringComparison.Ordinal))
                 {
                     index = i;
                     break;
@@ -379,13 +379,13 @@ namespace Chatcheology.Android.Pages
                 return;
             }
 
-            var open = state.Toggle(heading.EntryID);
+            var open = state.Toggle(heading.Title);
             rows[index] = heading with { IsExpanded = open };
 
             if (open)
             {
                 var items = MemoryTitleGroups.Groups(memories, tab.Id, _query.Text)
-                    .FirstOrDefault(group => group.Row.EntryID == heading.EntryID).Items ?? [];
+                    .FirstOrDefault(group => string.Equals(group.Row.Title, heading.Title, StringComparison.Ordinal)).Items ?? [];
 
                 for (var i = 0; i < items.Count; i++)
                 {
@@ -394,7 +394,8 @@ namespace Chatcheology.Android.Pages
             }
             else
             {
-                while (index + 1 < rows.Count && rows[index + 1] is MemoryListItem item && item.Key.EntryID == heading.EntryID)
+                // The heading's rows follow it up to the next heading.
+                while (index + 1 < rows.Count && rows[index + 1] is MemoryListItem)
                 {
                     rows.RemoveAt(index + 1);
                 }
@@ -482,7 +483,7 @@ namespace Chatcheology.Android.Pages
         /// </summary>
         private sealed class TitleHeadingView : ContentView
         {
-            private readonly Label _mark = new() { FontSize = 20, VerticalOptions = LayoutOptions.Center, WidthRequest = HeadingTextStart - 16 - 8 };
+            private readonly Label _mark = new() { FontSize = 16, VerticalOptions = LayoutOptions.Center, WidthRequest = HeadingTextStart - 16 - 8 };
             private readonly Label _title = new() { FontSize = 15, FontAttributes = FontAttributes.Bold, MaxLines = 2, LineBreakMode = LineBreakMode.TailTruncation };
             private readonly Label _summary = new() { FontSize = 13 };
 

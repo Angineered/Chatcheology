@@ -48,7 +48,7 @@ namespace Chatcheology.Mobile.Conversation
     /// </summary>
     public sealed class SavedTabState
     {
-        private readonly HashSet<long> _expanded = [];
+        private readonly HashSet<string> _expanded = new(StringComparer.Ordinal);
 
         /// <summary>The search text (memory tabs only); empty when none.</summary>
         public string Search { get; set; } = string.Empty;
@@ -56,8 +56,11 @@ namespace Chatcheology.Mobile.Conversation
         /// <summary>How the tab lists its memories (collection tabs only; Date otherwise).</summary>
         public MemoryListGrouping GroupBy { get; private set; } = MemoryListGrouping.Date;
 
-        /// <summary>The memories (by entry) whose headings are open when grouped by title; none at first.</summary>
-        public IReadOnlySet<long> Expanded => _expanded;
+        /// <summary>
+        /// The exact titles whose headings are open when grouped by title (ordinal); none at first. Kept in memory
+        /// only while the screen is open, never logged or written to Settings.
+        /// </summary>
+        public IReadOnlySet<string> Expanded => _expanded;
 
         /// <summary>
         /// Lists the tab by <paramref name="grouping"/>; false when it already is. A change starts the list from the top
@@ -77,14 +80,16 @@ namespace Chatcheology.Mobile.Conversation
         }
 
         /// <summary>Opens a closed heading or closes an open one; true when it is now open.</summary>
-        public bool Toggle(long entryID)
+        public bool Toggle(string title)
         {
-            if (_expanded.Remove(entryID))
+            ArgumentNullException.ThrowIfNull(title);
+
+            if (_expanded.Remove(title))
             {
                 return false;
             }
 
-            _expanded.Add(entryID);
+            _expanded.Add(title);
 
             return true;
         }
@@ -246,13 +251,13 @@ namespace Chatcheology.Mobile.Conversation
         }
 
         /// <summary>
-        /// A Memories list row's key: <c>y:&lt;year&gt;</c> for a year heading, <c>t:&lt;entry&gt;</c> for a memory's
-        /// heading (grouped by title), <c>e:&lt;entry&gt;[:&lt;period&gt;]</c> for a memory.
+        /// A Memories list row's key: <c>y:&lt;year&gt;</c> for a year heading, <c>t:&lt;title&gt;</c> for a title's
+        /// heading (grouped by title; in memory only, never logged), <c>e:&lt;entry&gt;[:&lt;period&gt;]</c> for a memory.
         /// </summary>
         public static string KeyOf(MemoryListRow row) => row switch
         {
             MemoryListYearRow year => "y:" + year.Text,
-            MemoryListTitleRow title => "t:" + title.EntryID.ToString(CultureInfo.InvariantCulture),
+            MemoryListTitleRow title => "t:" + title.Title,
             MemoryListItem item => "e:" + item.Key.EntryID.ToString(CultureInfo.InvariantCulture)
                 + (item.Key.PeriodIndex is { } period ? ":" + period.ToString(CultureInfo.InvariantCulture) : string.Empty),
             _ => throw new ArgumentException("Unknown row.", nameof(row)),

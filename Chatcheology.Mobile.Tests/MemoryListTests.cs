@@ -569,85 +569,105 @@ namespace Chatcheology.Mobile.Tests
         // 10b: group by title on a collection tab (CH-59 step 3).
         // ---------------------------------------------------------------------------------------
 
+        private const string Kart = "Invented Kart Rally";
+
         private static List<string> DescribeGrouped(IEnumerable<MemoryListRow> rows) =>
             rows.Select(row => row switch
             {
-                MemoryListTitleRow title => $"T {title.EntryID} {(title.IsExpanded ? "open" : "closed")}",
+                MemoryListTitleRow title => $"T {title.Title} {(title.IsExpanded ? "open" : "closed")}",
                 MemoryListItem item => item.Key.PeriodIndex is { } period ? $"P {item.Key.EntryID}:{period}" : $"E {item.Key.EntryID}",
                 _ => "?",
             }).ToList();
 
-        /// <summary>Two games with the same invented title, another game, and a "different times" record.</summary>
+        private static HashSet<string> Open(params string[] titles) => new(titles, StringComparer.Ordinal);
+
+        /// <summary>
+        /// Game-day records: Kart Rally on three days (one "different times"), the same title in lower case, another
+        /// game on two days, a "different times" game, and Kart Rally in another collection.
+        /// </summary>
         private static MemoryList GroupedSample() => MemoryList.Build(
             Index(
-                [Imported(1)],
+                [Imported(1), Imported(2, "Invented other source")],
                 [
-                    Game(10, "Invented Kart Rally",
+                    Game(10, Kart,
                         Period("strong", (Local, At(2021, 3, 5, 20, 0)), (Other, At(2021, 3, 5, 20, 5))),
                         Period("one-account", (Local, At(2021, 3, 5, 21, 0))),
                         Period("supporting", (Local, At(2021, 3, 5, 23, 0)), (Other, At(2021, 3, 5, 23, 5)))),
-                    Game(11, "Invented Kart Rally", Period("strong", (Local, At(2024, 1, 9, 20, 0)), (Other, At(2024, 1, 9, 20, 1)))),
+                    Game(11, Kart, Period("strong", (Local, At(2024, 1, 9, 20, 0)), (Other, At(2024, 1, 9, 20, 1)))),
+                    Game(14, Kart, Period("one-account", (Other, At(2022, 5, 3, 15, 0))), Period("one-account", (Local, At(2022, 5, 3, 9, 0)))),
+                    Game(15, "invented kart rally", Period("strong", (Local, At(2020, 7, 1, 10, 0)), (Other, At(2020, 7, 1, 10, 1)))),
                     Game(12, "Invented Tower Puzzle",
-                        Period("strong", (Local, At(2022, 6, 1, 10, 0)), (Other, At(2022, 6, 1, 10, 1))),
+                        Period("strong", (Local, At(2022, 6, 1, 10, 0)), (Other, At(2022, 6, 1, 10, 1)))),
+                    Game(16, "Invented Tower Puzzle",
                         Period("strong", (Local, At(2022, 8, 1, 10, 0)), (Other, At(2022, 8, 1, 10, 1)))),
                     Game(13, "Invented Garden Builder", Period("one-account", (Other, At(2023, 2, 2, 15, 0))), Period("one-account", (Local, At(2023, 2, 2, 9, 0)))),
+                    GameIn(2, 17, Kart, Period("strong", (Local, At(2023, 9, 1, 10, 0)), (Other, At(2023, 9, 1, 10, 1)))),
                 ]),
             NoYearly);
 
         [Fact]
-        public void GroupByTitle_OneHeadingPerMemory_SameTitlesStayApart_NewestFirst_StartingClosed()
+        public void GroupByTitle_SameExactTitleIsOneHeading_OtherTitlesAndCaseStayApart_NewestFirst_StartingClosed()
         {
             var list = GroupedSample();
-            var none = new HashSet<long>();
 
-            var rows = MemoryTitleGroups.Rows(list, "collection:1", null, none);
+            var rows = MemoryTitleGroups.Rows(list, "collection:1", null, Open());
 
-            // By entry, never by title: the two Kart Rally memories are two headings. Ordered by their latest row.
-            Assert.Equal(["T 11 closed", "T 13 closed", "T 12 closed", "T 10 closed"], DescribeGrouped(rows));
+            // One heading per exact title in this collection, ordered by its latest row; a title differing only in
+            // case stays apart.
+            Assert.Equal(
+                [$"T {Kart} closed", "T Invented Garden Builder closed", "T Invented Tower Puzzle closed", "T invented kart rally closed"],
+                DescribeGrouped(rows));
 
-            var titles = rows.Cast<MemoryListTitleRow>().ToList();
-            Assert.Equal("Invented Kart Rally", titles[0].Title);
-            Assert.Equal("Invented Kart Rally", titles[3].Title);
+            // The other collection's Kart Rally is its own tab's heading, not merged here.
+            Assert.Equal([$"T {Kart} open", "P 17:0"], DescribeGrouped(MemoryTitleGroups.Rows(list, "collection:2", null, Open(Kart))));
 
-            // Grouping changes no row: every Date row is under exactly one heading, in the same order per memory.
-            var all = MemoryTitleGroups.Rows(list, "collection:1", null, new HashSet<long> { 10, 11, 12, 13 }).OfType<MemoryListItem>().ToList();
+            // Grouping changes no row: every Date row is under exactly one heading.
+            var all = MemoryTitleGroups.Rows(list, "collection:1", null, Open(rows.Cast<MemoryListTitleRow>().Select(t => t.Title).ToArray()))
+                .OfType<MemoryListItem>().ToList();
             var dated = Items(list, "collection:1");
             Assert.Equal(dated.Count, all.Count);
             Assert.Equal(dated.ToHashSet(), all.ToHashSet());
-            Assert.Equal(dated.Where(i => i.Key.EntryID == 10), all.Where(i => i.Key.EntryID == 10));
 
             // The Date list itself is unchanged.
-            Assert.Equal(["Y 2024", "P 11:0", "Y 2023", "E 13", "Y 2022", "P 12:1", "P 12:0", "Y 2021", "P 10:2", "P 10:0"], Describe(list.Rows("collection:1", null)));
+            Assert.Equal(
+                ["Y 2024", "P 11:0", "Y 2023", "E 13", "Y 2022", "P 16:0", "P 12:0", "E 14", "Y 2021", "P 10:2", "P 10:0", "Y 2020", "P 15:0"],
+                Describe(list.Rows("collection:1", null)));
         }
 
         [Fact]
-        public void GroupByTitle_AnOpenHeading_ListsItsRowsNewestFirstUnderIt()
+        public void GroupByTitle_AnOpenHeading_ListsAllItsEntriesRowsNewestFirstUnderIt()
         {
             var list = GroupedSample();
 
-            var rows = MemoryTitleGroups.Rows(list, "collection:1", null, new HashSet<long> { 10, 13 });
+            var rows = MemoryTitleGroups.Rows(list, "collection:1", null, Open(Kart, "Invented Garden Builder"));
 
-            Assert.Equal(["T 11 closed", "T 13 open", "E 13", "T 12 closed", "T 10 open", "P 10:2", "P 10:0"], DescribeGrouped(rows));
+            Assert.Equal(
+                [$"T {Kart} open", "P 11:0", "E 14", "P 10:2", "P 10:0", "T Invented Garden Builder open", "E 13", "T Invented Tower Puzzle closed", "T invented kart rally closed"],
+                DescribeGrouped(rows));
+
+            // Open state is by exact title: the lower-case title is not opened by the other.
+            Assert.DoesNotContain("P 15:0", DescribeGrouped(rows));
         }
 
         [Fact]
-        public void GroupByTitle_CountsSharedPeriodsOnly_AndShowsFirstToLastMonth()
+        public void GroupByTitle_CountsSharedPeriodsOfAllEntries_AndShowsFirstToLastMonth()
         {
-            var titles = MemoryTitleGroups.Rows(GroupedSample(), "collection:1", null, new HashSet<long>()).Cast<MemoryListTitleRow>().ToDictionary(t => t.EntryID);
+            var titles = MemoryTitleGroups.Rows(GroupedSample(), "collection:1", null, Open()).Cast<MemoryListTitleRow>().ToDictionary(t => t.Title, StringComparer.Ordinal);
 
-            // One-account periods are not listed, so not counted; two shared periods in one month.
-            Assert.Equal(2, titles[10].Sessions);
-            Assert.Equal("2 sessions · Mar 2021", titles[10].Summary);
+            // Kart Rally: 2 + 1 shared periods over two entries; the one-account period is not listed and the
+            // "different times" record (May 2022) sits under it uncounted; range over all its rows.
+            Assert.Equal(3, titles[Kart].Sessions);
+            Assert.Equal("3 sessions · Mar 2021 - Jan 2024", titles[Kart].Summary);
 
-            // Singular.
-            Assert.Equal("1 session · Jan 2024", titles[11].Summary);
+            // Singular, one month.
+            Assert.Equal("1 session · Jul 2020", titles["invented kart rally"].Summary);
 
-            // A range across months.
-            Assert.Equal("2 sessions · Jun 2022 - Aug 2022", titles[12].Summary);
+            // Two game days in different months.
+            Assert.Equal("2 sessions · Jun 2022 - Aug 2022", titles["Invented Tower Puzzle"].Summary);
 
-            // A "different times" row sits under its memory but is not a session.
-            Assert.Equal(0, titles[13].Sessions);
-            Assert.Equal("0 sessions · Feb 2023", titles[13].Summary);
+            // Only a "different times" row: no session.
+            Assert.Equal(0, titles["Invented Garden Builder"].Sessions);
+            Assert.Equal("0 sessions · Feb 2023", titles["Invented Garden Builder"].Summary);
         }
 
         [Fact]
@@ -659,7 +679,7 @@ namespace Chatcheology.Mobile.Tests
             // The same month of another year is a range; the earlier comes first.
             Assert.Equal("Mar 2021 - Mar 2022", MemoryTitleGroups.RangeText(At(2022, 3, 1), At(2021, 3, 1)));
 
-            var heading = new MemoryListTitleRow(1, "Invented Kart Rally", 3, At(2021, 3, 1), At(2021, 5, 1), false);
+            var heading = new MemoryListTitleRow(Kart, 3, At(2021, 3, 1), At(2021, 5, 1), false);
             Assert.Equal("Invented Kart Rally, 3 sessions · Mar 2021 - May 2021, collapsed", heading.ScreenReaderText);
             Assert.Equal("Invented Kart Rally, 3 sessions · Mar 2021 - May 2021, expanded", (heading with { IsExpanded = true }).ScreenReaderText);
             Assert.NotEqual(heading.Mark, (heading with { IsExpanded = true }).Mark);
@@ -673,12 +693,16 @@ namespace Chatcheology.Mobile.Tests
         {
             var list = GroupedSample();
 
-            // Case and accents ignored, trimmed, as the Date search; both same-title memories match.
-            Assert.Equal(["T 11 closed", "T 10 closed"], DescribeGrouped(MemoryTitleGroups.Rows(list, "collection:1", "  KART ", new HashSet<long>())));
-            Assert.Equal(["T 12 open", "P 12:1", "P 12:0"], DescribeGrouped(MemoryTitleGroups.Rows(list, "collection:1", "tower", new HashSet<long> { 12, 10 })));
+            // Case and accents ignored, trimmed, as the Date search: both Kart titles match, still two headings.
+            Assert.Equal(
+                [$"T {Kart} closed", "T invented kart rally closed"],
+                DescribeGrouped(MemoryTitleGroups.Rows(list, "collection:1", "  KART ", Open())));
+            Assert.Equal(
+                ["T Invented Tower Puzzle open", "P 16:0", "P 12:0"],
+                DescribeGrouped(MemoryTitleGroups.Rows(list, "collection:1", "tower", Open("Invented Tower Puzzle", Kart))));
 
-            Assert.Empty(MemoryTitleGroups.Rows(list, "collection:1", "nothing like it", new HashSet<long>()));
-            Assert.Empty(MemoryTitleGroups.Rows(list, "collection:99", null, new HashSet<long>()));
+            Assert.Empty(MemoryTitleGroups.Rows(list, "collection:1", "nothing like it", Open()));
+            Assert.Empty(MemoryTitleGroups.Rows(list, "collection:99", null, Open()));
             Assert.Equal(4, MemoryTitleGroups.Groups(list, "collection:1", "   ").Count);
         }
 
