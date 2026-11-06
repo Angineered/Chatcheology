@@ -29,7 +29,7 @@ namespace Chatcheology.Android.Pages
                 if (links.Count > 1)
                 {
                     var choices = GalleryLinks.Choices(links);
-                    var chosen = await page.DisplayActionSheetAsync("Galleries", "Cancel", null, [.. choices]);
+                    var chosen = await page.DisplayActionSheetAsync("Links", "Cancel", null, [.. choices]);
                     var index = chosen is null ? -1 : choices.ToList().IndexOf(chosen);
 
                     if (index < 0)

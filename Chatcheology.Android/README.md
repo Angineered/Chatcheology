@@ -70,12 +70,14 @@ app on the phone was signed with another key; uninstalling it deletes its import
 `bin\Release\net10.0-android\org.chatcheology.viewer-Signed.apk`) with the SDK's aapt2 and
 zipalign: no INTERNET permission; `allowBackup` false; the backup and data-extraction rules present
 and excluding every domain; only the launcher activity exported; every FileProvider not exported,
-with per-URI grants, limited to `files/archives/`; `zipalign -c -P 16` passes; the permissions are
+with per-URI grants, limited to `files/archives/` and `cache/shared-photos/` (CH-59); `zipalign -c -P 16` passes; the permissions are
 exactly `POST_NOTIFICATIONS`, `RECEIVE_BOOT_COMPLETED` and `ACCESS_MEDIA_LOCATION` (plus
 AndroidX's signature-level `DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION`), any other failing. It exits 1 on any failure. Run it
 after every Release build that will be installed or published. `tools\Test-CheckAndroidRelease.ps1`
 runs it on small synthetic APKs and shows each refused case (INTERNET, exact alarms, a foreground
-service, a storage or media-read permission, another permission, an exported receiver) failing.
+service, a storage or media-read permission, another permission, an exported receiver, and a
+FileProvider that is exported, has no per-URI grants or serves any broader or other path, such as the
+whole cache or another cache folder) failing.
 
 ## Privacy
 
@@ -103,8 +105,29 @@ on the On this day card after the tap. One notification per archive per day; the
 The folder picker (`ACTION_OPEN_DOCUMENT_TREE`) gives the app read access to the picked folder only,
 for as long as it runs; no storage permission is requested. Media is handed to other apps only
 through the app's own FileProvider (`ArchiveFileProvider`): not exported, a read grant for the one
-file opened, and only files under `files/archives/`. MAUI Essentials' own FileProvider is removed
-from the manifest and its paths resource is overridden with the same single folder.
+file opened, and only files under `files/archives/` plus the shared memory-photo copies in
+`cache/shared-photos/` (below). MAUI Essentials' own FileProvider is removed from the manifest and its
+paths resource is overridden with `files/archives/` only.
+
+Memory photos can be shared (CH-59, D-34; this replaces the CH-46 rule that they had no Share). Share
+in the memory photo viewer never hands out the archive file: the app copies it into
+`cache/shared-photos/`, removes every GPS tag from the copy, checks the copy again and shares that
+copy, photo only (never the caption or the memory's title). The archive file is only read, and a
+photo outside `files/archives/` is refused. Old copies are deleted when the app starts and before
+each share. What is done depends on the file's real format (its first bytes, not its name;
+`PhotoShare` in `Chatcheology.Mobile`):
+
+| Format | Android 8-10 (API 26-29) | Android 11+ (API 30+) |
+|---|---|---|
+| JPEG | GPS tags removed (`ExifInterface`) | GPS tags removed |
+| PNG, WebP | copied as it is, refused if it has an EXIF block | GPS tags removed |
+| GIF, BMP | copied as it is (no EXIF in the format) | copied as it is |
+| HEIC/HEIF, AVIF, TIFF, raw, anything else | refused | refused |
+
+Refused means "This photo can't be shared without its location." (missing is better than wrong). The
+finished copy is also refused when it still holds location text (XMP "GPSLatitude"/"GPSLongitude"),
+compressed PNG text that cannot be searched, or any GPS tag when read back. Only GPS tags are removed;
+other EXIF (camera, date taken) stays. Nothing about a share is logged.
 
 Stars (CH-38) and the On this day setting (CH-39) are kept in the app's private preferences, under the
 archive's contents hash, never in the archive. Removing the archive forgets the On this day setting but
@@ -120,5 +143,7 @@ names, file names or paths.
 A Debug build compiles in the synthetic archive generator from
 `Chatcheology.Mobile.Tests\Synthetic` and shows development tools on the start page (install a
 synthetic archive, validate) and in the conversation page's overflow menu ("Top", "Load earlier",
-with the scroll log in `adb logcat -s ChatcheologyTrial`). A Release build contains none of it. A
+with the scroll log in `adb logcat -s ChatcheologyTrial`). The synthetic memory "Invented seaside
+weekend" has a sunset photo that is a JPEG with an invented camera location, for checking that Share
+removes it (CH-59). A Release build contains none of it. A
 Debug build uses fast deployment, so install it with `dotnet build -t:Install`, not `adb install`.

@@ -20,7 +20,8 @@
      and is removed.
 
      Media is handed to other apps only through the app's own FileProvider (ArchiveFileProvider: not
-     exported, one-file read grants, files/archives/ only). MAUI Essentials' FileProvider, which this app
+     exported, one-file read grants, files/archives/ and, for memory photos shared with their location
+     removed (CH-59), cache/shared-photos/ only). MAUI Essentials' FileProvider, which this app
      does not use and whose paths cover shared storage and the caches, is removed; its paths resource is
      also overridden with the archives folder only (Resources/xml), in case it ever comes back. -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"

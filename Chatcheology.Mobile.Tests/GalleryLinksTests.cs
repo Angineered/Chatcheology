@@ -112,7 +112,7 @@ namespace Chatcheology.Mobile.Tests
             var link = GalleryLinks.Keep("https://bücher.example/album", null)!;
 
             Assert.Equal("xn--bcher-kva.example", link.Host);
-            Assert.Equal("Gallery · xn--bcher-kva.example", GalleryLinks.Summary([link]));
+            Assert.Equal("Link · xn--bcher-kva.example", GalleryLinks.Summary([link]));
         }
 
         // ---------------------------------------------------------------------------------------------
@@ -126,8 +126,8 @@ namespace Chatcheology.Mobile.Tests
             var two = GalleryLinks.Keep(Two, null)!;
 
             Assert.Equal(string.Empty, GalleryLinks.Summary([]));
-            Assert.Equal("Gallery · photos.example.org", GalleryLinks.Summary([one]));
-            Assert.Equal("2 galleries", GalleryLinks.Summary([one, two]));
+            Assert.Equal("Link · photos.example.org", GalleryLinks.Summary([one]));
+            Assert.Equal("2 links", GalleryLinks.Summary([one, two]));
             Assert.Equal(["1. Day 1", "2. pictures.example.net"], GalleryLinks.Choices([one, two]));
         }
 
@@ -256,7 +256,7 @@ namespace Chatcheology.Mobile.Tests
             using (session)
             {
                 var cards = Cards(session);
-                Assert.Equal(["Gallery · photos.example.org", "2 galleries", string.Empty], cards.Select(c => c.GalleryText));
+                Assert.Equal(["Link · photos.example.org", "2 links", string.Empty], cards.Select(c => c.GalleryText));
                 Assert.Equal([true, true, false], cards.Select(c => c.HasGalleries));
 
                 var details = session.MemoryDetails(new MemoryKey(21, null))!;
@@ -264,12 +264,12 @@ namespace Chatcheology.Mobile.Tests
                 Assert.Empty(session.MemoryDetails(new MemoryKey(22, null))!.Galleries);
 
                 var listings = session.NotedDateListings;
-                Assert.Equal("Gallery · pictures.example.net", listings.Single(l => l.Id == "7").GalleryText);
+                Assert.Equal("Link · pictures.example.net", listings.Single(l => l.Id == "7").GalleryText);
                 Assert.Equal(["Album"], listings.Single(l => l.Id == "7").Galleries.Select(g => g.Text));
                 Assert.Empty(listings.Single(l => l.Id == "8").Galleries);
 
                 var card = session.OnThisDayFor(session.ReadDays(), new DateOnly(2026, 3, 10));
-                Assert.Equal(["Gallery · pictures.example.net", string.Empty], card.Noted.Select(n => n.GalleryText));
+                Assert.Equal(["Link · pictures.example.net", string.Empty], card.Noted.Select(n => n.GalleryText));
             }
 
             Assert.Equal(before, ArchiveContents.Build(folder));
@@ -351,7 +351,7 @@ namespace Chatcheology.Mobile.Tests
                 var own = session.NotedDateListings.Single(l => !l.IsGifted);
                 Assert.Equal([Two, One], own.Galleries.Select(g => g.Url));
                 Assert.Equal(["Second first", null], own.Galleries.Select(g => g.Label));
-                Assert.Equal("2 galleries", own.GalleryText);
+                Assert.Equal("2 links", own.GalleryText);
 
                 // Reordered and one removed.
                 Assert.True(session.SaveOwnNotedDate("own", "Trip", 3, 10, null, null, [(One, null), (Two, "Second first")], today).Saved);
@@ -362,8 +362,8 @@ namespace Chatcheology.Mobile.Tests
                 Assert.Equal(2, session.NotedDateListings.Single(l => !l.IsGifted).Galleries.Count);
 
                 Assert.True(session.SaveOwnNotedDate("own", "Trip", 3, 10, null, null, [(One, null)], today).Saved);
-                Assert.Equal("Gallery · photos.example.org", session.NotedDateListings.Single(l => !l.IsGifted).GalleryText);
-                Assert.Equal("Gallery · photos.example.org", session.OnThisDayFor([], today).Noted.Single().GalleryText);
+                Assert.Equal("Link · photos.example.org", session.NotedDateListings.Single(l => !l.IsGifted).GalleryText);
+                Assert.Equal("Link · photos.example.org", session.OnThisDayFor([], today).Noted.Single().GalleryText);
 
                 var hash = session.Archive.ContentsSha256!;
                 Assert.Contains(One, _store.Values["archive." + hash + ".ownNotedDates"], StringComparison.Ordinal);
@@ -455,8 +455,8 @@ namespace Chatcheology.Mobile.Tests
             using var reader = ArchiveReader.Open(folder.Path);
             var grouped = GalleryLinks.GroupFromArchive(reader.ReadAllExternalLinks());
 
-            Assert.Equal("2 galleries", GalleryLinks.Summary(grouped[(ExternalLinkOwnerKind.Entry, 10)]));
-            Assert.Equal("Gallery · example.org", GalleryLinks.Summary(grouped[(ExternalLinkOwnerKind.Entry, 501)]));
+            Assert.Equal("2 links", GalleryLinks.Summary(grouped[(ExternalLinkOwnerKind.Entry, 10)]));
+            Assert.Equal("Link · example.org", GalleryLinks.Summary(grouped[(ExternalLinkOwnerKind.Entry, 501)]));
         }
 
         [Fact]

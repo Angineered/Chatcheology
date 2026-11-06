@@ -460,7 +460,7 @@ namespace Chatcheology.Desktop.ViewModels
         /// <summary>Whether there are other periods.</summary>
         public bool HasOtherPeriods => OtherPeriods.Count > 0;
 
-        /// <summary>"Linked".</summary>
+        /// <summary>"Linked messages".</summary>
         public string LinksHeading => MemoryWording.LinksHeading;
 
         /// <summary>A personal memory's links.</summary>

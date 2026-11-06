@@ -103,8 +103,8 @@ namespace Chatcheology.Mobile.Memories
         /// <summary>The details' heading over the day evidence.</summary>
         public const string DayHeading = "This day";
 
-        /// <summary>The details' heading over a personal memory's links.</summary>
-        public const string LinksHeading = "Linked";
+        /// <summary>The details' heading over a personal memory's links to messages and memories (CH-59).</summary>
+        public const string LinksHeading = "Linked messages";
 
         /// <summary>The card's badge for a memory's extra photos after the cover: "+4" (CH-46).</summary>
         public static string ExtraPhotosBadge(int count) => "+" + count.ToString(CultureInfo.CurrentCulture);

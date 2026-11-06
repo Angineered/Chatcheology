@@ -324,7 +324,7 @@ namespace Chatcheology.Android.Pages
             _noted.Add(add);
         }
 
-        /// <summary>The title and date and, with gallery links (CH-48), "Gallery · host" or "N galleries" to open them.</summary>
+        /// <summary>The title and date and, with gallery links (CH-48), "Link · host" or "N links" to open them.</summary>
         private View DateLabel(NotedDateListing date)
         {
             var label = new VerticalStackLayout
@@ -346,7 +346,7 @@ namespace Chatcheology.Android.Pages
             return label;
         }
 
-        /// <summary>A tappable "Gallery · host" / "N galleries" line that opens the links (after a confirmation).</summary>
+        /// <summary>A tappable "Link · host" / "N links" line that opens the links (after a confirmation).</summary>
         internal static Label GalleryLine(Page page, string text, IReadOnlyList<GalleryLink> galleries)
         {
             var line = new Label

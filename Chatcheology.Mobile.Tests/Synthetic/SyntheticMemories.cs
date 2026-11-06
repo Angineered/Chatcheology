@@ -16,7 +16,8 @@ namespace Chatcheology.Mobile.Synthetic
     /// periods beside shared ones and alone; a record with no shared period (a "different times" line);
     /// records before the first and after the last message and on a day without messages; trophy
     /// definitions with icons (one hidden, and items without a definition); one personal memory with an
-    /// image, three extra photos (one portrait, one without a caption) and links to a message and to a game.</para>
+    /// image, three extra photos (one portrait, one without a caption, one a JPEG with an invented camera location
+    /// for CH-59) and links to a message and to a game.</para>
     /// </remarks>
     internal static class SyntheticMemories
     {
@@ -70,7 +71,9 @@ namespace Chatcheology.Mobile.Synthetic
             var seaside = Picture(writer, mediaFolder, 640, 360, (30, 120, 180), (240, 220, 160));
             var ferry = Picture(writer, mediaFolder, 480, 320, (20, 60, 110), (200, 200, 210));
             var lighthouse = Picture(writer, mediaFolder, 360, 640, (230, 230, 235), (190, 50, 50));
-            var sunset = Picture(writer, mediaFolder, 600, 300, (250, 140, 40), (90, 30, 120));
+
+            // A JPEG with an invented camera location (CH-59): sharing it must hand out a copy without it.
+            var sunset = Media(writer, mediaFolder, SyntheticJpeg.WithLocation(), ".jpg", SyntheticJpeg.Width, SyntheticJpeg.Height);
 
             // A busy day: strong, one account, same period. Day level strong.
             writer.WriteEntry(Game(1, "Invented Kart Rally", "strong", kart, busy,
@@ -219,12 +222,16 @@ namespace Chatcheology.Mobile.Synthetic
 
         /// <summary>Writes an invented picture into media and its Media row.</summary>
         private static (string Sha, string Extension) Picture(
-            ArchiveWriter writer, string mediaFolder, int width, int height, (byte, byte, byte) a, (byte, byte, byte) b)
+            ArchiveWriter writer, string mediaFolder, int width, int height, (byte, byte, byte) a, (byte, byte, byte) b) =>
+            Media(writer, mediaFolder, SyntheticImage.Png(width, height, a, b), ".png", width, height);
+
+        /// <summary>Writes picture bytes into media under their hash and the extension, and their Media row.</summary>
+        private static (string Sha, string Extension) Media(
+            ArchiveWriter writer, string mediaFolder, byte[] bytes, string extension, int width, int height)
         {
-            var bytes = SyntheticImage.Png(width, height, a, b);
             var sha = ArchiveHashing.Hex(SHA256.HashData(bytes));
 
-            File.WriteAllBytes(Path.Combine(mediaFolder, sha + ".png"), bytes);
+            File.WriteAllBytes(Path.Combine(mediaFolder, sha + extension), bytes);
 
             writer.WriteMedia(new ArchiveMedia
             {
@@ -236,7 +243,7 @@ namespace Chatcheology.Mobile.Synthetic
                 Height = height,
             });
 
-            return (sha, ".png");
+            return (sha, extension);
         }
 
         private static DateTime Utc(DateTime local) => DateTime.SpecifyKind(local.AddHours(-2), DateTimeKind.Utc);

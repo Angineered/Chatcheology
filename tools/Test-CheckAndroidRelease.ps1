@@ -1,14 +1,17 @@
 <#
 .SYNOPSIS
-    Shows that tools\Check-AndroidRelease.ps1 fails on what it must refuse (CH-47, CH-58): builds small
-    synthetic APKs (a manifest only, linked with the SDK's aapt2) and checks the result line of the
-    permission, INTERNET and exported-component checks for each.
+    Shows that tools\Check-AndroidRelease.ps1 fails on what it must refuse (CH-47, CH-58, CH-59): builds
+    small synthetic APKs (a manifest, and for the FileProvider cases one paths resource, linked with the
+    SDK's aapt2) and checks the result line of the permission, INTERNET, exported-component and
+    FileProvider checks for each.
 
 .DESCRIPTION
     Each case is a manifest with the allowed shape (POST_NOTIFICATIONS, RECEIVE_BOOT_COMPLETED,
     ACCESS_MEDIA_LOCATION, AndroidX's signature-level guard, an exported launcher activity, two receivers not exported, the
-    boot one with a BOOT_COMPLETED filter) and one change. The other checks (backup rules, FileProvider)
-    fail on these bare APKs by design and are not looked at. Nothing outside a temporary folder is
+    boot one with a BOOT_COMPLETED filter) and one change. The FileProvider cases add a provider and its
+    paths file: files/archives/ and cache/shared-photos/ pass; any broader or other path (the whole cache,
+    another cache folder, the files root, external storage) or an exported provider fails. The backup
+    rules check fails on these bare APKs by design and is not looked at. Nothing outside a temporary folder is
     written; the folder is removed at the end. Prints one line per expectation and exits 1 if any
     is not met.
 
@@ -83,6 +86,27 @@ function New-Manifest([string[]]$permissions, [string[]]$components) {
 
 $allowed = @($launcher, $alarm, $boot)
 
+# FileProvider cases (CH-59): the app's provider with a paths file made of the given entries.
+$providerName = "$package.ArchiveFileProvider"
+$providerCheck = "FileProvider $providerName limited to files/archives/ and cache/shared-photos/"
+$provider = "<provider android:name=""$providerName"" android:authorities=""$package.archivefiles"" android:exported=""false"" android:grantUriPermissions=""true""><meta-data android:name=""android.support.FILE_PROVIDER_PATHS"" android:resource=""@xml/archive_file_paths"" /></provider>"
+$archivesPath = '<files-path name="archives" path="archives/" />'
+$copiesPath = '<cache-path name="shared-photos" path="shared-photos/" />'
+
+function New-Paths([string[]]$entries) {
+    return @"
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+  $($entries -join "`n  ")
+</paths>
+"@
+}
+
+function New-ProviderCase([string]$name, [string[]]$entries, [string]$expect, [string]$providerXml = $provider) {
+    return @{ Name = "FileProvider: $name"; Manifest = (New-Manifest $allowedPermissions ($allowed + $providerXml)); Paths = (New-Paths $entries)
+              Expect = @{ $providerCheck = $expect } }
+}
+
 # Each case: a name, the manifest, and the result each named check must give.
 $cases = @(
     @{ Name = 'allowed shape'; Manifest = (New-Manifest $allowedPermissions $allowed)
@@ -124,7 +148,20 @@ $cases = @(
     @{ Name = 'alarm receiver exported'; Manifest = (New-Manifest $allowedPermissions @($launcher, ($alarm -replace 'exported="false"', 'exported="true"'), $boot))
        Expect = @{ 'Only the launcher activity is exported' = 'FAIL' } },
     @{ Name = 'a foreground service (needs FOREGROUND_SERVICE)'; Manifest = (New-Manifest ($allowedPermissions + '<uses-permission android:name="android.permission.FOREGROUND_SERVICE" />', '<uses-permission android:name="android.permission.FOREGROUND_SERVICE_SHORT_SERVICE" />') ($allowed + '<service android:name=".Reminder" android:exported="false" android:foregroundServiceType="shortService" />'))
-       Expect = @{ 'Permissions are exactly the allowed ones' = 'FAIL' } }
+       Expect = @{ 'Permissions are exactly the allowed ones' = 'FAIL' } },
+    (New-ProviderCase 'archives and shared-photos (the app''s shape)' @($archivesPath, $copiesPath) 'PASS'),
+    (New-ProviderCase 'archives only' @($archivesPath) 'PASS'),
+    (New-ProviderCase 'the whole cache' @($archivesPath, '<cache-path name="cache" path="." />') 'FAIL'),
+    (New-ProviderCase 'the cache root (empty path)' @($archivesPath, '<cache-path name="cache" path="" />') 'FAIL'),
+    (New-ProviderCase 'the cache root (slash)' @($archivesPath, '<cache-path name="cache" path="/" />') 'FAIL'),
+    (New-ProviderCase 'another cache folder' @($archivesPath, '<cache-path name="frames" path="video-frames/" />') 'FAIL'),
+    (New-ProviderCase 'a path climbing out of shared-photos' @($archivesPath, '<cache-path name="up" path="shared-photos/../" />') 'FAIL'),
+    (New-ProviderCase 'shared-photos under files instead of cache' @($archivesPath, '<files-path name="shared-photos" path="shared-photos/" />') 'FAIL'),
+    (New-ProviderCase 'shared-photos in the external cache' @($archivesPath, '<external-cache-path name="shared-photos" path="shared-photos/" />') 'FAIL'),
+    (New-ProviderCase 'the files root' @('<files-path name="all" path="." />', $copiesPath) 'FAIL'),
+    (New-ProviderCase 'shared storage' @($archivesPath, $copiesPath, '<external-path name="external" path="." />') 'FAIL'),
+    (New-ProviderCase 'exported provider' @($archivesPath, $copiesPath) 'FAIL' ($provider -replace 'exported="false"', 'exported="true"')),
+    (New-ProviderCase 'no per-URI grants' @($archivesPath, $copiesPath) 'FAIL' ($provider -replace 'grantUriPermissions="true"', 'grantUriPermissions="false"'))
 )
 
 $failed = 0
@@ -142,8 +179,26 @@ try {
         $previous = $ErrorActionPreference
         $ErrorActionPreference = 'Continue'
         try {
-            $link = @(& $aapt2 link -o $apk -I $androidJar --manifest $manifestPath 2>&1 | ForEach-Object { "$_" })
-            $linked = $LASTEXITCODE -eq 0
+            $resources = @()
+            $compiled = $true
+
+            if ($case.Paths) {
+                $xmlFolder = Join-Path $folder 'res\xml'
+                New-Item -ItemType Directory -Path $xmlFolder | Out-Null
+                $pathsFile = Join-Path $xmlFolder 'archive_file_paths.xml'
+                [IO.File]::WriteAllText($pathsFile, $case.Paths, (New-Object Text.UTF8Encoding $false))
+                $flat = Join-Path $folder 'flat'
+                New-Item -ItemType Directory -Path $flat | Out-Null
+                $link = @(& $aapt2 compile -o $flat $pathsFile 2>&1 | ForEach-Object { "$_" })
+                $compiled = $LASTEXITCODE -eq 0
+                $resources = @(Get-ChildItem -LiteralPath $flat -Filter *.flat | ForEach-Object { '-R'; $_.FullName })
+            }
+
+            if ($compiled) {
+                $link = @(& $aapt2 link -o $apk -I $androidJar --manifest $manifestPath @resources 2>&1 | ForEach-Object { "$_" })
+            }
+
+            $linked = $compiled -and $LASTEXITCODE -eq 0
             $output = @(& powershell -NoProfile -ExecutionPolicy Bypass -File $check -Apk $apk -Sdk $Sdk 2>&1 | ForEach-Object { "$_" })
             $code = $LASTEXITCODE
         }
@@ -157,7 +212,7 @@ try {
             continue
         }
 
-        # The bare APKs have no backup rules or FileProvider, so the whole check always exits 1.
+        # The bare APKs have no backup rules, so the whole check always exits 1.
         if ($code -ne 1) {
             $failed++
             Write-Host "FAIL  $($case.Name): the release check exited $code, expected 1"

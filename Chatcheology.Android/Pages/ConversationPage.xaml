@@ -184,7 +184,7 @@
                                TextColor="{AppThemeBinding Light={StaticResource MutedTextLight}, Dark={StaticResource MutedTextDark}}" />
                         <Label Text="{Binding Summary}" IsVisible="{Binding HasSummary}" FontSize="13" Margin="10,2,10,0" MaxLines="4"
                                LineBreakMode="TailTruncation" />
-                        <!-- CH-48: "Gallery · host" or "N galleries"; the links themselves open from the details. -->
+                        <!-- CH-48: "Link · host" or "N links"; the links themselves open from the details. -->
                         <Label Text="{Binding GalleryText}" IsVisible="{Binding HasGalleries}" FontSize="12" Margin="10,2,10,0"
                                TextColor="{AppThemeBinding Light={StaticResource MemoryAccentLight}, Dark={StaticResource MemoryAccentDark}}" />
                         <Label Text="{Binding SourceText}" IsVisible="{Binding HasSource}" FontSize="11" Margin="10,0"

@@ -11,7 +11,7 @@
          exclude every domain (root, file, database, sharedpref, external) in every section;
       4. the launcher activity (MAIN/LAUNCHER) is the only exported component;
       5. every FileProvider is not exported, grants per-URI permissions, and its paths file allows
-         only files-path "archives/";
+         only files-path "archives/" and (CH-59) cache-path "shared-photos/";
       6. zipalign -c -P 16 passes (16 KB page alignment of native libraries);
       7. the permissions are exactly the allowed ones (CH-47, CH-58): POST_NOTIFICATIONS and
          RECEIVE_BOOT_COMPLETED for noted-date notifications and ACCESS_MEDIA_LOCATION so photos are read
@@ -231,13 +231,21 @@ foreach ($kind in @('activity', 'activity-alias', 'service', 'receiver', 'provid
 
 Report (($exported.Count -eq 0) -and ($launchers -eq 1)) 'Only the launcher activity is exported' $(if ($exported.Count) { 'also exported: ' + ($exported -join ', ') } else { "$launchers launcher activity" })
 
-# 5. Every FileProvider: not exported, per-URI grants, files/archives/ only.
+# 5. Every FileProvider: not exported, per-URI grants, files/archives/ and cache/shared-photos/ only. The
+#    cache entry (CH-59) is the one folder of memory-photo copies shared with their location removed; any
+#    other cache path (the whole cache, a sibling folder) and every other path kind fail.
+$allowedProviderPaths = @(
+    @{ Kind = 'files-path'; Path = 'archives' },
+    @{ Kind = 'cache-path'; Path = 'shared-photos' }
+)
+$providerCheck = 'limited to files/archives/ and cache/shared-photos/'
+
 $providers = @(Find-Elements $application 'provider' | Where-Object {
     @(Find-Elements $_ 'meta-data' | Where-Object { $_.Attributes['name'] -eq 'android.support.FILE_PROVIDER_PATHS' }).Count -gt 0
 })
 
 if ($providers.Count -eq 0) {
-    Report $false 'FileProviders limited to files/archives/' 'no FileProvider found'
+    Report $false "FileProviders $providerCheck" 'no FileProvider found'
 }
 
 foreach ($provider in $providers) {
@@ -259,13 +267,14 @@ foreach ($provider in $providers) {
 
         foreach ($entry in $entries) {
             $path = ([string]$entry.Attributes['path']).TrimStart('/')
-            if ($entry.Name -ne 'files-path' -or ($path -ne 'archives/' -and $path -ne 'archives')) {
+            $allowed = @($allowedProviderPaths | Where-Object { $entry.Name -eq $_.Kind -and ($path -eq $_.Path -or $path -eq ($_.Path + '/')) })
+            if ($allowed.Count -eq 0) {
                 $problems += "$($entry.Name) path=""$($entry.Attributes['path'])"""
             }
         }
     }
 
-    Report ($problems.Count -eq 0) "FileProvider $name limited to files/archives/" $(if ($problems.Count) { $problems -join ', ' } else { "not exported, $file" })
+    Report ($problems.Count -eq 0) "FileProvider $name $providerCheck" $(if ($problems.Count) { $problems -join ', ' } else { "not exported, $file" })
 }
 
 # 6. 16 KB page alignment.

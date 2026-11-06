@@ -176,7 +176,7 @@ namespace Chatcheology.Desktop.Tests
                     memories.NotedForm.SaveCommand.Execute(null);
                     Settle(window);
                     Assert.Equal("14 Feb", memories.NotedDates[0].DateText);
-                    Assert.Equal("Gallery · photos.example.org", memories.NotedDates[0].GalleryText);
+                    Assert.Equal("Link · photos.example.org", memories.NotedDates[0].GalleryText);
                     Assert.Empty(errors.Messages);
                 }
                 finally

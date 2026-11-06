@@ -23,6 +23,9 @@ namespace Chatcheology.Android
             {
                 // Left for the next start; staging never counts as installed, so nothing is lost.
             }
+
+            // Shared memory-photo copies (CH-59) from an earlier run. Never throws.
+            PhotoShareCopies.Clean();
         }
 
         /// <inheritdoc />

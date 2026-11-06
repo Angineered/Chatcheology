@@ -168,7 +168,7 @@ namespace Chatcheology.Mobile.Tests
             Assert.True(File.Exists(zebra.ImagePath));
             Assert.NotNull(apple.ImagePath);
             Assert.Equal(session.MemoryDetails(new MemoryKey(32, null))!.ImagePath, apple.ImagePath);
-            Assert.Equal("Gallery · example.org", zebra.GalleryText);
+            Assert.Equal("Link · example.org", zebra.GalleryText);
             Assert.Empty(apple.GalleryText);
 
             // Show in chat only when that day has messages; the details open whatever the layer says.
@@ -422,7 +422,7 @@ namespace Chatcheology.Mobile.Tests
                 var card = session.OnThisDayFor(session.ReadDays(), D(2026, 7, 4));
                 Assert.Empty(card.Yearly);
                 Assert.Equal("Invented anniversary · 7 years", card.Noted.Single().Text);
-                Assert.Equal("Gallery · example.org", card.Noted.Single().GalleryText);
+                Assert.Equal("Link · example.org", card.Noted.Single().GalleryText);
                 Assert.Equal(D(2019, 7, 4), card.Noted.Single().JumpDay);
                 Assert.Equal([2019], card.Years.Select(y => y.Year).ToList());
 

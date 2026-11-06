@@ -784,7 +784,7 @@ namespace Chatcheology.Android.Pages
 
             Func<Task>? showInChat = yearly.ShowInChatDay is { } day ? () => ShowDayAsync(day) : null;
 
-            await Navigation.PushAsync(new MemoryDetailsPage(details, ShowMessageAsync, ShowEntryAsync, showInChat));
+            await Navigation.PushAsync(new MemoryDetailsPage(details, _state.Library.ArchivesFolder, ShowMessageAsync, ShowEntryAsync, showInChat));
         }
 
         /// <summary>Show in chat from a yearly memory's details: back to this page, at that day; the card goes once there.</summary>
@@ -952,7 +952,7 @@ namespace Chatcheology.Android.Pages
 
             Func<Task>? showInChat = _session.MemoryShowInChat(list, key) is { } target ? () => ShowMemoryInChatAsync(target) : null;
 
-            await Navigation.PushAsync(new MemoryDetailsPage(details, ShowMessageAsync, ShowEntryAsync, showInChat));
+            await Navigation.PushAsync(new MemoryDetailsPage(details, _state.Library.ArchivesFolder, ShowMessageAsync, ShowEntryAsync, showInChat));
         }
 
         /// <summary>
@@ -1143,7 +1143,7 @@ namespace Chatcheology.Android.Pages
 
             try
             {
-                await Navigation.PushAsync(new MemoryDetailsPage(details, ShowMessageAsync, ShowEntryAsync));
+                await Navigation.PushAsync(new MemoryDetailsPage(details, _state.Library.ArchivesFolder, ShowMessageAsync, ShowEntryAsync));
             }
             catch (Exception)
             {
