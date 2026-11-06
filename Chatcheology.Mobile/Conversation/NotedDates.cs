@@ -46,7 +46,7 @@ namespace Chatcheology.Mobile.Conversation
         /// </summary>
         public IReadOnlyList<GalleryLink> Galleries { get; init; } = [];
 
-        /// <summary>"Gallery · photos.google.com", "3 galleries", or empty.</summary>
+        /// <summary>"Link · photos.google.com", "3 links", or empty.</summary>
         public string GalleryText => GalleryLinks.Summary(Galleries);
 
         /// <summary>Equal when every field and every link, in order, are equal.</summary>
@@ -72,7 +72,7 @@ namespace Chatcheology.Mobile.Conversation
         /// <summary>Its external gallery links (CH-48), in order.</summary>
         public IReadOnlyList<GalleryLink> Galleries { get; init; } = [];
 
-        /// <summary>"Gallery · photos.google.com", "3 galleries", or empty.</summary>
+        /// <summary>"Link · photos.google.com", "3 links", or empty.</summary>
         public string GalleryText => GalleryLinks.Summary(Galleries);
 
         /// <summary>The row's text: "Our anniversary · 8 years", or the title alone.</summary>

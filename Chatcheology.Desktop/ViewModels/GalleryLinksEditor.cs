@@ -81,7 +81,7 @@ namespace Chatcheology.Desktop.ViewModels
     }
 
     /// <summary>
-    /// The "Gallery links" list of a memory form or a noted-date form (CH-48): up to 10 rows, each an address
+    /// The "Links" list of a memory form or a noted-date form (CH-48): up to 10 rows, each an address
     /// and an optional label, which can be added, removed and moved. Every rule is
     /// <see cref="ExternalLinkRules"/>'s. Nothing is fetched; nothing is written until the form saves.
     /// </summary>
@@ -272,15 +272,15 @@ namespace Chatcheology.Desktop.ViewModels
         }
     }
 
-    /// <summary>The gallery text of a list line: "Gallery · host" or "N galleries".</summary>
+    /// <summary>The links text of a list line: "Link · host" or "N links" (CH-59; the class keeps its old name).</summary>
     internal static class GalleryWording
     {
-        /// <summary>Empty for none; "Gallery · photos.example" for one; "3 galleries" for several.</summary>
+        /// <summary>Empty for none; "Link · photos.example" for one; "3 links" for several.</summary>
         internal static string For(IReadOnlyList<ExternalLink> links) => links.Count switch
         {
             0 => string.Empty,
-            1 => links[0].Host is { } host ? "Gallery · " + host : "Gallery",
-            _ => links.Count.ToString(CultureInfo.CurrentCulture) + " galleries",
+            1 => links[0].Host is { } host ? "Link · " + host : "Link",
+            _ => links.Count.ToString(CultureInfo.CurrentCulture) + " links",
         };
     }
 }

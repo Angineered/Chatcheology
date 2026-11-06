@@ -232,7 +232,7 @@ namespace Chatcheology.Desktop.Tests
 
             memories.SelectedEntry = memories.Entries[0];
             await memories.SelectedEntryGalleryRead;
-            Assert.Equal("3 galleries", memories.SelectedEntryGalleryText);
+            Assert.Equal("3 links", memories.SelectedEntryGalleryText);
 
             await MemoriesViewModelTests.Run(memories.EditEntryCommand, memories);
             var edit = memories.Form!;
@@ -248,7 +248,7 @@ namespace Chatcheology.Desktop.Tests
             memories.SelectedEntry = null;
             memories.SelectedEntry = memories.Entries[0];
             await memories.SelectedEntryGalleryRead;
-            Assert.Equal("Gallery · photos.example.org", memories.SelectedEntryGalleryText);
+            Assert.Equal("Link · photos.example.org", memories.SelectedEntryGalleryText);
 
             // Clear them all.
             await MemoriesViewModelTests.Run(memories.EditEntryCommand, memories);
@@ -280,7 +280,7 @@ namespace Chatcheology.Desktop.Tests
             await MemoriesViewModelTests.Run(form.SaveCommand, form);
 
             Assert.Same(form, memories.Form);
-            Assert.StartsWith("The memory was saved, but its gallery links were not.", form.FormError, StringComparison.Ordinal);
+            Assert.StartsWith("The memory was saved, but its links were not.", form.FormError, StringComparison.Ordinal);
             Assert.False(form.IsNew);
 
             // Fix it and save again: the same memory is updated, not duplicated.
@@ -388,7 +388,7 @@ namespace Chatcheology.Desktop.Tests
 
             var row = Assert.Single(memories.NotedDates);
             Assert.Equal([Two, One], Links.ReadForNotedDate(row.NotedDateID).Select(l => l.Url));
-            Assert.Equal("2 galleries", row.GalleryText);
+            Assert.Equal("2 links", row.GalleryText);
 
             memories.SelectedNotedDate = row;
             memories.EditNotedDateCommand.Execute(null);
@@ -397,7 +397,7 @@ namespace Chatcheology.Desktop.Tests
             edit.GalleryLinks.Rows[0].RemoveCommand.Execute(null);
             await SaveNotedAsync(memories);
 
-            Assert.Equal("Gallery · photos.example.org", Assert.Single(memories.NotedDates).GalleryText);
+            Assert.Equal("Link · photos.example.org", Assert.Single(memories.NotedDates).GalleryText);
         }
 
         [Fact]
@@ -455,7 +455,7 @@ namespace Chatcheology.Desktop.Tests
             await MemoriesViewModelTests.WaitUntil(() => !form.IsSaving && !form.SaveCommand.IsRunning);
 
             Assert.Same(form, memories.NotedForm);
-            Assert.StartsWith("The noted date was saved, but its gallery links were not.", form.FormError, StringComparison.Ordinal);
+            Assert.StartsWith("The noted date was saved, but its links were not.", form.FormError, StringComparison.Ordinal);
             Assert.False(form.IsNew);
 
             BlockLinkWrites(false);
@@ -471,8 +471,8 @@ namespace Chatcheology.Desktop.Tests
         public void TheGalleryText_IsOneHost_OrACount()
         {
             Assert.Equal(string.Empty, GalleryWording.For([]));
-            Assert.Equal("Gallery · photos.example.org", GalleryWording.For([new ExternalLink(1, 1, One, null)]));
-            Assert.Equal("3 galleries", GalleryWording.For(
+            Assert.Equal("Link · photos.example.org", GalleryWording.For([new ExternalLink(1, 1, One, null)]));
+            Assert.Equal("3 links", GalleryWording.For(
                 [new ExternalLink(1, 1, One, null), new ExternalLink(2, 2, Two, null), new ExternalLink(3, 3, Three, null)]));
         }
     }

@@ -17,8 +17,9 @@ namespace Chatcheology.Android.Pages
     /// <para>Opened from the gallery or the Starred list (CH-37), a swipe left or right, at 1x, moves to
     /// the next or previous photo of that list, and Show in chat opens the conversation at its message.</para>
     /// <para>Opened from a memory's details (CH-46), it moves through that memory's photos only and shows
-    /// each one's caption. A memory photo is not an attachment: it has no Share, Star, Info, Show in chat or
-    /// Open in another app (memories are not shared), and it is not in the Photos gallery.</para>
+    /// each one's caption. A memory photo is not an attachment: it has no Star, Info, Show in chat or Open in
+    /// another app, and it is not in the Photos gallery. Its Share (CH-59) hands out a copy with the location
+    /// removed, never the archive file, and refuses a photo whose location cannot be removed.</para>
     /// </remarks>
     internal sealed class ImageViewerPage : ContentPage
     {
@@ -32,12 +33,17 @@ namespace Chatcheology.Android.Pages
         private readonly Border _info;
         private readonly CornerIcon? _star;
         private readonly Label? _caption;
+        private readonly string? _archivesFolder;
         private bool _leaving;
+        private bool _sharing;
 
         /// <summary>A viewer over one memory's photos (CH-46), at the browser's current one.</summary>
-        internal ImageViewerPage(MemoryPhotoBrowser photos)
+        /// <param name="photos">The memory's photos.</param>
+        /// <param name="archivesFolder">The installed archives; Share (CH-59) refuses any photo outside it.</param>
+        internal ImageViewerPage(MemoryPhotoBrowser photos, string archivesFolder)
         {
             _memoryPhotos = photos;
+            _archivesFolder = archivesFolder;
 
             BackgroundColor = Colors.Black;
 
@@ -69,7 +75,20 @@ namespace Chatcheology.Android.Pages
             close.Tapped += (_, _) => _info.IsVisible = false;
             _info.GestureRecognizers.Add(close);
 
-            Content = new Grid { Children = { _image, _failed, _info } };
+            // CH-59: Share only (no Star, Info, Show in chat or Open in another app), in the same corner.
+            var share = new CornerIcon(CornerGlyph.Share, "Share");
+            share.Tapped += async (_, _) => await ShareMemoryPhotoAsync();
+
+            var corner = new HorizontalStackLayout
+            {
+                Spacing = 0,
+                Padding = 4,
+                HorizontalOptions = LayoutOptions.End,
+                VerticalOptions = LayoutOptions.Start,
+                Children = { share },
+            };
+
+            Content = new Grid { Children = { _image, _failed, corner, _info } };
 
             ShowCurrent();
         }
@@ -294,6 +313,44 @@ namespace Chatcheology.Android.Pages
                 case OpenResult.NotAllowed:
                     await DisplayAlertAsync("Share", "This file cannot be shared.", "OK");
                     break;
+            }
+        }
+
+        /// <summary>
+        /// CH-59: shares the memory photo shown as a copy with its location removed (<see cref="PhotoShareCopies"/>);
+        /// the photo only, never its caption or the memory's title.
+        /// </summary>
+        private async Task ShareMemoryPhotoAsync()
+        {
+            if (_sharing || _memoryPhotos?.Current.Path is not { } path || _archivesFolder is null)
+            {
+                return;
+            }
+
+            _sharing = true;
+
+            try
+            {
+                switch (await PhotoShareCopies.ShareAsync(path, _archivesFolder))
+                {
+                    case PhotoShareOutcome.NoApp:
+                        await DisplayAlertAsync("Share", "No app on this phone can receive this file.", "OK");
+                        break;
+                    case PhotoShareOutcome.CannotRemoveLocation:
+                        await DisplayAlertAsync("Share", PhotoShare.CannotShareText, "OK");
+                        break;
+                    case PhotoShareOutcome.NotAllowed:
+                        await DisplayAlertAsync("Share", "This file cannot be shared.", "OK");
+                        break;
+                }
+            }
+            catch (Exception)
+            {
+                // A tap handler: nothing here may end the app.
+            }
+            finally
+            {
+                _sharing = false;
             }
         }
 

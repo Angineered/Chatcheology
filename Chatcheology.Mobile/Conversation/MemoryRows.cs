@@ -137,7 +137,7 @@ namespace Chatcheology.Mobile.Conversation
             GalleryText = GalleryLinks.Summary(entry.Galleries);
         }
 
-        /// <summary>"Gallery · photos.google.com", "3 galleries", or empty (CH-48).</summary>
+        /// <summary>"Link · photos.google.com", "3 links", or empty (CH-48).</summary>
         public string GalleryText { get; }
 
         /// <summary>Whether the card shows a gallery line.</summary>

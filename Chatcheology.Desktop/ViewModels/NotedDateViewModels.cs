@@ -9,7 +9,7 @@ namespace Chatcheology.Desktop.ViewModels
         /// <summary>The gallery links (CH-48), in order.</summary>
         public IReadOnlyList<ExternalLink> GalleryLinks { get; } = galleryLinks ?? [];
 
-        /// <summary>"Gallery · host", "3 galleries", or empty.</summary>
+        /// <summary>"Link · host", "3 links", or empty.</summary>
         public string GalleryText => GalleryWording.For(GalleryLinks);
 
         /// <summary>Its identifier in the memories file.</summary>
@@ -383,11 +383,11 @@ namespace Chatcheology.Desktop.ViewModels
                 catch (PersonalMemoryValidationException exception)
                 {
                     GalleryLinks.ShowStoreError(exception);
-                    linkFailure = "The noted date was saved, but its gallery links were not.";
+                    linkFailure = "The noted date was saved, but its links were not.";
                 }
                 catch (Exception exception) when (MemoriesViewModel.IsExpected(exception))
                 {
-                    linkFailure = MemoriesViewModel.Describe(exception, "The noted date was saved, but its gallery links were not.");
+                    linkFailure = MemoriesViewModel.Describe(exception, "The noted date was saved, but its links were not.");
                 }
             }
             catch (PersonalMemoryValidationException exception)

@@ -63,6 +63,7 @@ namespace Chatcheology.Mobile.Conversation
         private Task<ConversationSearch>? _search;
         private Task<Gallery.PhotoGallery>? _gallery;
         private Task<MemoryList>? _memoryList;
+        private string? _savedTab;
 
         private ArchiveSession(InstalledArchive archive, ArchiveReader reader, ArchiveSettings settings, string identity)
         {
@@ -165,6 +166,16 @@ namespace Chatcheology.Mobile.Conversation
 
         /// <summary>Whether search is offered.</summary>
         public bool CanSearch => !IsEmpty;
+
+        /// <summary>Whether the Saved screen (CH-59) is offered: the archive has messages or memories.</summary>
+        public bool HasSaved => SavedTabs.IsShown(!IsEmpty, Memories.HasMemories);
+
+        /// <summary>
+        /// The Saved screen's tabs for this archive, opening on the tab last chosen while it has been open (the
+        /// first tab the first time). Each call starts the tabs' scroll and search afresh.
+        /// </summary>
+        public SavedTabs CreateSavedTabs() =>
+            new(SavedTabs.TabsFor(!IsEmpty, Memories.Collections), _savedTab, id => _savedTab = id);
 
         /// <summary>The conversation's low-quality copy links.</summary>
         public LowQualityIndex LowQuality { get; }

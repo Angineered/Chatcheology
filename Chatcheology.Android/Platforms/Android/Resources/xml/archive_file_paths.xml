@@ -1,6 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- The only files the app's FileProvider can give out: the installed archives, under the app's
-     private files folder. Nothing in staging, the cache or shared storage. -->
+     private files folder, and (CH-59) the shared memory-photo copies with their location removed, in
+     one dedicated folder of the app's cache. Nothing in staging, the rest of the cache or shared
+     storage. tools\Check-AndroidRelease.ps1 fails on any other path. -->
 <paths>
 	<files-path name="archives" path="archives/" />
+	<cache-path name="shared-photos" path="shared-photos/" />
 </paths>

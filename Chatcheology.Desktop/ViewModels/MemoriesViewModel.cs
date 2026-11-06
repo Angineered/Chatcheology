@@ -330,7 +330,7 @@ namespace Chatcheology.Desktop.ViewModels
             }
         }
 
-        /// <summary>"Gallery · host" or "N galleries" for the selected memory (CH-48), or empty.</summary>
+        /// <summary>"Link · host" or "N links" for the selected memory (CH-48), or empty.</summary>
         public string SelectedEntryGalleryText
         {
             get => _selectedEntryGalleryText;

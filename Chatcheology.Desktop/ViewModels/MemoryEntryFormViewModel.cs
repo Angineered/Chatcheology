@@ -656,11 +656,11 @@ namespace Chatcheology.Desktop.ViewModels
                 catch (PersonalMemoryValidationException exception)
                 {
                     GalleryLinks.ShowStoreError(exception);
-                    linkFailure = "The memory was saved, but its gallery links were not.";
+                    linkFailure = "The memory was saved, but its links were not.";
                 }
                 catch (Exception exception) when (MemoriesViewModel.IsExpected(exception))
                 {
-                    linkFailure = MemoriesViewModel.Describe(exception, "The memory was saved, but its gallery links were not.");
+                    linkFailure = MemoriesViewModel.Describe(exception, "The memory was saved, but its links were not.");
                 }
             }
             catch (PersonalMemoryValidationException exception)

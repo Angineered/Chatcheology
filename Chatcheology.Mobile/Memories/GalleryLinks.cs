@@ -117,7 +117,8 @@ namespace Chatcheology.Mobile.Memories
         }
 
         /// <summary>
-        /// The card's line: "Gallery · photos.google.com" for one link, "3 galleries" for several, empty for none.
+        /// The card's line: "Link · photos.google.com" for one link, "3 links" for several, empty for none
+        /// (CH-59: shown as "Link"/"Links"; the class and storage keep the name "gallery").
         /// </summary>
         public static string Summary(IReadOnlyList<GalleryLink> links)
         {
@@ -126,8 +127,8 @@ namespace Chatcheology.Mobile.Memories
             return links.Count switch
             {
                 0 => string.Empty,
-                1 => "Gallery · " + (links[0].Host ?? UnusableText),
-                _ => links.Count.ToString(CultureInfo.CurrentCulture) + " galleries",
+                1 => "Link · " + (links[0].Host ?? UnusableText),
+                _ => links.Count.ToString(CultureInfo.CurrentCulture) + " links",
             };
         }
 

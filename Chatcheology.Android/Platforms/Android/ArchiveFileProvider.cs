@@ -7,7 +7,9 @@ namespace Chatcheology.Android
     /// <summary>
     /// The app's own FileProvider, through which a restored media file is handed to another app. Not
     /// exported; a link works only with the one-file read grant that comes with it; and only files under
-    /// <c>files/archives/</c> can be given out (<c>Resources/xml/archive_file_paths.xml</c>).
+    /// <c>files/archives/</c>, plus the shared memory-photo copies under <c>cache/shared-photos/</c> (CH-59),
+    /// can be given out (<c>Resources/xml/archive_file_paths.xml</c>). Each caller also checks the file is
+    /// in the one folder it is allowed to give out.
     /// </summary>
     [ContentProvider(
         ["${applicationId}.archivefiles"],
@@ -45,7 +47,7 @@ namespace Chatcheology.Android
         {
             var activity = Platform.CurrentActivity;
 
-            if (activity is null || ArchiveUri(activity, fullPath, archivesFolder) is not { } uri)
+            if (activity is null || ProviderUri(activity, fullPath, archivesFolder) is not { } uri)
             {
                 return OpenResult.NotAllowed;
             }
@@ -62,11 +64,22 @@ namespace Chatcheology.Android
         /// <see cref="ArchiveFileProvider"/>: a read grant for this one URI, not persistable, and the MIME
         /// type from its extension. The person chooses the app; nothing is sent until she does.
         /// </summary>
-        internal static OpenResult ShareFile(string fullPath, string mimeType, string archivesFolder)
+        internal static OpenResult ShareFile(string fullPath, string mimeType, string archivesFolder) =>
+            Share(fullPath, mimeType, archivesFolder);
+
+        /// <summary>
+        /// Offers a memory photo's shared copy (CH-59, <see cref="PhotoShareCopies"/>) to the share sheet, as
+        /// <see cref="ShareFile"/> does; only a file inside <paramref name="copiesFolder"/> (the cache's
+        /// <c>shared-photos/</c>) is given out.
+        /// </summary>
+        internal static OpenResult ShareCopy(string copyPath, string mimeType, string copiesFolder) =>
+            Share(copyPath, mimeType, copiesFolder);
+
+        private static OpenResult Share(string fullPath, string mimeType, string allowedFolder)
         {
             var activity = Platform.CurrentActivity;
 
-            if (activity is null || ArchiveUri(activity, fullPath, archivesFolder) is not { } uri)
+            if (activity is null || ProviderUri(activity, fullPath, allowedFolder) is not { } uri)
             {
                 return OpenResult.NotAllowed;
             }
@@ -100,21 +113,19 @@ namespace Chatcheology.Android
         }
 
         /// <summary>
-        /// The provider's URI for a file inside the installed archives, or <see langword="null"/> for any
-        /// other file, whatever the provider's own paths say.
+        /// The provider's URI for a file inside <paramref name="allowedFolder"/> (the installed archives, or the
+        /// shared-copies folder), or <see langword="null"/> for any other file, whatever the provider's own paths say.
         /// </summary>
-        private static global::Android.Net.Uri? ArchiveUri(Activity activity, string fullPath, string archivesFolder)
+        private static global::Android.Net.Uri? ProviderUri(Activity activity, string fullPath, string allowedFolder)
         {
-            var full = Path.GetFullPath(fullPath);
-
-            if (!full.StartsWith(Path.TrimEndingDirectorySeparator(archivesFolder) + Path.DirectorySeparatorChar, StringComparison.Ordinal))
+            if (!Mobile.Presentation.PhotoShare.IsInside(fullPath, allowedFolder))
             {
                 return null;
             }
 
             try
             {
-                return AndroidX.Core.Content.FileProvider.GetUriForFile(activity, ArchiveFileProvider.Authority(activity), new Java.IO.File(full));
+                return AndroidX.Core.Content.FileProvider.GetUriForFile(activity, ArchiveFileProvider.Authority(activity), new Java.IO.File(Path.GetFullPath(fullPath)));
             }
             catch (Java.Lang.IllegalArgumentException)
             {

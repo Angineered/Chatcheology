@@ -8,16 +8,18 @@ namespace Chatcheology.Android.Pages
     /// period: its trophies with exact local times, names and icons (or "Bronze trophy #12"), then the day
     /// evidence and the day's other periods. For a personal memory: its photos (a strip with captions when
     /// there is more than one, CH-46; a tap opens the full-screen viewer over them), description, links and external
-    /// gallery links (CH-48; each opens in another app only after a confirmation). Nothing to
-    /// share; everything was read when the archive opened.
+    /// links (CH-48, shown as "Links" since CH-59; each opens in another app only after a confirmation). Only a
+    /// photo can be shared, from the viewer (CH-59); everything was read when the archive opened.
     /// </summary>
     internal sealed class MemoryDetailsPage : ContentPage
     {
         private readonly Func<int, Task> _showMessage;
         private readonly Func<long, Task> _showEntry;
         private readonly MemoryDetails _details;
+        private readonly string _archivesFolder;
 
         /// <param name="details">What to show.</param>
+        /// <param name="archivesFolder">The installed archives, for sharing a photo from the viewer (CH-59).</param>
         /// <param name="showMessage">Opens the conversation at a linked message.</param>
         /// <param name="showEntry">Opens the conversation at a linked entry's row.</param>
         /// <param name="showInChat">
@@ -25,8 +27,9 @@ namespace Chatcheology.Android.Pages
         /// at the memory's row when it is visible, otherwise at its day. Given only when there is such a target (a
         /// visible row, or a day with messages); without it there is no Show in chat.
         /// </param>
-        internal MemoryDetailsPage(MemoryDetails details, Func<int, Task> showMessage, Func<long, Task> showEntry, Func<Task>? showInChat = null)
+        internal MemoryDetailsPage(MemoryDetails details, string archivesFolder, Func<int, Task> showMessage, Func<long, Task> showEntry, Func<Task>? showInChat = null)
         {
+            _archivesFolder = archivesFolder;
             _showMessage = showMessage;
             _showEntry = showEntry;
 
@@ -129,7 +132,7 @@ namespace Chatcheology.Android.Pages
             if (details.Galleries.Count > 0)
             {
                 // CH-48: each external link as its label, or its host; a tap asks before leaving the app.
-                body.Add(Heading(details.Galleries.Count == 1 ? "Gallery" : "Galleries"));
+                body.Add(Heading(details.Galleries.Count == 1 ? "Link" : "Links"));
 
                 foreach (var gallery in details.Galleries)
                 {
@@ -170,7 +173,7 @@ namespace Chatcheology.Android.Pages
                 {
                     if (Navigation.NavigationStack.LastOrDefault() == this && index < _details.Photos.Count)
                     {
-                        await Navigation.PushAsync(new ImageViewerPage(_details.BrowsePhotos(index)));
+                        await Navigation.PushAsync(new ImageViewerPage(_details.BrowsePhotos(index), _archivesFolder));
                     }
                 }
                 catch (Exception)
@@ -261,7 +264,7 @@ namespace Chatcheology.Android.Pages
                 Padding = new Thickness(0, 4),
             }.TextIn("LinkText");
 
-            SemanticProperties.SetDescription(label, "Open gallery " + gallery.Text + " outside Chatcheology");
+            SemanticProperties.SetDescription(label, "Open link " + gallery.Text + " outside Chatcheology");
 
             var tap = new TapGestureRecognizer();
             tap.Tapped += async (_, _) =>

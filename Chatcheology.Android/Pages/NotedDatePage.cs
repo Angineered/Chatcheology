@@ -92,7 +92,7 @@ namespace Chatcheology.Android.Pages
                         new Label { Text = "Note", FontSize = 13 }.TextIn("MutedText"),
                         _note,
                         _noteError,
-                        new Label { Text = "Gallery links (optional)", FontSize = 13 }.TextIn("MutedText"),
+                        new Label { Text = "Links (optional)", FontSize = 13 }.TextIn("MutedText"),
                         _linkRows,
                         _linksError,
                         _addLink,
