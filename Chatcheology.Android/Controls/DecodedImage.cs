@@ -65,6 +65,8 @@ namespace Chatcheology.Android.Controls
 
         private ImageView? _image;
         private TextView? _failed;
+        private FrameLayout? _frame;
+        private bool _subscribed;
         private int _generation;
 
         public DecodedImageHandler()
@@ -99,32 +101,90 @@ namespace Chatcheology.Android.Controls
         {
             base.ConnectHandler(platformView);
 
-            if (Application.Current is { } app)
-            {
-                app.RequestedThemeChanged += OnThemeChanged;
-            }
+            _frame = platformView;
+
+            // The phone's mode may have changed while the view was off screen.
+            Recolour(platformView);
+            Subscribe();
         }
 
         protected override void DisconnectHandler(FrameLayout platformView)
         {
-            if (Application.Current is { } app)
+            Unsubscribe();
+            _frame = null;
+
+            _generation++;
+
+            if (IsAlive(_image))
+            {
+                _image!.SetImageBitmap(null);
+            }
+
+            base.DisconnectHandler(platformView);
+        }
+
+        private void Subscribe()
+        {
+            if (!_subscribed && Application.Current is { } app)
+            {
+                app.RequestedThemeChanged += OnThemeChanged;
+                _subscribed = true;
+            }
+        }
+
+        private void Unsubscribe()
+        {
+            if (_subscribed && Application.Current is { } app)
             {
                 app.RequestedThemeChanged -= OnThemeChanged;
             }
 
-            _generation++;
-            _image?.SetImageBitmap(null);
-            base.DisconnectHandler(platformView);
+            _subscribed = false;
         }
 
         /// <summary>The phone switched between light and dark (CH-41): the box and its text follow.</summary>
-        private void OnThemeChanged(object? sender, AppThemeChangedEventArgs e) => Recolour(PlatformView);
+        /// <remarks>
+        /// Never throws (CH-60): the event is raised through MAUI's weak event manager, which turns an
+        /// exception here into a fatal one. A handler in a CollectionView cell is not always disconnected
+        /// when its page closes, so it may be called after its views are gone; it then unsubscribes itself.
+        /// It reads the frame from its own field, not <see cref="ViewHandler{TVirtualView, TPlatformView}.PlatformView"/>,
+        /// whose getter throws when there is none.
+        /// </remarks>
+        private void OnThemeChanged(object? sender, AppThemeChangedEventArgs e)
+        {
+            if (VirtualView is null || !IsAlive(_frame))
+            {
+                Unsubscribe();
+                return;
+            }
+
+            try
+            {
+                Recolour(_frame);
+            }
+            catch (Exception exception)
+            {
+                // The last line only; the type alone, as the Release log rule asks.
+                Unsubscribe();
+                global::Android.Util.Log.Warn(AppState.LogTag, $"decoded-image recolour failed: {exception.GetType().Name}");
+            }
+        }
 
         private void Recolour(FrameLayout? frame)
         {
-            frame?.SetBackgroundColor(Palette.Current("CardBackground").ToPlatform());
-            _failed?.SetTextColor(Palette.Current("MutedText").ToPlatform());
+            if (IsAlive(frame))
+            {
+                frame!.SetBackgroundColor(Palette.Current("CardBackground").ToPlatform());
+            }
+
+            if (IsAlive(_failed))
+            {
+                _failed!.SetTextColor(Palette.Current("MutedText").ToPlatform());
+            }
         }
+
+        /// <summary>Whether <paramref name="view"/> is set and its Java object has not been disposed.</summary>
+        private static bool IsAlive(AndroidView? view) => view is not null && view.Handle != IntPtr.Zero;
 
         private static void MapPath(DecodedImageHandler handler, DecodedImage view) => handler.Load(view.Path);
 
