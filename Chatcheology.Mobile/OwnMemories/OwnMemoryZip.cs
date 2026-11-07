@@ -31,6 +31,9 @@ namespace Chatcheology.Mobile.OwnMemories
         private const ushort Stored = 0;
         private const ushort Deflated = 8;
 
+        /// <summary>The longest entry name read (step 3 review S2); this app writes 76 at most.</summary>
+        internal const int MaxNameBytes = 255;
+
         /// <summary>The general-purpose flags a read entry may have: the deflate option bits (1, 2) and UTF-8 names (11).</summary>
         private const ushort AllowedFlags = 0x0806;
 
@@ -50,7 +53,13 @@ namespace Chatcheology.Mobile.OwnMemories
         /// </summary>
         /// <returns>How many entries were skipped.</returns>
         /// <exception cref="OwnMemoryFileException">The file is refused; see its problem.</exception>
-        internal static int Read(Stream source, OwnMemoryFileLimits limits, Func<string, long?> capFor, Action<string, byte[]> accept)
+        /// <remarks>
+        /// An accepted entry that is deflated while <paramref name="mayDeflate"/> says it must be stored refuses the file as
+        /// not supported (step 3 review S1: unpacking work then grows with the file's size, not with the caps). A name longer
+        /// than <see cref="MaxNameBytes"/> refuses the file as damaged (S2: names are kept for the central directory check).
+        /// </remarks>
+        internal static int Read(
+            Stream source, OwnMemoryFileLimits limits, Func<string, long?> capFor, Func<string, bool> mayDeflate, Action<string, byte[]> accept)
         {
             var input = new LimitedStream(source, limits.MaxFileBytes);
             var entries = new List<Entry>();
@@ -77,7 +86,14 @@ namespace Chatcheology.Mobile.OwnMemories
                     var crc = BinaryPrimitives.ReadUInt32LittleEndian(header.AsSpan(10));
                     var packed = BinaryPrimitives.ReadUInt32LittleEndian(header.AsSpan(14));
                     var size = BinaryPrimitives.ReadUInt32LittleEndian(header.AsSpan(18));
-                    var name = input.ReadBytes(BinaryPrimitives.ReadUInt16LittleEndian(header.AsSpan(22)));
+                    var nameLength = BinaryPrimitives.ReadUInt16LittleEndian(header.AsSpan(22));
+
+                    if (nameLength > MaxNameBytes)
+                    {
+                        throw Refuse(OwnMemoryFileProblem.Damaged);
+                    }
+
+                    var name = input.ReadBytes(nameLength);
                     var extra = input.ReadBytes(BinaryPrimitives.ReadUInt16LittleEndian(header.AsSpan(24)));
 
                     CheckSupported(needed, flags, method, packed, size, extra);
@@ -104,6 +120,11 @@ namespace Chatcheology.Mobile.OwnMemories
                     }
                     else
                     {
+                        if (method == Deflated && !mayDeflate(text))
+                        {
+                            throw Refuse(OwnMemoryFileProblem.NotSupported);
+                        }
+
                         if (size > cap)
                         {
                             throw Refuse(OwnMemoryFileProblem.TooLarge);
@@ -194,11 +215,28 @@ namespace Chatcheology.Mobile.OwnMemories
         /// <summary>Unpacks one entry, counting what comes out against its own cap and the whole file's.</summary>
         private static byte[] Unpack(LimitedStream input, ushort method, uint packed, long cap, long totalCap, ref long unpacked)
         {
-            var bounded = new BoundedStream(input, packed);
+            Stream bounded = new BoundedStream(input, packed);
+            TrickleStream? trickle = null;
+
+            if (method == Deflated)
+            {
+                // Only the JSON may be deflated (S1), so its packed bytes are small: they are read first (past the cap plus
+                // room for deflate's own overhead the file is too large), then fed to the inflater one byte at a time, so
+                // what it leaves unread after the end of its stream is known exactly (review N1: junk after the data).
+                if (packed > cap + (64 * 1024))
+                {
+                    throw Refuse(OwnMemoryFileProblem.TooLarge);
+                }
+
+                var packedBytes = new byte[packed];
+                bounded.ReadExactly(packedBytes);
+                bounded = trickle = new TrickleStream(packedBytes);
+            }
+
             using var output = new MemoryStream();
             var buffer = new byte[81920];
 
-            using (var data = method == Deflated ? new DeflateStream(bounded, CompressionMode.Decompress, leaveOpen: true) : (Stream)bounded)
+            using (var data = method == Deflated ? new DeflateStream(bounded, CompressionMode.Decompress, leaveOpen: true) : bounded)
             {
                 int read;
 
@@ -215,9 +253,56 @@ namespace Chatcheology.Mobile.OwnMemories
                 }
             }
 
-            // Whatever the deflate stream left of the packed bytes is read past (it is counted in the file's bytes).
-            bounded.Drain();
+            // Packed bytes the deflate stream did not use are junk after its data: the file is damaged.
+            if (trickle is not null && trickle.Left > 0)
+            {
+                throw Refuse(OwnMemoryFileProblem.Damaged);
+            }
+
             return output.ToArray();
+        }
+
+        /// <summary>A packed entry in memory, handed out one byte per read so the inflater never reads past its own end.</summary>
+        private sealed class TrickleStream(byte[] bytes) : Stream
+        {
+            private int _position;
+
+            internal int Left => bytes.Length - _position;
+
+            public override bool CanRead => true;
+
+            public override bool CanSeek => false;
+
+            public override bool CanWrite => false;
+
+            public override long Length => throw new NotSupportedException();
+
+            public override long Position
+            {
+                get => throw new NotSupportedException();
+                set => throw new NotSupportedException();
+            }
+
+            public override int Read(byte[] buffer, int offset, int count)
+            {
+                if (count == 0 || _position >= bytes.Length)
+                {
+                    return 0;
+                }
+
+                buffer[offset] = bytes[_position++];
+                return 1;
+            }
+
+            public override void Flush()
+            {
+            }
+
+            public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+
+            public override void SetLength(long value) => throw new NotSupportedException();
+
+            public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
         }
 
         private static void ReadCentral(LimitedStream input, uint signature, Entry entry)
@@ -244,6 +329,12 @@ namespace Chatcheology.Mobile.OwnMemories
             var commentLength = BinaryPrimitives.ReadUInt16LittleEndian(header.AsSpan(28));
             var disk = BinaryPrimitives.ReadUInt16LittleEndian(header.AsSpan(30));
             var offset = BinaryPrimitives.ReadUInt32LittleEndian(header.AsSpan(38));
+
+            if (nameLength != entry.Name.Length)
+            {
+                throw Refuse(OwnMemoryFileProblem.Damaged);
+            }
+
             var name = input.ReadBytes(nameLength);
             var extra = input.ReadBytes(extraLength);
             input.Skip(commentLength);

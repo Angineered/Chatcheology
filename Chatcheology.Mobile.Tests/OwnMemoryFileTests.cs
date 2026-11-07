@@ -300,10 +300,94 @@ namespace Chatcheology.Mobile.Tests
 
             AssertRefused(bomb, OwnMemoryFileProblem.TooLarge);
 
-            // Counted against the total too, not only per entry.
+            // Counted against the total too, not only per entry (photos are stored, review S1).
             var photos = Enumerable.Range(0, 3).Select(i => new byte[5_000_000]).Select((b, i) => { b[0] = (byte)i; return b; }).ToArray();
-            var many = RawZip([.. photos.Select(b => new RawEntry(OwnMemoryFile.PhotoPrefix + Hash(b) + ".png", b) { Deflate = true })]);
+            var many = RawZip([.. photos.Select(b => new RawEntry(OwnMemoryFile.PhotoPrefix + Hash(b) + ".png", b))]);
             AssertRefused(many, OwnMemoryFileProblem.TooLarge, new OwnMemoryFileLimits { MaxTotalBytes = 12_000_000 });
+        }
+
+        // ---------------------------------------------------------------- Step 3 review fixes
+
+        [Fact]
+        public void A_lone_surrogate_escape_in_the_format_an_id_a_title_or_the_mutes_refuses_the_file_as_damaged()
+        {
+            const string Lone = "a\\ud800b";
+            var good = Encoding.UTF8.GetString(Json([Memory(title: "TITLE-HERE", idText: "ID-HERE")]));
+            var id = Guid.NewGuid().ToString("D");
+
+            foreach (var text in new[]
+            {
+                good.Replace("TITLE-HERE", Lone, StringComparison.Ordinal).Replace("ID-HERE", id, StringComparison.Ordinal),
+                good.Replace("ID-HERE", Lone, StringComparison.Ordinal),
+                good.Replace("ID-HERE", id, StringComparison.Ordinal).Replace("\"muted\":[]", "\"muted\":[\"" + Lone + "\"]", StringComparison.Ordinal),
+                good.Replace("ID-HERE", id, StringComparison.Ordinal).Replace("chatcheology-own-memories", Lone, StringComparison.Ordinal),
+                good.Replace("ID-HERE", id, StringComparison.Ordinal).Replace("\"photos\":[]", "\"photos\":[{\"file\":\"" + Lone + "\"}]", StringComparison.Ordinal),
+            })
+            {
+                Assert.Contains("\\ud800", text, StringComparison.Ordinal);
+                AssertRefused(Zip((OwnMemoryFile.JsonName, Encoding.UTF8.GetBytes(text))), OwnMemoryFileProblem.Damaged);
+            }
+
+            Assert.Equal(
+                "This file couldn't be loaded: it is damaged or was changed. Nothing was changed.",
+                OwnMemoryFile.LoadMessageFor(OwnMemoryFileProblem.Damaged));
+        }
+
+        [Fact]
+        public void A_deflated_photo_entry_refuses_the_file_as_not_supported_and_a_stored_one_loads()
+        {
+            var photo = SyntheticImage.Png(4, 4, (1, 2, 3), (4, 5, 6));
+            var name = PhotoName(photo, "png");
+            var json = new RawEntry(OwnMemoryFile.JsonName, Json([Memory(photos: [(name[7..], null)])])) { Deflate = true };
+
+            AssertRefused(RawZip(new RawEntry(name, photo) { Deflate = true }, json), OwnMemoryFileProblem.NotSupported);
+
+            // An ignored entry may be deflated: it is never unpacked.
+            var ignored = new RawEntry("notes.txt", "invented"u8.ToArray()) { Deflate = true };
+            Assert.Equal(new OwnMemoryLoadResult(1, 0, 0, 0, 1, 1), OwnMemoryFile.Load(_target, new MemoryStream(RawZip(new RawEntry(name, photo), ignored, json))));
+        }
+
+        [Fact]
+        public void An_entry_name_longer_than_255_bytes_refuses_the_file_as_damaged()
+        {
+            var json = new RawEntry(OwnMemoryFile.JsonName, Json([Memory()])) { Deflate = true };
+
+            AssertRefused(RawZip(new RawEntry(new string('n', 256), [1]), json), OwnMemoryFileProblem.Damaged);
+            AssertRefused(RawZip(new RawEntry(new string('n', 65_535), [1]), json), OwnMemoryFileProblem.Damaged);
+
+            // 255 is read (and ignored, not being a name of the format).
+            Assert.Equal(1, OwnMemoryFile.Load(_target, new MemoryStream(RawZip(new RawEntry(new string('n', 255), [1]), json))).Ignored);
+        }
+
+        [Fact]
+        public void Bytes_after_the_end_of_a_deflated_entrys_data_are_damage()
+        {
+            var json = Json([Memory()]);
+
+            AssertRefused(RawZip(new RawEntry(OwnMemoryFile.JsonName, json) { Deflate = true, Junk = new byte[5000] }), OwnMemoryFileProblem.Damaged);
+            AssertRefused(RawZip(new RawEntry(OwnMemoryFile.JsonName, json) { Deflate = true, Junk = [0x42] }), OwnMemoryFileProblem.Damaged);
+            Assert.Equal(1, OwnMemoryFile.Load(_target, new MemoryStream(RawZip(new RawEntry(OwnMemoryFile.JsonName, json) { Deflate = true }))).Added);
+        }
+
+        [Theory]
+        [InlineData("2", OwnMemoryFileProblem.NewerVersion)]
+        [InlineData("2.0", OwnMemoryFileProblem.NewerVersion)]
+        [InlineData("1.5", OwnMemoryFileProblem.NewerVersion)]
+        [InlineData("99999999999", OwnMemoryFileProblem.NewerVersion)]
+        [InlineData("1e400", OwnMemoryFileProblem.NewerVersion)]
+        [InlineData("1.0", OwnMemoryFileProblem.NotAMemoriesFile)]
+        [InlineData("1e0", OwnMemoryFileProblem.NotAMemoriesFile)]
+        [InlineData("\"1\"", OwnMemoryFileProblem.NotAMemoriesFile)]
+        [InlineData("0", OwnMemoryFileProblem.NotAMemoriesFile)]
+        [InlineData("-1e400", OwnMemoryFileProblem.NotAMemoriesFile)]
+        [InlineData("null", OwnMemoryFileProblem.NotAMemoriesFile)]
+        public void A_version_above_1_in_any_number_form_is_newer_and_anything_but_the_integer_1_otherwise_is_not_a_memories_file(
+            string version, OwnMemoryFileProblem problem)
+        {
+            var json = Encoding.UTF8.GetString(Json([Memory()])).Replace("\"version\":1", "\"version\":" + version, StringComparison.Ordinal);
+            Assert.Contains("\"version\":" + version, json, StringComparison.Ordinal);
+
+            AssertRefused(Zip((OwnMemoryFile.JsonName, Encoding.UTF8.GetBytes(json))), problem);
         }
 
         [Fact]
@@ -734,6 +818,9 @@ namespace Chatcheology.Mobile.Tests
 
             public byte[] Extra { get; init; } = [];
 
+            /// <summary>Bytes after the (packed) data, inside the packed size.</summary>
+            public byte[] Junk { get; init; } = [];
+
             public string? CentralName { get; init; }
         }
 
@@ -758,6 +845,7 @@ namespace Chatcheology.Mobile.Tests
                     packed = buffer.ToArray();
                 }
 
+                packed = [.. packed, .. entry.Junk];
                 var method = entry.Method ?? (ushort)(entry.Deflate ? 8 : 0);
                 var crc = entry.Crc ?? PhotoRebuild.Crc32(entry.Data);
                 var size = entry.ClaimedSize ?? (uint)entry.Data.Length;

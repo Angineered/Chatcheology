@@ -349,6 +349,7 @@ namespace Chatcheology.Mobile.OwnMemories
                     source,
                     limits,
                     name => name == JsonName ? limits.MaxJsonBytes : IsPhotoEntryName(name) ? limits.MaxPhotoBytes : null,
+                    name => name == JsonName,
                     (name, data) =>
                     {
                         if (name == JsonName)
@@ -367,7 +368,20 @@ namespace Chatcheology.Mobile.OwnMemories
                     throw new OwnMemoryFileException(OwnMemoryFileProblem.NotAMemoriesFile);
                 }
 
-                var (candidates, muted, refused) = Parse(json, photos, limits);
+                (IReadOnlyList<LoadCandidate> Candidates, IReadOnlySet<Guid> Muted, int Refused) parsed;
+
+                try
+                {
+                    parsed = Parse(json, photos, limits);
+                }
+                catch (Exception exception) when (exception is not OwnMemoryFileException)
+                {
+                    // Step 3 review M1: anything the JSON reader throws on text it accepted (a lone surrogate escape makes
+                    // GetString throw InvalidOperationException) is a damaged file, never a silent failure.
+                    throw new OwnMemoryFileException(OwnMemoryFileProblem.Damaged);
+                }
+
+                var (candidates, muted, refused) = parsed;
                 var commit = store.CommitLoad(candidates, muted, stage);
 
                 return commit with { Refused = refused, Ignored = ignored };
@@ -439,16 +453,23 @@ namespace Chatcheology.Mobile.OwnMemories
                     || format.ValueKind != JsonValueKind.String
                     || format.GetString() != FormatName
                     || !root.TryGetProperty("version", out var versionElement)
-                    || versionElement.ValueKind != JsonValueKind.Number
-                    || !versionElement.TryGetInt32(out var version)
-                    || version < 1)
+                    || versionElement.ValueKind != JsonValueKind.Number)
                 {
                     throw new OwnMemoryFileException(OwnMemoryFileProblem.NotAMemoriesFile);
                 }
 
-                if (version > FormatVersion)
+                // Step 3 review N2: any number above this version (however large, or written as 2.0) is a newer version;
+                // only the plain integer 1 is this one; anything else (0, 1.0, 1.5, a string) is not a memories file.
+                if (versionElement.TryGetDouble(out var number)
+                        ? number > FormatVersion
+                        : !versionElement.GetRawText().StartsWith('-'))
                 {
                     throw new OwnMemoryFileException(OwnMemoryFileProblem.NewerVersion);
+                }
+
+                if (versionElement.GetRawText() != FormatVersion.ToString(CultureInfo.InvariantCulture))
+                {
+                    throw new OwnMemoryFileException(OwnMemoryFileProblem.NotAMemoriesFile);
                 }
 
                 if (!root.TryGetProperty("memories", out var list) || list.ValueKind != JsonValueKind.Array)

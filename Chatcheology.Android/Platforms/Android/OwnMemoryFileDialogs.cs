@@ -1,7 +1,6 @@
 using System.Diagnostics;
 using Android.Provider;
 using Chatcheology.Mobile.OwnMemories;
-using Microsoft.Data.Sqlite;
 
 namespace Chatcheology.Android
 {
@@ -91,9 +90,10 @@ namespace Chatcheology.Android
                 AppState.LogTiming("own-memories-loaded", watch.Elapsed, "status=refused problem=" + refused.Problem);
                 return (OwnMemoryFile.LoadMessageFor(refused.Problem), false);
             }
-            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or SqliteException
-                or OwnMemoriesStoreException or OwnMemoryValidationException or Java.Lang.Exception)
+            catch (Exception exception)
             {
+                // Step 3 review M1: whatever else goes wrong (I/O, the store, or anything unforeseen) is said, never silent.
+                // Load has already removed its stage, and a failure before its commit changes nothing.
                 AppState.LogTiming("own-memories-loaded", watch.Elapsed, "status=failed " + exception.GetType().Name);
                 return ("This file couldn't be loaded. Nothing was changed.", false);
             }
