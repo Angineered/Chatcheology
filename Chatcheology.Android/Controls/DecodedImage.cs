@@ -152,7 +152,7 @@ namespace Chatcheology.Android.Controls
         /// </remarks>
         private void OnThemeChanged(object? sender, AppThemeChangedEventArgs e)
         {
-            if (VirtualView is null || !IsAlive(_frame))
+            if (((IElementHandler)this).VirtualView is null || !IsAlive(_frame))
             {
                 Unsubscribe();
                 return;
@@ -223,7 +223,7 @@ namespace Chatcheology.Android.Controls
 
                     frame.Post(() =>
                     {
-                        if (generation != _generation || VirtualView is null)
+                        if (generation != _generation || ((IElementHandler)this).VirtualView is null)
                         {
                             return;
                         }
