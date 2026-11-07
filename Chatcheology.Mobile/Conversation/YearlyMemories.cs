@@ -11,7 +11,12 @@ namespace Chatcheology.Mobile.Conversation
     /// <param name="EntryID">The memory's entry.</param>
     /// <param name="Title">The title.</param>
     /// <param name="Start">Its own date, year included.</param>
-    public sealed record YearlyMemory(long EntryID, string Title, DateOnly Start);
+    /// <param name="Owner">Whose memory it is (CH-54): the archive's, or the phone owner's own (EntryID is then its row id).</param>
+    public sealed record YearlyMemory(long EntryID, string Title, DateOnly Start, MemoryOwner Owner = MemoryOwner.Archive)
+    {
+        /// <summary>The key of its memory row and details.</summary>
+        public MemoryKey Key => new(EntryID, null, Owner);
+    }
 
     /// <summary>One yearly memory as Settings lists it, with its mute switch.</summary>
     /// <param name="EntryID">The memory's entry.</param>
@@ -31,6 +36,15 @@ namespace Chatcheology.Mobile.Conversation
     /// <param name="ShowInChatDay">Its own date when that day has messages (details then offer Show in chat); otherwise none.</param>
     public sealed record YearlyToday(long EntryID, string Title, int? Years, DateOnly? ShowInChatDay)
     {
+        /// <summary>Whose memory it is (CH-54); an archive's unless said otherwise.</summary>
+        public MemoryOwner Owner { get; init; } = MemoryOwner.Archive;
+
+        /// <summary>What a tap opens: the memory's details by this key (never by <see cref="EntryID"/> alone, CH-54).</summary>
+        public MemoryKey Key => new(EntryID, null, Owner);
+
+        /// <summary>Whether it is one of the phone owner's own memories.</summary>
+        public bool IsOwn => Owner == MemoryOwner.Own;
+
         /// <summary>The cover thumbnail: the memory's first photo whose file is there, as its memory card draws; or none.</summary>
         public string? ImagePath { get; init; }
 
@@ -111,27 +125,32 @@ namespace Chatcheology.Mobile.Conversation
         }
 
         /// <summary>
-        /// Today's yearly memories, by title. <paramref name="days"/> are the days with messages (for Show in
-        /// chat); <paramref name="index"/> gives the cover thumbnail and gallery links, when there is one.
+        /// Today's yearly memories: the archive's by title, then the phone owner's own by title (CH-54).
+        /// <paramref name="days"/> are the days with messages (for Show in chat); <paramref name="index"/> gives an
+        /// archive memory's cover thumbnail and gallery links and <paramref name="ownIndex"/> an own memory's, when
+        /// there is one.
         /// </summary>
         public static IReadOnlyList<YearlyToday> For(
-            IEnumerable<YearlyMemory> memories, IReadOnlySet<DateOnly> days, DateOnly today, MemoryIndex? index = null)
+            IEnumerable<YearlyMemory> memories, IReadOnlySet<DateOnly> days, DateOnly today, MemoryIndex? index = null, MemoryIndex? ownIndex = null)
         {
             ArgumentNullException.ThrowIfNull(memories);
             ArgumentNullException.ThrowIfNull(days);
 
             return memories
                 .Where(memory => ShowsOn(memory.Start, today))
-                .Select(memory => new YearlyToday(
-                    memory.EntryID,
-                    memory.Title,
-                    YearsOn(memory.Start, today),
-                    days.Contains(memory.Start) ? memory.Start : null)
+                .Select(memory => (Memory: memory, Index: memory.Owner == MemoryOwner.Own ? ownIndex : index))
+                .Select(pair => new YearlyToday(
+                    pair.Memory.EntryID,
+                    pair.Memory.Title,
+                    YearsOn(pair.Memory.Start, today),
+                    days.Contains(pair.Memory.Start) ? pair.Memory.Start : null)
                 {
-                    ImagePath = index?.CoverOf(memory.EntryID),
-                    Galleries = index?.GalleriesOf(memory.EntryID) ?? [],
+                    Owner = pair.Memory.Owner,
+                    ImagePath = pair.Index?.CoverOf(pair.Memory.EntryID),
+                    Galleries = pair.Index?.GalleriesOf(pair.Memory.EntryID) ?? [],
                 })
-                .OrderBy(memory => memory.Title, StringComparer.CurrentCultureIgnoreCase)
+                .OrderBy(memory => memory.Owner)
+                .ThenBy(memory => memory.Title, StringComparer.CurrentCultureIgnoreCase)
                 .ThenBy(memory => memory.EntryID)
                 .ToList();
         }

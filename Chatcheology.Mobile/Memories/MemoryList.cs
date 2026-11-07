@@ -40,6 +40,12 @@ namespace Chatcheology.Mobile.Memories
         public bool HasImage => ImagePath is not null;
 
         /// <summary>
+        /// Whether it is one of the phone owner's own memories (CH-54; the screen marks it "Mine"). Own memories are
+        /// always in the <see cref="MemoryList.PersonalGroup"/>, never in a collection's group or Group by Title.
+        /// </summary>
+        public bool IsOwn => Key.Owner == MemoryOwner.Own;
+
+        /// <summary>
         /// The row's plain second line: the date for a memory, "date · times · label" for a period, empty for a
         /// "different times" row (whose line is muted). Made once, when the list is built.
         /// </summary>
@@ -128,12 +134,14 @@ namespace Chatcheology.Mobile.Memories
         private const string DifferentTimesText = "at different times";
 
         private readonly MemoryIndex _index;
+        private readonly MemoryIndex _own;
         private readonly List<MemoryListItem> _items;
         private readonly Dictionary<MemoryKey, MemoryListItem> _byKey;
 
-        private MemoryList(MemoryIndex index, List<MemoryListItem> items)
+        private MemoryList(MemoryIndex index, MemoryIndex own, List<MemoryListItem> items)
         {
             _index = index;
+            _own = own;
             _items = items;
             _byKey = items.ToDictionary(item => item.Key);
         }
@@ -164,31 +172,52 @@ namespace Chatcheology.Mobile.Memories
         /// Builds the list from <paramref name="index"/>. <paramref name="yearlyEntryIDs"/> are the archive's
         /// yearly memories that keep the rule (<see cref="YearlyMemories.From"/>); only those are marked.
         /// </summary>
-        public static MemoryList Build(MemoryIndex index, IReadOnlySet<long> yearlyEntryIDs, CancellationToken cancellationToken = default)
+        public static MemoryList Build(MemoryIndex index, IReadOnlySet<long> yearlyEntryIDs, CancellationToken cancellationToken = default) =>
+            Build(index, yearlyEntryIDs, MemoryIndex.Empty, new HashSet<long>(), cancellationToken);
+
+        /// <summary>
+        /// Builds the list from the archive's <paramref name="index"/> and the phone owner's own memories
+        /// (<paramref name="own"/>, CH-54), both under the Memories tab's group, each own row marked
+        /// <see cref="MemoryListItem.IsOwn"/>. <paramref name="ownYearlyEntryIDs"/> are the own yearly memories' row ids.
+        /// The two keep their own identifiers: the same number in both is two rows.
+        /// </summary>
+        public static MemoryList Build(
+            MemoryIndex index,
+            IReadOnlySet<long> yearlyEntryIDs,
+            MemoryIndex own,
+            IReadOnlySet<long> ownYearlyEntryIDs,
+            CancellationToken cancellationToken = default)
         {
             ArgumentNullException.ThrowIfNull(index);
             ArgumentNullException.ThrowIfNull(yearlyEntryIDs);
+            ArgumentNullException.ThrowIfNull(own);
+            ArgumentNullException.ThrowIfNull(ownYearlyEntryIDs);
 
             var items = new List<MemoryListItem>();
 
             // The days with messages are found here, in the background, not on the first Show in chat (UI thread).
             _ = index.HasMessagesOn(default);
+            _ = own.HasMessagesOn(default);
 
-            foreach (var (entry, key, time) in index.AllRows())
+            foreach (var (source, yearly) in new[] { (index, yearlyEntryIDs), (own, ownYearlyEntryIDs) })
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                items.Add(ItemOf(index, entry, key, time, yearlyEntryIDs));
+                foreach (var (entry, key, time) in source.AllRows())
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    items.Add(ItemOf(source, entry, key, time, yearly));
+                }
             }
 
             items.Sort((a, b) =>
             {
                 var compare = b.SortTime.CompareTo(a.SortTime);
+                compare = compare != 0 ? compare : a.Key.Owner.CompareTo(b.Key.Owner);
                 compare = compare != 0 ? compare : a.Key.EntryID.CompareTo(b.Key.EntryID);
 
                 return compare != 0 ? compare : (a.Key.PeriodIndex ?? -1).CompareTo(b.Key.PeriodIndex ?? -1);
             });
 
-            return new MemoryList(index, items);
+            return new MemoryList(index, own, items);
         }
 
         /// <summary>
@@ -254,13 +283,18 @@ namespace Chatcheology.Mobile.Memories
         /// <summary>
         /// Where Show in chat goes for a listed row, or <see langword="null"/> for no button: the row when it is
         /// visible in <paramref name="view"/> now; otherwise its day when that day has messages (not for a Month
-        /// memory, whose 1st is not its day); never in an archive without messages.
+        /// memory, whose 1st is not its day); never in an archive without messages. An own memory's row (CH-54) is
+        /// visible by <paramref name="ownView"/> (the My memories layer; none shown when not given).
         /// </summary>
-        public MemoryShowTarget? ShowInChat(MemoryKey key, MemoryView view, bool archiveHasMessages)
+        public MemoryShowTarget? ShowInChat(MemoryKey key, MemoryView view, bool archiveHasMessages, MemoryView? ownView = null)
         {
             ArgumentNullException.ThrowIfNull(view);
+            ownView ??= MemoryView.None;
 
-            if (!archiveHasMessages || !_byKey.TryGetValue(key, out var item) || _index.Entry(key.EntryID) is not { } entry)
+            var index = key.Owner == MemoryOwner.Own ? _own : _index;
+            view = key.Owner == MemoryOwner.Own ? ownView : view;
+
+            if (!archiveHasMessages || !_byKey.TryGetValue(key, out var item) || index.Entry(key.EntryID) is not { } entry)
             {
                 return null;
             }
@@ -278,7 +312,7 @@ namespace Chatcheology.Mobile.Memories
 
             var day = DateOnly.FromDateTime(item.SortTime);
 
-            return _index.HasMessagesOn(day) ? MemoryShowTarget.AtDay(day) : null;
+            return index.HasMessagesOn(day) ? MemoryShowTarget.AtDay(day) : null;
         }
 
         private static MemoryListItem ItemOf(MemoryIndex index, MemoryEntry entry, MemoryKey key, DateTime time, IReadOnlySet<long> yearlyEntryIDs)

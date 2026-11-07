@@ -121,14 +121,17 @@ namespace Chatcheology.Mobile.Tests
         [Fact]
         public void Yearly_memories_come_first_by_title_then_noted_dates_then_the_years()
         {
-            _settings.SetOwnNotedDates("hash", [new OwnNotedDate("o", "Own noted", 6, 1, null, null)]);
             YearlyMemory[] yearly = [Y(3, "Zulu memory", 2018, 6, 1), Y(1, "alpha memory", 2019, 6, 1), Y(2, "Mike memory", 2020, 6, 2)];
-            ArchiveNotedDate[] gifted = [new() { NotedDateID = 1, Title = "A gifted date", Month = 6, Day = 1, Year = 2017, Note = null }];
+            ArchiveNotedDate[] gifted =
+            [
+                new() { NotedDateID = 1, Title = "A gifted date", Month = 6, Day = 1, Year = 2017, Note = null },
+                new() { NotedDateID = 2, Title = "Another gifted", Month = 6, Day = 1, Year = null, Note = null },
+            ];
 
             var card = Card(D(2026, 6, 1), yearly, [D(2019, 6, 1), D(2021, 6, 1)], gifted);
 
             Assert.Equal(["alpha memory · 7 years", "Zulu memory · 8 years"], card.Yearly.Select(y => y.Text).ToList());
-            Assert.Equal(["A gifted date", "Own noted"], card.Noted.Select(n => n.Title).ToList());
+            Assert.Equal(["A gifted date", "Another gifted"], card.Noted.Select(n => n.Title).ToList());
             Assert.Equal([2019, 2021], card.Years.Select(y => y.Year).ToList());
 
             // Show in chat only when the memory's own day has messages.

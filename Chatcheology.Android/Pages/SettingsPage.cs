@@ -1,15 +1,22 @@
 using System.Globalization;
 using Chatcheology.Mobile.Conversation;
 using Chatcheology.Mobile.Memories;
+using Chatcheology.Mobile.OwnMemories;
+using Microsoft.Data.Sqlite;
 
 namespace Chatcheology.Android.Pages
 {
     /// <summary>
     /// Settings for the open archive: Me (a participant, the archive's choice by default, remembered per
     /// archive), On this day (on unless turned off, per archive; CH-39) with the noted-date notification time
-    /// (per app) and the noted dates (CH-47), Memories (one switch per layer, with filters for an imported one;
-    /// CH-42), Remove archive (after a confirmation) and About.
+    /// (per app) and the archive's noted dates and yearly memories (CH-47, CH-53; Notify switches only), Memories
+    /// (one switch per layer, with filters for an imported one; CH-42), My memories (per phone, for every archive;
+    /// CH-54), Remove archive (after a confirmation) and About.
     /// </summary>
+    /// <remarks>
+    /// The phone's own noted dates (Add / Edit / Delete here, CH-47) were removed by CH-54 step 2: the phone owner's own
+    /// memories replace them, with their own section.
+    /// </remarks>
     internal sealed class SettingsPage : ContentPage
     {
         private readonly ArchiveSession _session;
@@ -20,10 +27,36 @@ namespace Chatcheology.Android.Pages
         private readonly VerticalStackLayout _noted = new();
         private readonly Action _notedDatesChanged;
         private readonly VerticalStackLayout _notificationsOff = new() { Spacing = 4, IsVisible = false };
+        private readonly VerticalStackLayout _own = new() { Spacing = 10 };
+        private readonly OwnMemoryStore? _ownStore;
+        private readonly Func<Task> _layersChanged;
+        private readonly Func<Task> _ownChanged;
         private bool _loading;
+        private bool _revertingLayer;
 
-        internal SettingsPage(ArchiveSession session, Func<Task> meChanged, Func<Task> removeArchive, Action onThisDayChanged, Func<Task> layersChanged)
+        /// <summary>A save or load is running (CH-54 step 3): the file buttons and Delete all are off.</summary>
+        private bool _fileBusy;
+        private readonly Label _fileWorking = new Label { FontSize = 13, IsVisible = false }.TextIn("MutedText");
+
+        /// <param name="session">The open archive.</param>
+        /// <param name="ownStore">The phone owner's own memories (CH-54), or none: no My memories section.</param>
+        /// <param name="meChanged">"Me" was changed.</param>
+        /// <param name="removeArchive">Remove archive was confirmed.</param>
+        /// <param name="onThisDayChanged">On this day or a Notify switch changed.</param>
+        /// <param name="layersChanged">A memory layer or filter, or the My memories switch, changed.</param>
+        /// <param name="ownChanged">The own memories changed (Delete all): the conversation reads them again.</param>
+        internal SettingsPage(
+            ArchiveSession session,
+            OwnMemoryStore? ownStore,
+            Func<Task> meChanged,
+            Func<Task> removeArchive,
+            Action onThisDayChanged,
+            Func<Task> layersChanged,
+            Func<Task> ownChanged)
         {
+            _ownStore = ownStore;
+            _layersChanged = layersChanged;
+            _ownChanged = ownChanged;
             _session = session;
             _meChanged = meChanged;
             _remove = removeArchive;
@@ -65,6 +98,7 @@ namespace Chatcheology.Android.Pages
             RebuildNotedDates();
 
             var memories = MemoriesSection(session, layersChanged);
+            _ = RebuildOwnAsync();
 
             var remove = new Button { Text = "Remove archive…", TextColor = Colors.White, BackgroundColor = Color.FromArgb("#B3261E") };
             remove.Clicked += OnRemoveClicked;
@@ -90,6 +124,8 @@ namespace Chatcheology.Android.Pages
                         _noted,
 
                         memories,
+
+                        _own,
 
                         Heading("Remove archive"),
                         new Label { Text = "Deletes the app's copy of this archive. The folder you imported it from is not touched.", FontSize = 13 }.TextIn("MutedText"),
@@ -198,18 +234,25 @@ namespace Chatcheology.Android.Pages
 
         /// <summary>
         /// "Noted dates" (CH-47): the archive's yearly memories (CH-53) and gifted dates, each with a Notify switch
-        /// (neither can be edited or deleted here), then the phone's own, each with Edit and Delete (after a
-        /// confirmation), and Add.
+        /// (neither can be edited or deleted here). Shown only when the archive has any.
         /// </summary>
         private void RebuildNotedDates()
         {
             _noted.Children.Clear();
+
+            var listings = _session.NotedDateListings;
+            var gifted = listings.Where(date => date.IsGifted).ToList();
+            var yearly = _session.YearlyMemoryListings;
+
+            if (gifted.Count == 0 && yearly.Count == 0)
+            {
+                return;
+            }
+
             _noted.Add(new Label { Text = "Noted dates", FontSize = 15, FontAttributes = FontAttributes.Bold, Margin = new Thickness(0, 6, 0, 0) });
             _noted.Add(new Label { Text = "Days that matter to you, shown on the card every year and notified that morning. Notify off: no notification.", FontSize = 13 }.TextIn("MutedText"));
 
             // CH-53: the archive's yearly memories, each with a Notify switch of its own (its own settings key).
-            var yearly = _session.YearlyMemoryListings;
-
             if (yearly.Count > 0)
             {
                 _noted.Add(new Label { Text = "Yearly memories", FontSize = 13, FontAttributes = FontAttributes.Bold }.TextIn("MutedText"));
@@ -246,10 +289,6 @@ namespace Chatcheology.Android.Pages
                 _noted.Add(row);
             }
 
-            var listings = _session.NotedDateListings;
-            var gifted = listings.Where(date => date.IsGifted).ToList();
-            var own = listings.Where(date => !date.IsGifted).ToList();
-
             if (gifted.Count > 0)
             {
                 _noted.Add(new Label { Text = "From the archive", FontSize = 13, FontAttributes = FontAttributes.Bold }.TextIn("MutedText"));
@@ -276,53 +315,303 @@ namespace Chatcheology.Android.Pages
                 row.Add(toggle, 2);
                 _noted.Add(row);
             }
+        }
 
-            if (own.Count > 0)
+        /// <summary>
+        /// "My memories" (CH-54): per phone, the same in every archive. The layer switch (rebuilds the conversation like
+        /// any layer), the reminders switch, a Notify switch per own yearly memory, and Delete all my memories (asks
+        /// first; it cannot be undone), with Save to a file and Load from a file above it (CH-54 step 3). The store is read
+        /// off the UI thread (step 2 review N3). Never throws.
+        /// </summary>
+        private async Task RebuildOwnAsync()
+        {
+            try
             {
-                _noted.Add(new Label { Text = "Added on this phone", FontSize = 13, FontAttributes = FontAttributes.Bold }.TextIn("MutedText"));
+                if (_ownStore is not { } store)
+                {
+                    _own.Children.Clear();
+                    return;
+                }
+
+                (IReadOnlyList<OwnYearlyMemoryListing> Yearly, bool Reminders, int Count)? read;
+
+                try
+                {
+                    read = await Task.Run(() => (OwnMemoryIndex.YearlyListings(store), store.Settings.RemindersOn, store.Count()));
+                }
+                catch (Exception exception) when (IsStoreFailure(exception))
+                {
+                    read = null;
+                }
+
+                BuildOwn(store, read);
+            }
+            catch (Exception)
+            {
+                // Settings stays open; the section shows what it had.
+            }
+        }
+
+        private void BuildOwn(OwnMemoryStore store, (IReadOnlyList<OwnYearlyMemoryListing> Yearly, bool Reminders, int Count)? read)
+        {
+            _own.Children.Clear();
+            _own.Add(Heading("My memories"));
+            _own.Add(new Label { Text = "Memories you add on this phone. They show in every archive on this phone and are never written into an archive.", FontSize = 13 }.TextIn("MutedText"));
+
+            if (read is not { } values)
+            {
+                _own.Add(new Label { Text = "Your memories could not be read just now.", FontSize = 13 }.TextIn("ErrorText"));
+                return;
             }
 
-            foreach (var date in own)
+            var (yearly, reminders, count) = values;
+
+            Switch? layerSwitch = null;
+            var layerRow = SwitchRow("Show my memories in the chat", 15, _session.OwnLayerShown, async on =>
             {
-                var edit = new Button { Text = "Edit", Padding = new Thickness(10, 0), HeightRequest = 36 };
-                var delete = new Button { Text = "Delete", Padding = new Thickness(10, 0), HeightRequest = 36 };
-                SemanticProperties.SetDescription(edit, "Edit " + date.Title);
-                SemanticProperties.SetDescription(delete, "Delete " + date.Title);
-                edit.Clicked += async (_, _) => await Navigation.PushAsync(new NotedDatePage(_session, date, () =>
+                if (_revertingLayer)
                 {
-                    RebuildNotedDates();
-                    _notedDatesChanged();
-                }));
-                delete.Clicked += async (_, _) =>
+                    return;
+                }
+
+                _session.OwnLayerShown = on;
+
+                if (_session.OwnLayerShown != on)
                 {
-                    if (await DisplayAlertAsync("Delete noted date", $"Delete \"{date.Title}\"?", "Delete", "Cancel"))
+                    // Not stored (the file was busy): the switch goes back, without storing again.
+                    _revertingLayer = true;
+                    layerSwitch!.IsToggled = !on;
+                    _revertingLayer = false;
+                    await DisplayAlertAsync("My memories", "That could not be changed just now. Try again.", "OK");
+                    return;
+                }
+
+                await _layersChanged();
+            });
+
+            layerSwitch = layerRow.Children.OfType<Switch>().Single();
+            SemanticProperties.SetDescription(layerSwitch, "Show my memories in the chat");
+            _own.Add(layerRow);
+
+            var remindersRow = SwitchRow("Remind me on the day of my yearly memories", 15, reminders, on =>
+            {
+                try
+                {
+                    store.Settings.RemindersOn = on;
+                }
+                catch (Exception exception) when (IsStoreFailure(exception))
+                {
+                    _ = RebuildOwnAsync();
+                    return Task.CompletedTask;
+                }
+
+                _ = NotedDateNotifier.UpdateAsync();
+                return Task.CompletedTask;
+            });
+
+            SemanticProperties.SetDescription(remindersRow.Children.OfType<Switch>().Single(), "Remind me on the day of my yearly memories");
+            _own.Add(remindersRow);
+
+            if (yearly.Count > 0)
+            {
+                _own.Add(new Label { Text = "Yearly memories", FontSize = 13, FontAttributes = FontAttributes.Bold }.TextIn("MutedText"));
+            }
+
+            foreach (var memory in yearly)
+            {
+                var toggle = new Switch { IsToggled = memory.Notify, VerticalOptions = LayoutOptions.Center }.Themed(Switch.OnColorProperty, "Primary");
+                SemanticProperties.SetDescription(toggle, "Notify for " + memory.Title);
+                toggle.Toggled += (_, e) =>
+                {
+                    try
                     {
-                        _session.DeleteOwnNotedDate(date.Id);
-                        RebuildNotedDates();
-                        _notedDatesChanged();
+                        store.Settings.SetMuted(memory.Id, !e.Value);
                     }
+                    catch (Exception exception) when (IsStoreFailure(exception))
+                    {
+                        _ = RebuildOwnAsync();
+                        return;
+                    }
+
+                    _ = NotedDateNotifier.UpdateAsync();
                 };
 
                 var row = new Grid
                 {
                     ColumnDefinitions = { new ColumnDefinition(GridLength.Star), new ColumnDefinition(GridLength.Auto), new ColumnDefinition(GridLength.Auto) },
-                    ColumnSpacing = 6,
+                    ColumnSpacing = 8,
                 };
 
-                row.Add(DateLabel(date), 0);
-                row.Add(edit, 1);
-                row.Add(delete, 2);
-                _noted.Add(row);
+                row.Add(new VerticalStackLayout
+                {
+                    Spacing = 0,
+                    VerticalOptions = LayoutOptions.Center,
+                    Children =
+                    {
+                        new Label { Text = memory.Title, FontSize = 15 },
+                        new Label { Text = memory.DateText, FontSize = 13 }.TextIn("MutedText"),
+                    },
+                }, 0);
+                row.Add(new Label { Text = "Notify", FontSize = 13, VerticalOptions = LayoutOptions.Center }.TextIn("MutedText"), 1);
+                row.Add(toggle, 2);
+                _own.Add(row);
             }
 
-            var add = new Button { Text = "Add a noted date" };
-            add.Clicked += async (_, _) => await Navigation.PushAsync(new NotedDatePage(_session, null, () =>
+            // CH-54 step 3: a file of the memories, to keep or to bring them to another phone.
+            _own.Add(new Label { Text = "Keep your memories in a file, or bring them back from one. Loading only adds memories that are not here yet.", FontSize = 13, Margin = new Thickness(0, 6, 0, 0) }.TextIn("MutedText"));
+
+            var save = new Button { Text = "Save to a file…", HorizontalOptions = LayoutOptions.Start, IsEnabled = count > 0 && !_fileBusy };
+            var load = new Button { Text = "Load from a file…", HorizontalOptions = LayoutOptions.Start, IsEnabled = !_fileBusy };
+            SemanticProperties.SetDescription(save, count > 0 ? "Save my memories to a file" : "Save my memories to a file, nothing to save yet");
+            SemanticProperties.SetDescription(load, "Load memories from a file");
+            save.Clicked += async (_, _) => await SaveToFileAsync(store);
+            load.Clicked += async (_, _) => await LoadFromFileAsync(store);
+            _own.Add(new HorizontalStackLayout { Spacing = 8, Children = { save, load } });
+            _own.Add(_fileWorking);
+
+            var deleteAll = new Button
             {
-                RebuildNotedDates();
-                _notedDatesChanged();
-            }));
-            _noted.Add(add);
+                Text = "Delete all my memories…",
+                TextColor = Colors.White,
+                BackgroundColor = Color.FromArgb("#B3261E"),
+                IsEnabled = count > 0 && !_fileBusy,
+            };
+
+            deleteAll.Clicked += async (_, _) => await DeleteAllAsync(store);
+            _own.Add(deleteAll);
         }
+
+        /// <summary>
+        /// Save to a file (CH-54 step 3): one plain sentence first, then the system Save dialog; the result in counts.
+        /// Never throws.
+        /// </summary>
+        private async Task SaveToFileAsync(OwnMemoryStore store)
+        {
+            if (_fileBusy || Navigation.NavigationStack.LastOrDefault() != this)
+            {
+                return;
+            }
+
+            try
+            {
+                if (!await DisplayAlertAsync("Save to a file", OwnMemoryFile.SaveWarning, "Save", "Cancel"))
+                {
+                    return;
+                }
+
+                await WhileWorkingAsync("Saving your memories…", async () =>
+                {
+                    if (await OwnMemoryFileDialogs.SaveAsync(store) is { } message)
+                    {
+                        await DisplayAlertAsync("Save to a file", message, "OK");
+                    }
+                });
+            }
+            catch (Exception)
+            {
+                // A button handler: nothing here may end the app.
+            }
+        }
+
+        /// <summary>
+        /// Load from a file (CH-54 step 3): what it does to deleted memories first, then the system Open dialog; the result
+        /// in counts, and everything refreshed as after a save. Never throws.
+        /// </summary>
+        private async Task LoadFromFileAsync(OwnMemoryStore store)
+        {
+            if (_fileBusy || Navigation.NavigationStack.LastOrDefault() != this)
+            {
+                return;
+            }
+
+            try
+            {
+                if (!await DisplayAlertAsync("Load from a file", OwnMemoryFile.LoadWarning, "Load", "Cancel"))
+                {
+                    return;
+                }
+
+                await WhileWorkingAsync("Loading memories…", async () =>
+                {
+                    if (await OwnMemoryFileDialogs.LoadAsync(store) is not { } outcome)
+                    {
+                        return;
+                    }
+
+                    if (outcome.Added)
+                    {
+                        await _ownChanged();
+                    }
+
+                    await DisplayAlertAsync("Load from a file", outcome.Message, "OK");
+                });
+            }
+            catch (Exception)
+            {
+                // A button handler: nothing here may end the app.
+            }
+        }
+
+        /// <summary>Runs <paramref name="work"/> with the file buttons off and a line saying what is happening, then reads the section again.</summary>
+        private async Task WhileWorkingAsync(string text, Func<Task> work)
+        {
+            _fileBusy = true;
+            _fileWorking.Text = text;
+            _fileWorking.IsVisible = true;
+            await RebuildOwnAsync();
+
+            try
+            {
+                await work();
+            }
+            finally
+            {
+                _fileBusy = false;
+                _fileWorking.IsVisible = false;
+                await RebuildOwnAsync();
+            }
+        }
+
+        private async Task DeleteAllAsync(OwnMemoryStore store)
+        {
+            try
+            {
+                if (_fileBusy
+                    || !await DisplayAlertAsync(
+                        "Delete all my memories",
+                        "Delete every memory you added on this phone, with their photos? This can't be undone.",
+                        "Delete all",
+                        "Cancel"))
+                {
+                    return;
+                }
+
+                var deleted = await Task.Run(store.DeleteAll);
+                AppState.LogTiming("own-memories-deleted-all", TimeSpan.Zero, $"deleted={deleted}");
+
+                await _ownChanged();
+                await RebuildOwnAsync();
+            }
+            catch (Exception exception) when (IsStoreFailure(exception))
+            {
+                await DisplayAlertAsync("Delete all my memories", "Your memories could not be deleted. Try again.", "OK");
+            }
+            catch (Exception)
+            {
+                // Step 2 review N4: anything else from the refresh is reported, never the end of the app.
+                try
+                {
+                    await DisplayAlertAsync("Delete all my memories", "Something went wrong. Open Settings again to see your memories.", "OK");
+                }
+                catch (Exception)
+                {
+                    // The page may be gone.
+                }
+            }
+        }
+
+        private static bool IsStoreFailure(Exception exception) =>
+            exception is OwnMemoriesStoreException or SqliteException or IOException or UnauthorizedAccessException;
 
         /// <summary>The title and date and, with gallery links (CH-48), "Link · host" or "N links" to open them.</summary>
         private View DateLabel(NotedDateListing date)

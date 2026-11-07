@@ -6,6 +6,7 @@ using Chatcheology.Archive;
 using Chatcheology.Mobile.Conversation;
 using Chatcheology.Mobile.Gallery;
 using Chatcheology.Mobile.Memories;
+using Chatcheology.Mobile.OwnMemories;
 using Chatcheology.Mobile.Presentation;
 using Microsoft.Data.Sqlite;
 using Microsoft.Maui.Platform;
@@ -28,6 +29,11 @@ namespace Chatcheology.Android.Pages
     /// <para>The Saved icon (CH-59), for an archive with messages or memories, opens one screen with tabs: Starred,
     /// Memories and one per imported collection (CH-38, CH-56). Every memory is listed whatever the layers say, each
     /// opening its details over the list.</para>
+    /// <para>The phone owner's own memories (CH-54 step 2): added from the overflow menu ("Add a memory", today), from a
+    /// day heading's long press ("Add a memory on this day") or from the Saved screen's Memories tab; edited and deleted
+    /// from their details. After every save or delete the own memories are read again
+    /// (<see cref="ArchiveSession.RefreshOwnMemories"/>): On this day, the Saved icon and the alarm always follow, and the
+    /// timeline and calendar are rebuilt at the same place when the visible own rows changed.</para>
     /// </remarks>
     public partial class ConversationPage : ContentPage
     {
@@ -49,11 +55,16 @@ namespace Chatcheology.Android.Pages
         private IReadOnlyList<DateOnly>? _days;
         private OnThisDay? _onThisDay;
         private ToolbarItem? _onThisDayIcon;
+        private ToolbarItem? _photosIcon;
+        private ToolbarItem? _savedIcon;
         private int _layersVersion;
         private readonly bool _showOnThisDay;
 
         /// <summary>Whether the page has begun closing its archive: nothing more is read.</summary>
         private bool _closed => _gate.IsClosed;
+
+        /// <summary>An own memory form is being opened (step 2 review N1): further taps on "+", Edit or Add a memory wait.</summary>
+        private bool _openingForm;
 
         /// <summary>
         /// A page over a conversation the caller opened off the UI thread. The page owns the session from
@@ -96,13 +107,15 @@ namespace Chatcheology.Android.Pages
 
             if (!_session.IsEmpty)
             {
-                ToolbarItems.Add(new ToolbarItem("Photos", "toolbar_photos.png", () => _ = OpenGalleryAsync()));
+                _photosIcon = new ToolbarItem("Photos", "toolbar_photos.png", () => _ = OpenGalleryAsync());
+                ToolbarItems.Add(_photosIcon);
             }
 
             // CH-59: stars and every memory on one screen, whatever the layer switches say.
             if (_session.HasSaved)
             {
-                ToolbarItems.Add(new ToolbarItem("Saved", "toolbar_saved.png", () => _ = OpenSavedAsync()));
+                _savedIcon = SavedIcon();
+                ToolbarItems.Add(_savedIcon);
             }
 
             if (_session.CanPickDate)
@@ -113,6 +126,12 @@ namespace Chatcheology.Android.Pages
             if (_session.CanSearch)
             {
                 ToolbarItems.Add(new ToolbarItem("Search", "toolbar_search.png", () => _ = OpenSearchAsync()));
+            }
+
+            // CH-54: a memory of the phone owner's own, starting today; also offered before any exists.
+            if (_session.HasOwnStore)
+            {
+                ToolbarItems.Add(new ToolbarItem("Add a memory", null, () => _ = AddOwnMemoryAsync(OnThisDay.TodayFrom(TimeProvider.System))) { Order = ToolbarItemOrder.Secondary });
             }
 
             ToolbarItems.Add(new ToolbarItem("Settings", null, () => _ = OpenSettingsAsync()) { Order = ToolbarItemOrder.Secondary });
@@ -134,6 +153,7 @@ namespace Chatcheology.Android.Pages
             MessageLongPress.Pressed += OnMessageLongPressed;
             AttachmentCardView.PlayFailed += OnPlayFailed;
             AudioPlayback.Failed += OnPlayFailed;
+            DaySeparator.Pressed += OnDayLongPressed;
             _session.Stars.Changed += OnStarsChanged;
         }
 
@@ -204,6 +224,7 @@ namespace Chatcheology.Android.Pages
             MessageLongPress.Pressed -= OnMessageLongPressed;
             AttachmentCardView.PlayFailed -= OnPlayFailed;
             AudioPlayback.Failed -= OnPlayFailed;
+            DaySeparator.Pressed -= OnDayLongPressed;
             _session.Stars.Changed -= OnStarsChanged;
             AudioPlayback.Stop();
 
@@ -473,7 +494,8 @@ namespace Chatcheology.Android.Pages
                 return false;
             }
 
-            if (_session.Memories.Layout(_session.MemoryView).Find(key) is null)
+            // Every visible row, the archive's and the own ones (CH-54: an own key is never looked up among the archive's).
+            if (_session.VisibleMemoryLayout().Find(key) is null)
             {
                 await DisplayAlertAsync("Memories", "That memory is not shown now: its layer or filter is off in Settings.", "OK");
                 return false;
@@ -777,14 +799,15 @@ namespace Chatcheology.Android.Pages
         {
             if (_closed
                 || Navigation.NavigationStack.LastOrDefault() != this
-                || _session.MemoryDetails(new MemoryKey(yearly.EntryID, null)) is not { } details)
+                || _session.MemoryDetails(yearly.Key) is not { } details)
             {
                 return;
             }
 
+            // The yearly memory's own key (CH-54): an own one with row id N is never the archive's entry N.
             Func<Task>? showInChat = yearly.ShowInChatDay is { } day ? () => ShowDayAsync(day) : null;
 
-            await Navigation.PushAsync(new MemoryDetailsPage(details, _state.Library.ArchivesFolder, ShowMessageAsync, ShowEntryAsync, showInChat));
+            await Navigation.PushAsync(new MemoryDetailsPage(details, _state.ShareRoots, ShowMessageAsync, ShowEntryAsync, showInChat, OwnActionsFor(yearly.Key)));
         }
 
         /// <summary>Show in chat from a yearly memory's details: back to this page, at that day; the card goes once there.</summary>
@@ -942,7 +965,7 @@ namespace Chatcheology.Android.Pages
 
             Func<Task>? showInChat = _session.MemoryShowInChat(list, key) is { } target ? () => ShowMemoryInChatAsync(target) : null;
 
-            await Navigation.PushAsync(new MemoryDetailsPage(details, _state.Library.ArchivesFolder, ShowMessageAsync, ShowEntryAsync, showInChat));
+            await Navigation.PushAsync(new MemoryDetailsPage(details, _state.ShareRoots, ShowMessageAsync, ShowEntryAsync, showInChat, OwnActionsFor(key)));
         }
 
         /// <summary>
@@ -1023,7 +1046,8 @@ namespace Chatcheology.Android.Pages
                 return;
             }
 
-            await Navigation.PushAsync(new SettingsPage(_session, OnMeChangedAsync, RemoveArchiveAsync, OnThisDayChanged, OnLayersChangedAsync));
+            await Navigation.PushAsync(new SettingsPage(
+                _session, _session.HasOwnStore ? _state.OwnMemories : null, OnMeChangedAsync, RemoveArchiveAsync, OnThisDayChanged, OnLayersChangedAsync, () => OwnMemoriesChangedAsync()));
         }
 
         /// <summary>
@@ -1055,6 +1079,242 @@ namespace Chatcheology.Android.Pages
             return ReopenAsync(
                 timeline => at is { } sequence ? timeline.OpenAt(sequence) : timeline.OpenAtLatest(),
                 null);
+        }
+
+        // -----------------------------------------------------------------------------------------
+        // The phone owner's own memories (CH-54 step 2).
+        // -----------------------------------------------------------------------------------------
+
+        /// <summary>The Saved icon (CH-59).</summary>
+        private ToolbarItem SavedIcon() => new("Saved", "toolbar_saved.png", () => _ = OpenSavedAsync());
+
+        /// <summary>
+        /// The Saved icon follows <see cref="ArchiveSession.HasSaved"/> after a change: the first own memory in an archive
+        /// with no messages or memories turns it on; deleting the last one turns it off.
+        /// </summary>
+        private void UpdateSavedIcon()
+        {
+            if (_session.HasSaved && _savedIcon is null)
+            {
+                _savedIcon = SavedIcon();
+
+                var at = _photosIcon is not null && ToolbarItems.IndexOf(_photosIcon) is var photos and >= 0
+                    ? photos + 1
+                    : _onThisDayIcon is not null && ToolbarItems.Contains(_onThisDayIcon) ? 1 : 0;
+
+                ToolbarItems.Insert(Math.Min(at, ToolbarItems.Count), _savedIcon);
+            }
+            else if (!_session.HasSaved && _savedIcon is not null)
+            {
+                ToolbarItems.Remove(_savedIcon);
+                _savedIcon = null;
+            }
+        }
+
+        /// <summary>Edit and Delete for an own memory's details; none for an archive's memory.</summary>
+        private OwnMemoryActions? OwnActionsFor(MemoryKey key) =>
+            key.IsOwn && _session.HasOwnStore
+                ? new OwnMemoryActions(() => EditOwnMemoryAsync(key), () => DeleteOwnMemoryAsync(key))
+                : null;
+
+        /// <summary>A day heading was long-pressed: "Add a memory on this day".</summary>
+        private async void OnDayLongPressed(object? sender, DateSeparatorRow row)
+        {
+            if (_closed || !_session.HasOwnStore || Navigation.NavigationStack.LastOrDefault() != this)
+            {
+                return;
+            }
+
+            try
+            {
+                const string Add = "Add a memory on this day";
+
+                if (await DisplayActionSheetAsync(DateSeparatorRow.DayText(row.Day), "Cancel", null, Add) == Add)
+                {
+                    await AddOwnMemoryAsync(row.Day);
+                }
+            }
+            catch (Exception)
+            {
+                // A long-press handler: nothing here may end the app.
+            }
+        }
+
+        /// <summary>Opens the form for a new own memory starting on <paramref name="day"/>; after Save, back here or to Saved.</summary>
+        internal async Task AddOwnMemoryAsync(DateOnly day)
+        {
+            // Step 2 review N1: a second tap while the first form is still being pushed opens nothing.
+            if (_closed || _openingForm || !_session.HasOwnStore || Navigation.NavigationStack.LastOrDefault() is OwnMemoryPage)
+            {
+                return;
+            }
+
+            _openingForm = true;
+
+            try
+            {
+                OwnMemoryPage? form = null;
+                form = new OwnMemoryPage(_state.OwnMemories, new OwnMemoryForm(day), _ =>
+                    OwnMemoriesChangedAsync(() => PopAsync(form!)));
+
+                await Navigation.PushAsync(form);
+            }
+            finally
+            {
+                _openingForm = false;
+            }
+        }
+
+        /// <summary>Edit on an own memory's details: the form; after Save, the details shown again with what was saved.</summary>
+        private async Task EditOwnMemoryAsync(MemoryKey key)
+        {
+            if (_closed || _openingForm || Navigation.NavigationStack.LastOrDefault() is OwnMemoryPage)
+            {
+                return;
+            }
+
+            _openingForm = true;
+
+            try
+            {
+                await OpenEditFormAsync(key);
+            }
+            finally
+            {
+                _openingForm = false;
+            }
+        }
+
+        private async Task OpenEditFormAsync(MemoryKey key)
+        {
+            var details = Navigation.NavigationStack.LastOrDefault();
+            OwnMemory? memory;
+
+            try
+            {
+                memory = await Task.Run(() => _state.OwnMemories.List().FirstOrDefault(m => m.RowID == key.EntryID));
+            }
+            catch (Exception exception) when (exception is OwnMemoriesStoreException or SqliteException or IOException or UnauthorizedAccessException)
+            {
+                // Step 2 review N2: said, not swallowed by the button's catch-all.
+                await DisplayAlertAsync("Memories", "This memory could not be opened just now.", "OK");
+                return;
+            }
+
+            if (memory is null)
+            {
+                await DisplayAlertAsync("Memories", "This memory is no longer there.", "OK");
+                return;
+            }
+
+            OwnMemoryPage? form = null;
+            form = new OwnMemoryPage(_state.OwnMemories, new OwnMemoryForm(memory), stored =>
+                OwnMemoriesChangedAsync(async () =>
+                {
+                    // The form, then the details it was opened from (they show the old fields), then fresh details.
+                    await PopAsync(form!);
+
+                    if (details is MemoryDetailsPage)
+                    {
+                        await PopAsync(details);
+                    }
+
+                    await OpenMemoryDetailsAsync(new MemoryKey(stored.RowID, null, MemoryOwner.Own));
+                }));
+
+            await Navigation.PushAsync(form);
+        }
+
+        /// <summary>Delete on an own memory's details (already confirmed): deleted, the details closed, everything refreshed.</summary>
+        private async Task DeleteOwnMemoryAsync(MemoryKey key)
+        {
+            if (_closed)
+            {
+                return;
+            }
+
+            var details = Navigation.NavigationStack.LastOrDefault();
+
+            try
+            {
+                var deleted = await Task.Run(() =>
+                    _state.OwnMemories.List().FirstOrDefault(m => m.RowID == key.EntryID) is { } memory && _state.OwnMemories.Delete(memory.Id));
+
+                AppState.LogTiming("own-memory-deleted", TimeSpan.Zero, $"deleted={(deleted ? "yes" : "no")}");
+            }
+            catch (Exception exception) when (exception is OwnMemoriesStoreException or SqliteException or IOException or UnauthorizedAccessException)
+            {
+                await DisplayAlertAsync("Delete memory", "This memory could not be deleted. Try again.", "OK");
+                return;
+            }
+
+            await OwnMemoriesChangedAsync(async () =>
+            {
+                if (details is MemoryDetailsPage)
+                {
+                    await PopAsync(details);
+                }
+            });
+        }
+
+        /// <summary>Pops <paramref name="page"/> when it is the top page; otherwise removes it from the stack.</summary>
+        private async Task PopAsync(Page page)
+        {
+            if (Navigation.NavigationStack.LastOrDefault() == page)
+            {
+                await Navigation.PopAsync();
+            }
+            else if (Navigation.NavigationStack.Contains(page))
+            {
+                Navigation.RemovePage(page);
+            }
+        }
+
+        /// <summary>
+        /// The own memories changed (a save, a delete, Delete all): read them again, then On this day, the Saved icon and
+        /// the alarm follow; the timeline and calendar are rebuilt at the same place when the visible own rows changed
+        /// (<see cref="ArchiveSession.RefreshOwnMemories"/>). The Saved screen reads its list again when it reappears.
+        /// </summary>
+        /// <param name="thenNavigate">
+        /// Closes the form or the details once the memories are read again and before the rebuild, so a screen that
+        /// reappears (Saved) already finds the new list.
+        /// </param>
+        internal async Task OwnMemoriesChangedAsync(Func<Task>? thenNavigate = null)
+        {
+            if (_closed)
+            {
+                return;
+            }
+
+            bool rebuild;
+
+            try
+            {
+                rebuild = await Task.Run(_session.RefreshOwnMemories);
+            }
+            catch (ObjectDisposedException)
+            {
+                return;
+            }
+
+            if (_closed)
+            {
+                return;
+            }
+
+            UpdateSavedIcon();
+            OnThisDayChanged();
+            _ = NotedDateNotifier.UpdateAsync();
+
+            if (thenNavigate is not null)
+            {
+                await thenNavigate();
+            }
+
+            if (rebuild && !_session.IsEmpty)
+            {
+                await OnLayersChangedAsync();
+            }
         }
 
         /// <summary>Settings &gt; Remove archive, confirmed: closes the archive, deletes the app's copy, back to the start.</summary>
@@ -1133,7 +1393,7 @@ namespace Chatcheology.Android.Pages
 
             try
             {
-                await Navigation.PushAsync(new MemoryDetailsPage(details, _state.Library.ArchivesFolder, ShowMessageAsync, ShowEntryAsync));
+                await Navigation.PushAsync(new MemoryDetailsPage(details, _state.ShareRoots, ShowMessageAsync, ShowEntryAsync, own: OwnActionsFor(row.Key)));
             }
             catch (Exception)
             {

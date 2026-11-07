@@ -197,6 +197,17 @@ namespace Chatcheology.Mobile.Presentation
         }
 
         /// <summary>
+        /// True when <paramref name="fullPath"/> is a file inside one of <paramref name="folders"/> (<see cref="IsInside"/>):
+        /// the share roots, <c>files/archives/</c> and, for the phone owner's own memories (CH-54), <c>files/own/photos/</c>.
+        /// </summary>
+        public static bool IsInsideAny(string? fullPath, IEnumerable<string?> folders)
+        {
+            ArgumentNullException.ThrowIfNull(folders);
+
+            return folders.Any(folder => IsInside(fullPath, folder));
+        }
+
+        /// <summary>
         /// The shared copy's file name: "photo-" and <paramref name="unique"/>, with the source's extension in lower
         /// case (so the MIME type from <see cref="MediaMimeTypes"/> matches). Never the archive's own file name.
         /// </summary>
@@ -345,9 +356,111 @@ namespace Chatcheology.Mobile.Presentation
         /// and every byte after EOI (a second image, a gain map, a motion photo's video). False, with
         /// <paramref name="target"/> to be thrown away, when the data is not a complete JPEG.
         /// </summary>
-        public static bool WriteMainJpeg(ReadOnlySpan<byte> source, Stream target)
+        public static bool WriteMainJpeg(ReadOnlySpan<byte> source, Stream target) => WriteMain(source, target, orientationOnly: false);
+
+        /// <summary>
+        /// As <see cref="WriteMainJpeg"/>, but no Exif block is copied either (CH-54, D-37: an own memory photo is
+        /// stored without its location, with no Android code). In place of the first APP1 "Exif" block, a new
+        /// minimal one is written holding only its orientation (tag 274) when that is 2 to 8, so the photo still
+        /// shows the right way up; every other Exif tag (the GPS directory among them) is left out. Other segments
+        /// come from an allow-list (review S1): DQT, DHT, DAC, SOFn, DRI, SOS and its scan, RSTn, APP2 ICC, the
+        /// exact 12-byte APP14 Adobe block, and APP0 JFIF cut to its 14-byte header with no thumbnail. JPGn, DNL,
+        /// DHP, EXP, TEM and reserved markers are left out. A DRI that is not exactly 4 bytes refuses the photo.
+        /// <see cref="WriteMainJpeg"/> (CH-59 share) is unchanged.
+        /// </summary>
+        public static bool WriteMainJpegWithoutLocation(ReadOnlySpan<byte> source, Stream target) =>
+            WriteMain(source, target, orientationOnly: true);
+
+        /// <summary>
+        /// The EXIF orientation (tag 274) of IFD0 in a TIFF block (as inside an "Exif\0\0" APP1), or null when there
+        /// is none or it cannot be read.
+        /// </summary>
+        public static int? ReadOrientation(ReadOnlySpan<byte> tiff)
+        {
+            if (tiff.Length < 8)
+            {
+                return null;
+            }
+
+            var bigEndian = tiff[0] == (byte)'M' && tiff[1] == (byte)'M' && tiff[2] == 0 && tiff[3] == 42;
+            var littleEndian = tiff[0] == (byte)'I' && tiff[1] == (byte)'I' && tiff[2] == 42 && tiff[3] == 0;
+
+            if (!bigEndian && !littleEndian)
+            {
+                return null;
+            }
+
+            var offset = U32(tiff[4..], bigEndian);
+
+            if (offset < 8 || offset + 2 > (uint)tiff.Length)
+            {
+                return null;
+            }
+
+            var at = (int)offset;
+            var count = U16(tiff[at..], bigEndian);
+
+            for (var entry = 0; entry < count; entry++)
+            {
+                var start = at + 2 + (entry * 12);
+
+                if (start + 12 > tiff.Length)
+                {
+                    return null;
+                }
+
+                // Orientation: type SHORT (3), count 1, the value in the first two bytes of the value field.
+                if (U16(tiff[start..], bigEndian) == ImageOrientation.ExifTag
+                    && U16(tiff[(start + 2)..], bigEndian) == 3
+                    && U32(tiff[(start + 4)..], bigEndian) == 1)
+                {
+                    return U16(tiff[(start + 8)..], bigEndian);
+                }
+            }
+
+            return null;
+        }
+
+        /// <summary>An APP1 "Exif" block's data holding only an orientation: a big-endian TIFF with one IFD0 entry.</summary>
+        private static byte[] OrientationOnlyExif(int orientation)
+        {
+            var data = new byte[6 + 26];
+            "Exif\0\0"u8.CopyTo(data);
+            var t = data.AsSpan(6);
+            "MM"u8.CopyTo(t);
+            BinaryPrimitives.WriteUInt16BigEndian(t[2..], 42);
+            BinaryPrimitives.WriteUInt32BigEndian(t[4..], 8);
+            BinaryPrimitives.WriteUInt16BigEndian(t[8..], 1);
+            BinaryPrimitives.WriteUInt16BigEndian(t[10..], ImageOrientation.ExifTag);
+            BinaryPrimitives.WriteUInt16BigEndian(t[12..], 3);
+            BinaryPrimitives.WriteUInt32BigEndian(t[14..], 1);
+            BinaryPrimitives.WriteUInt16BigEndian(t[18..], (ushort)orientation);
+            BinaryPrimitives.WriteUInt32BigEndian(t[22..], 0);
+            return data;
+        }
+
+        /// <summary>A DRI segment's only length: the length field and the restart interval.</summary>
+        private const int DriLength = 4;
+
+        /// <summary>The JFIF header's length after its marker and length: "JFIF\0", version, units, density, thumbnail size.</summary>
+        private const int JfifHeaderLength = 14;
+
+        /// <summary>
+        /// The segments a decoder needs, kept when a photo is stored without location: DQT, DHT, DAC, the SOFn frame
+        /// headers (not JPG, DHT or DAC, which share the range), DRI and SOS.
+        /// </summary>
+        private static bool IsImageSegment(byte marker) => marker switch
+        {
+            0xDB or 0xC4 or 0xCC or 0xDD or 0xDA => true,
+            >= 0xC0 and <= 0xCF => marker is not (0xC4 or 0xC8 or 0xCC),
+            _ => false,
+        };
+
+        private static bool WriteMain(ReadOnlySpan<byte> source, Stream target, bool orientationOnly)
         {
             ArgumentNullException.ThrowIfNull(target);
+
+            var exifSeen = false;
 
             if (source.Length < 4 || source[0] != 0xFF || source[1] != 0xD8)
             {
@@ -385,8 +498,12 @@ namespace Chatcheology.Mobile.Presentation
 
                 if (marker == 0x01 || (marker >= 0xD0 && marker <= 0xD7))
                 {
-                    // Stand-alone markers carry no length.
-                    target.Write([0xFF, marker]);
+                    // Stand-alone markers carry no length. Without location, only restart markers are kept (TEM is not).
+                    if (!orientationOnly || marker != 0x01)
+                    {
+                        target.Write([0xFF, marker]);
+                    }
+
                     continue;
                 }
 
@@ -418,6 +535,55 @@ namespace Chatcheology.Mobile.Presentation
                     0xFE => false,
                     _ => true,
                 };
+
+                if (orientationOnly && marker is < 0xE0 or > 0xEF and not 0xFE)
+                {
+                    // CH-54 (review S1): without location, only the segments a decoder needs, from an allow-list:
+                    // DQT, DHT, DAC, SOFn, DRI and SOS. Every other marker (JPGn, DNL, DHP, EXP, reserved) is left out.
+                    keep = IsImageSegment(marker);
+
+                    // DRI only in its exact 4-byte form (step 1a re-review S5): extra bytes could carry other data.
+                    // Refused, not normalised, so the platform step re-encodes the photo instead.
+                    if (marker == 0xDD && length != DriLength)
+                    {
+                        return false;
+                    }
+                }
+
+                if (keep && orientationOnly && marker == 0xE0)
+                {
+                    // The JFIF header only (14 bytes), with no thumbnail: whatever follows it is left out.
+                    keep = false;
+
+                    if (data.Length >= JfifHeaderLength)
+                    {
+                        var jfif = new byte[4 + JfifHeaderLength];
+                        jfif[0] = 0xFF;
+                        jfif[1] = 0xE0;
+                        BinaryPrimitives.WriteUInt16BigEndian(jfif.AsSpan(2), JfifHeaderLength + 2);
+                        data[..JfifHeaderLength].CopyTo(jfif.AsSpan(4));
+                        jfif[^2] = 0;
+                        jfif[^1] = 0;
+                        target.Write(jfif);
+                    }
+                }
+
+                if (keep && orientationOnly && marker == 0xE1)
+                {
+                    // Only the first Exif block's orientation, as a new block; the block itself is never copied.
+                    keep = false;
+
+                    if (!exifSeen && ReadOrientation(data[6..]) is { } orientation and >= 2 and <= 8)
+                    {
+                        var exif = OrientationOnlyExif(orientation);
+                        var header = new byte[] { 0xFF, 0xE1, 0, 0 };
+                        BinaryPrimitives.WriteUInt16BigEndian(header.AsSpan(2), (ushort)(exif.Length + 2));
+                        target.Write(header);
+                        target.Write(exif);
+                    }
+
+                    exifSeen = true;
+                }
 
                 if (keep)
                 {

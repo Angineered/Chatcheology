@@ -192,7 +192,8 @@ namespace Chatcheology.Android.Pages
 
                 try
                 {
-                    opened = await Task.Run(() => ArchiveSession.OpenConversation(archive, _state.Settings));
+                    // CH-54: with the phone owner's own memories, one store for the whole app.
+                    opened = await Task.Run(() => ArchiveSession.OpenConversation(archive, _state.Settings, ownStore: _state.OwnMemories));
                 }
                 catch (Exception exception) when (exception is ArchiveFormatException or ArgumentException)
                 {
@@ -353,9 +354,21 @@ namespace Chatcheology.Android.Pages
                 return (installed, watch.Elapsed.TotalSeconds);
             });
 
+            // CH-54 step 2: invented own memories (one yearly on today's date, one with photos, a duplicate), once.
+            var own = 0;
+
+            try
+            {
+                own = await Task.Run(() => SyntheticOwnMemories.SeedAsync(_state.OwnMemories, DateOnly.FromDateTime(DateTime.Today), new AndroidPhotoNormaliser()));
+            }
+            catch (Exception exception)
+            {
+                AndroidLog.Warn(AppState.LogTag, $"synthetic own memories failed: {exception.GetType().Name}");
+            }
+
             _ = NotedDateNotifier.UpdateAsync();
 
-            var text = $"{(outcome.Installed ? "Installed" : "Not installed")} in {seconds:F1} s. {DescribeValidation(outcome.Validation)}";
+            var text = $"{(outcome.Installed ? "Installed" : "Not installed")} in {seconds:F1} s. Own memories added: {own}. {DescribeValidation(outcome.Validation)}";
             Status.Text = text;
 
             AndroidLog.Info(AppState.LogTag, $"sqlite={SQLitePCL.raw.sqlite3_libversion().utf8_to_string()} " +

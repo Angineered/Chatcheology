@@ -281,11 +281,10 @@ namespace Chatcheology.Mobile.Tests
         [Fact]
         public async Task NotedDates_AreNotListed()
         {
-            // Version 2 with gifted noted dates, and the phone's own noted date added.
+            // Version 2 with gifted noted dates.
             var builder = Sample(b => b.NotedDate(1, "Invented gifted day", 3, 10, 2020));
 
             using var session = Open(builder);
-            Assert.Empty(session.SaveOwnNotedDate(null, "Invented own day", 3, 12, 2021, null, new DateOnly(2026, 11, 3)));
             Assert.NotEmpty(session.NotedDateListings);
 
             var list = await session.GetMemoryListAsync();

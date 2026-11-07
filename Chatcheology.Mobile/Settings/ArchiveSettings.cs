@@ -32,13 +32,12 @@ namespace Chatcheology.Mobile.Settings
     /// conversation), <c>.onThisDay</c> ("off" when turned off), <c>.onThisDayShown</c> (the last
     /// day the card was shown), <c>.layers</c> (collection ids switched away from their default, each
     /// <c>id:on</c> or <c>id:off</c>) and <c>.memoryFilters</c> (filters turned off, each
-    /// <c>id:filter</c>; CH-42), <c>.ownNotedDates</c> (a JSON list of the dates the phone's user added; CH-47;
-    /// each with its ordered gallery links, address and label, CH-48)
-    /// <c>.mutedNotedDates</c> (gifted noted-date ids that do not notify, comma separated),
+    /// <c>id:filter</c>; CH-42), <c>.mutedNotedDates</c> (gifted noted-date ids that do not notify, comma separated),
     /// <c>.mutedYearlyMemories</c> (yearly memories' entry ids that do not notify, comma separated; CH-53) and
     /// <c>.notedDatesPosted</c> (the last day its noted-date notification was posted, so it is posted once a
-    /// day; CH-47 step 3). Own noted dates
-    /// are private to the phone, never written into the archive, and forgotten with the rest on remove.</para>
+    /// day; CH-47 step 3). The phone's own noted dates (<c>.ownNotedDates</c>, CH-47) were removed by CH-54 step 2: the
+    /// phone owner's own memories replace them. The key is no longer read or written; <see cref="Forget"/> still
+    /// clears a leftover one.</para>
     /// <para>Stars (CH-38) are private to the phone and never written into the archive. They are the one
     /// thing removing the archive keeps (Angie, 2026-10-22): the same archive (same hash) imported again
     /// has its stars back. A re-exported archive has a new hash and starts with none.</para>
@@ -47,7 +46,7 @@ namespace Chatcheology.Mobile.Settings
     {
         private const string Prefix = "archive.";
 
-        /// <summary>What <see cref="Forget"/> removes: everything but the stars.</summary>
+        /// <summary>What <see cref="Forget"/> removes: everything but the stars (and a leftover <c>ownNotedDates</c>, CH-54).</summary>
         private static readonly string[] Names =
         [
             "me", "position", "lastOpenedUtc", "validatedUtc", "validation", "onThisDay", "onThisDayShown",
@@ -197,68 +196,6 @@ namespace Chatcheology.Mobile.Settings
         public void SetOnThisDayShown(string contentsSha256, DateOnly day) =>
             Set(contentsSha256, "onThisDayShown", day.ToString("yyyy'-'MM'-'dd", CultureInfo.InvariantCulture));
 
-        /// <summary>
-        /// The noted dates added on the phone (CH-47), by title. An entry that breaks <see cref="NotedDateRules"/>
-        /// is dropped, and a value that cannot be read as the list reads as empty; this never throws.
-        /// </summary>
-        public IReadOnlyList<OwnNotedDate> GetOwnNotedDates(string contentsSha256)
-        {
-            var text = Get(contentsSha256, "ownNotedDates");
-
-            if (string.IsNullOrWhiteSpace(text))
-            {
-                return [];
-            }
-
-            try
-            {
-                var stored = JsonSerializer.Deserialize<List<StoredNotedDate?>>(text);
-                var dates = new List<OwnNotedDate>();
-                var ids = new HashSet<string>(StringComparer.Ordinal);
-
-                foreach (var item in stored ?? [])
-                {
-                    // The year limit is checked when a date is saved; a stored one stays as it was.
-                    if (item is { Id: { Length: > 0 } id, Title: { } title, Month: { } month, Day: { } day }
-                        && ids.Add(id)
-                        && NotedDateRules.Validate(title, month, day, item.Year, item.Note, int.MaxValue).Count == 0)
-                    {
-                        dates.Add(new OwnNotedDate(id, title.Trim(), month, day, item.Year, NotedDateRules.NormaliseNote(item.Note))
-                        {
-                            Links = ReadLinks(item.Links),
-                        });
-                    }
-                }
-
-                return dates.OrderBy(date => date.Title, StringComparer.CurrentCultureIgnoreCase).ThenBy(date => date.Id, StringComparer.Ordinal).ToList();
-            }
-            catch (Exception exception) when (exception is JsonException or NotSupportedException or InvalidOperationException)
-            {
-                return [];
-            }
-        }
-
-        /// <summary>Stores the phone's own noted dates; none removes the key.</summary>
-        public void SetOwnNotedDates(string contentsSha256, IEnumerable<OwnNotedDate> dates)
-        {
-            ArgumentNullException.ThrowIfNull(dates);
-
-            var list = dates.Select(date => new StoredNotedDate
-            {
-                Id = date.Id,
-                Title = date.Title,
-                Month = date.Month,
-                Day = date.Day,
-                Year = date.Year,
-                Note = date.Note,
-                Links = date.Links.Count == 0
-                    ? null
-                    : JsonSerializer.SerializeToElement(date.Links.Select(link => new StoredLink { Url = link.Url, Label = link.Label }).ToList()),
-            }).ToList();
-
-            Set(contentsSha256, "ownNotedDates", list.Count == 0 ? null : JsonSerializer.Serialize(list));
-        }
-
         /// <summary>The gifted noted dates (by the archive's identifier) that are muted: they do not notify.</summary>
         public IReadOnlySet<long> GetMutedNotedDates(string contentsSha256) =>
             (Get(contentsSha256, "mutedNotedDates") ?? string.Empty)
@@ -327,81 +264,6 @@ namespace Chatcheology.Mobile.Settings
         /// <summary>Records the day this archive's noted-date notification was posted.</summary>
         public void SetNotedDatesPostedThrough(string contentsSha256, DateOnly day) =>
             Set(contentsSha256, "notedDatesPosted", day.ToString("yyyy'-'MM'-'dd", CultureInfo.InvariantCulture));
-
-        private sealed class StoredNotedDate
-        {
-            public string? Id { get; set; }
-
-            public string? Title { get; set; }
-
-            public int? Month { get; set; }
-
-            public int? Day { get; set; }
-
-            public int? Year { get; set; }
-
-            public string? Note { get; set; }
-
-            /// <summary>The gallery links (CH-48): read as raw JSON, so a damaged list costs only the links.</summary>
-            public JsonElement? Links { get; set; }
-        }
-
-        private sealed class StoredLink
-        {
-            public string? Url { get; set; }
-
-            public string? Label { get; set; }
-        }
-
-        /// <summary>
-        /// An own date's gallery links (CH-48), in the stored order: a link that is not an object with a text
-        /// address (and a text label or none), or that breaks <see cref="ExternalLinkRules"/>, is dropped; anything
-        /// but a list reads as none; at most <see cref="ExternalLinkRules.MaxLinksPerOwner"/> are kept. Never throws.
-        /// </summary>
-        private static IReadOnlyList<GalleryLink> ReadLinks(JsonElement? stored)
-        {
-            if (stored is not { ValueKind: JsonValueKind.Array } array)
-            {
-                return [];
-            }
-
-            var links = new List<GalleryLink>();
-
-            foreach (var item in array.EnumerateArray())
-            {
-                if (item.ValueKind != JsonValueKind.Object
-                    || !item.TryGetProperty("Url", out var url) || url.ValueKind != JsonValueKind.String)
-                {
-                    continue;
-                }
-
-                string? label = null;
-
-                if (item.TryGetProperty("Label", out var labelElement))
-                {
-                    if (labelElement.ValueKind == JsonValueKind.String)
-                    {
-                        label = labelElement.GetString();
-                    }
-                    else if (labelElement.ValueKind != JsonValueKind.Null)
-                    {
-                        continue;
-                    }
-                }
-
-                if (GalleryLinks.Keep(url.GetString(), label) is { } link)
-                {
-                    links.Add(link);
-                }
-
-                if (links.Count == ExternalLinkRules.MaxLinksPerOwner)
-                {
-                    break;
-                }
-            }
-
-            return links;
-        }
 
         /// <summary>
         /// Whether the memory layer of collection <paramref name="collectionID"/> is shown (CH-42): the

@@ -1,6 +1,7 @@
 using Chatcheology.Archive;
 using Chatcheology.Mobile.Library;
 using Chatcheology.Mobile.Memories;
+using Chatcheology.Mobile.OwnMemories;
 using Chatcheology.Mobile.Search;
 using Chatcheology.Mobile.Settings;
 
@@ -25,15 +26,6 @@ namespace Chatcheology.Mobile.Conversation
     /// <param name="Label">The name, marked when it is the archive's own choice.</param>
     public sealed record MeChoice(long ParticipantID, string Label);
 
-    /// <summary>The outcome of saving one of the phone's own noted dates with its gallery links (CH-48).</summary>
-    /// <param name="Errors">The date's broken rules, by field.</param>
-    /// <param name="Links">The links' problems, by row, and the links stored.</param>
-    public sealed record OwnNotedDateSave(IReadOnlyDictionary<NotedDateField, string> Errors, GalleryLinkCheck Links)
-    {
-        /// <summary>Whether the date was stored.</summary>
-        public bool Saved => Errors.Count == 0 && Links.IsValid;
-    }
-
     /// <summary>
     /// One opened archive: its reader, who "me" is, where the reader last was, and its search index.
     /// </summary>
@@ -50,6 +42,10 @@ namespace Chatcheology.Mobile.Conversation
     /// collection is a layer, on or off per archive (default: the collection's own), with filters for an
     /// imported one. Gallery, Starred and On this day stay message-only, except that On this day shows
     /// yearly memories (CH-53) whatever the layer switches say.</para>
+    /// <para><strong>Own memories (CH-54).</strong> Opened with the own store, the phone owner's own memories are a
+    /// second index (<see cref="Own"/>) over the message times read at open, with keys owned
+    /// <see cref="MemoryOwner.Own"/>; the archive index is unchanged. <see cref="RefreshOwnMemories"/> swaps in a new
+    /// one after a save or delete. The My memories switch is per phone, in the own store.</para>
     /// </remarks>
     public sealed class ArchiveSession : IDisposable
     {
@@ -64,8 +60,14 @@ namespace Chatcheology.Mobile.Conversation
         private Task<Gallery.PhotoGallery>? _gallery;
         private Task<MemoryList>? _memoryList;
         private string? _savedTab;
+        private readonly OwnMemoryStore? _ownStore;
+        private readonly IReadOnlyList<DateTime> _messageTimes = [];
+        private readonly IReadOnlyList<int>? _sequenceNumbers;
+        private volatile OwnMemoryJoin _own = OwnMemoryJoin.None;
+        private readonly object _refreshLock = new();
+        private readonly bool _ownPlaceable = true;
 
-        private ArchiveSession(InstalledArchive archive, ArchiveReader reader, ArchiveSettings settings, string identity)
+        private ArchiveSession(InstalledArchive archive, ArchiveReader reader, ArchiveSettings settings, string identity, OwnMemoryStore? ownStore)
         {
             Archive = archive;
             Reader = reader;
@@ -89,6 +91,198 @@ namespace Chatcheology.Mobile.Conversation
 
             // Yearly memories (CH-53, version 3), read once; a row that breaks the rule is left out.
             _yearly = YearlyMemories.From(reader.ReadYearlyEntries());
+
+            // The phone owner's own memories (CH-54), joined to this archive's message times. The times are read once
+            // here, at open (the archive index already holds them when it has memories); a rebuild later reads nothing
+            // from the archive.
+            _ownStore = ownStore;
+
+            if (ownStore is not null)
+            {
+                if (Memories.HasMemories)
+                {
+                    _messageTimes = Memories.MessageTimes;
+                    _sequenceNumbers = Memories.MessageSequenceNumbers;
+                }
+                else
+                {
+                    try
+                    {
+                        _messageTimes = reader.ReadMessageTimes();
+                    }
+                    catch (Exception exception) when (exception is ArchiveFormatException or Microsoft.Data.Sqlite.SqliteException)
+                    {
+                        // 1b review N3: the archive still opens. Without the message times the own rows cannot be
+                        // placed, so they are not placed: not in the chat, calendar, date jump or search. They are still
+                        // listed in Saved, with their details, and yearly ones on On this day (missing, not wrong).
+                        _messageTimes = [];
+                        _ownPlaceable = false;
+                    }
+                }
+
+                _own = ReadOwn();
+            }
+        }
+
+        /// <summary>
+        /// The phone owner's own memories as this archive shows them (CH-54): their index, yearly memories and the My
+        /// memories switch. <see cref="OwnMemoryJoin.None"/> when the session was opened without the own store or the
+        /// store could not be read. Replaced as a whole by <see cref="RefreshOwnMemories"/>.
+        /// </summary>
+        public OwnMemoryJoin Own => _own;
+
+        /// <summary>The own memories' index (CH-54), at the last read.</summary>
+        public MemoryIndex OwnMemories => _own.Index;
+
+        /// <summary>
+        /// Which own rows are visible: all while the My memories layer is on; none when the archive's message times could
+        /// not be read at open (the rows cannot be placed).
+        /// </summary>
+        public MemoryView OwnMemoryView => ViewOf(_own);
+
+        /// <summary>Whether the own rows can be placed in this archive's chat (its message times were read at open).</summary>
+        public bool OwnRowsPlaceable => _ownPlaceable;
+
+        /// <summary>Whether the session was opened with the own store (CH-54): own memories can be added from it.</summary>
+        public bool HasOwnStore => _ownStore is not null;
+
+        private MemoryView ViewOf(OwnMemoryJoin own) => _ownPlaceable ? own.View : MemoryView.None;
+
+        /// <summary>Whether the own memories file could not be read at the last read (they are then not shown).</summary>
+        public bool OwnMemoriesUnreadable { get; private set; }
+
+        /// <summary>
+        /// The My memories layer switch (CH-54, per phone, kept in the own store, default on). Setting it stores it at once;
+        /// the caller then rebuilds the conversation and the date picker as for any layer switch. False, and nothing is
+        /// stored, without the own store. Setting it never throws (1b review N2): when the store cannot be written now,
+        /// nothing changes and the getter still gives the old value, so the caller can put its switch back.
+        /// </summary>
+        public bool OwnLayerShown
+        {
+            get => _own.LayerOn;
+            set
+            {
+                if (_ownStore is null)
+                {
+                    return;
+                }
+
+                // Under the refresh lock (1b review N1): a refresh beside it cannot swap an older layer value back in.
+                lock (_refreshLock)
+                {
+                    try
+                    {
+                        _ownStore.Settings.LayerOn = value;
+                    }
+                    catch (Exception exception) when (IsStoreFailure(exception))
+                    {
+                        return;
+                    }
+
+                    lock (_searchLock)
+                    {
+                        _own = _own with { LayerOn = value };
+                    }
+                }
+            }
+        }
+
+        private static bool IsStoreFailure(Exception exception) =>
+            exception is OwnMemoriesStoreException or Microsoft.Data.Sqlite.SqliteException or IOException or UnauthorizedAccessException;
+
+        /// <summary>
+        /// Reads the own memories again after a save, an edit or a delete (or a change made through the store's own
+        /// settings) and swaps them in under the session lock. Reads only the own store, never the archive.
+        /// </summary>
+        /// <remarks>
+        /// <para><strong>Always refreshed</strong>, whatever the result (1b review S3): the Memories list (built again on
+        /// its next request), the yearly set behind <see cref="OnThisDayFor"/>, <see cref="HasSaved"/> and the layer
+        /// state. So after every save or delete the page reads On this day and <see cref="HasSaved"/> again and
+        /// reschedules the alarm (which reads the store itself).</para>
+        /// <para><strong>The result only gates the timeline:</strong> true when the visible own rows changed (rows,
+        /// times, titles, dates, summaries, photos or links), so the page rebuilds the timeline and the calendar
+        /// (<see cref="CreateTimeline"/> and <see cref="OpenTimeline"/>, <see cref="ReadCalendarDays"/>) as for a layer
+        /// switch. Turning Every year on or off alone, or adding a memory while the layer is off, returns false.</para>
+        /// <para>Refreshes are serialised (1b review N1): a read and its swap happen together, so the newer read always
+        /// wins, also against the layer switch.</para>
+        /// </remarks>
+        /// <returns>Whether the visible own rows changed: the timeline and calendar need rebuilding.</returns>
+        /// <exception cref="ObjectDisposedException">The session is closed.</exception>
+        public bool RefreshOwnMemories()
+        {
+            ObjectDisposedException.ThrowIf(_closing.IsCancellationRequested, this);
+
+            if (_ownStore is null)
+            {
+                return false;
+            }
+
+            lock (_refreshLock)
+            {
+                var fresh = ReadOwn();
+
+                lock (_searchLock)
+                {
+                    ObjectDisposedException.ThrowIf(_closing.IsCancellationRequested, this);
+
+                    var before = _own;
+                    _own = fresh;
+                    _memoryList = null;
+
+                    return !SameRows(before, fresh);
+                }
+            }
+        }
+
+        /// <summary>Reads the own store; an unreadable store shows no own memories (missing is better than wrong).</summary>
+        private OwnMemoryJoin ReadOwn()
+        {
+            try
+            {
+                var join = OwnMemoryIndex.Join(_ownStore!, _messageTimes, _sequenceNumbers);
+                OwnMemoriesUnreadable = false;
+                return join;
+            }
+            catch (Exception exception) when (IsStoreFailure(exception))
+            {
+                OwnMemoriesUnreadable = true;
+                return OwnMemoryJoin.None;
+            }
+        }
+
+        /// <summary>Whether two reads show the same own rows: the same visible keys at the same times with the same details.</summary>
+        private bool SameRows(OwnMemoryJoin before, OwnMemoryJoin after)
+        {
+            var old = before.Index.Layout(ViewOf(before)).Placements;
+            var now = after.Index.Layout(ViewOf(after)).Placements;
+
+            if (old.Count != now.Count)
+            {
+                return false;
+            }
+
+            for (var i = 0; i < old.Count; i++)
+            {
+                if (old[i].Key != now[i].Key || old[i].TimeLocal != now[i].TimeLocal)
+                {
+                    return false;
+                }
+
+                var a = before.Index.Details(old[i].Key);
+                var b = after.Index.Details(now[i].Key);
+
+                if (a is null || b is null
+                    || a.Title != b.Title
+                    || a.DateText != b.DateText
+                    || a.Summary != b.Summary
+                    || !a.Photos.SequenceEqual(b.Photos)
+                    || !a.Galleries.SequenceEqual(b.Galleries))
+                {
+                    return false;
+                }
+            }
+
+            return true;
         }
 
         /// <summary>The archive's memories (CH-42), read at open; empty for an archive without any.</summary>
@@ -123,11 +317,35 @@ namespace Chatcheology.Mobile.Conversation
         public void SetMemoryFilter(long collectionID, string filter, bool on) =>
             _settings.SetMemoryFilter(_identity, collectionID, filter, on);
 
-        /// <summary>The memories whose titles match <paramref name="query"/>, among the visible ones only.</summary>
-        public IReadOnlyList<MemorySearchHit> FindMemories(string query) => Memories.Find(query, MemoryView);
+        /// <summary>
+        /// The memories whose titles match <paramref name="query"/>, among the visible ones only: the archive's and,
+        /// with the My memories layer on, the phone owner's own (CH-54), newest first.
+        /// </summary>
+        public IReadOnlyList<MemorySearchHit> FindMemories(string query)
+        {
+            var archive = Memories.Find(query, MemoryView);
+            var own = _own;
+            var ownHits = own.Index.Find(query, ViewOf(own));
 
-        /// <summary>The details of a memory row, or <see langword="null"/>.</summary>
-        public MemoryDetails? MemoryDetails(MemoryKey key) => Memories.Details(key);
+            return ownHits.Count == 0
+                ? archive
+                : archive.Concat(ownHits).OrderByDescending(hit => hit.SortTime).ToList();
+        }
+
+        /// <summary>The details of a memory row (an archive's or an own one, by the key's owner), or <see langword="null"/>.</summary>
+        public MemoryDetails? MemoryDetails(MemoryKey key) =>
+            key.Owner == MemoryOwner.Own ? _own.Index.Details(key) : Memories.Details(key);
+
+        /// <summary>
+        /// Every visible memory row, the archive's and the own ones together, in placement order (what the timeline is
+        /// built with).
+        /// </summary>
+        public MemoryLayout VisibleMemoryLayout()
+        {
+            var own = _own;
+
+            return MemoryLayout.Combine(Memories.Layout(MemoryView), own.Index.Layout(ViewOf(own)));
+        }
 
         /// <summary>The archive's starred messages and photos (CH-38), kept in the app's settings.</summary>
         public Stars Stars { get; }
@@ -168,7 +386,7 @@ namespace Chatcheology.Mobile.Conversation
         public bool CanSearch => !IsEmpty;
 
         /// <summary>Whether the Saved screen (CH-59) is offered: the archive has messages or memories.</summary>
-        public bool HasSaved => SavedTabs.IsShown(!IsEmpty, Memories.HasMemories);
+        public bool HasSaved => SavedTabs.IsShown(!IsEmpty, Memories.HasMemories || _own.Count > 0);
 
         /// <summary>
         /// The Saved screen's tabs for this archive, opening on the tab last chosen while it has been open (the
@@ -186,7 +404,14 @@ namespace Chatcheology.Mobile.Conversation
         /// </summary>
         /// <exception cref="ArchiveFormatException">The archive cannot be read.</exception>
         /// <exception cref="ArgumentException">The archive's identity is not known.</exception>
-        public static ArchiveSession Open(InstalledArchive archive, ArchiveSettings settings, TimeProvider? clock = null)
+        /// <param name="archive">The archive.</param>
+        /// <param name="settings">The app's settings.</param>
+        /// <param name="clock">The clock, or the system's.</param>
+        /// <param name="ownStore">
+        /// The phone owner's own memories (CH-54), joined to this archive; <see langword="null"/> opens the archive alone,
+        /// exactly as before.
+        /// </param>
+        public static ArchiveSession Open(InstalledArchive archive, ArchiveSettings settings, TimeProvider? clock = null, OwnMemoryStore? ownStore = null)
         {
             ArgumentNullException.ThrowIfNull(archive);
             ArgumentNullException.ThrowIfNull(settings);
@@ -200,7 +425,7 @@ namespace Chatcheology.Mobile.Conversation
 
             try
             {
-                var session = new ArchiveSession(archive, reader, settings, identity);
+                var session = new ArchiveSession(archive, reader, settings, identity, ownStore);
                 settings.SetLastOpenedUtc(identity, (clock ?? TimeProvider.System).GetUtcNow().UtcDateTime);
 
                 return session;
@@ -219,9 +444,10 @@ namespace Chatcheology.Mobile.Conversation
         /// </summary>
         /// <exception cref="ArchiveFormatException">The archive cannot be read.</exception>
         /// <exception cref="ArgumentException">The archive's identity is not known.</exception>
-        public static OpenedConversation OpenConversation(InstalledArchive archive, ArchiveSettings settings, TimeProvider? clock = null)
+        public static OpenedConversation OpenConversation(
+            InstalledArchive archive, ArchiveSettings settings, TimeProvider? clock = null, OwnMemoryStore? ownStore = null)
         {
-            var session = Open(archive, settings, clock);
+            var session = Open(archive, settings, clock, ownStore);
 
             try
             {
@@ -266,7 +492,7 @@ namespace Chatcheology.Mobile.Conversation
         public string ValidationText => ArchiveSettings.DescribeValidation(_settings.GetValidation(_identity));
 
         /// <summary>A timeline with the current "me". After "me" changes, a new one is made and opened.</summary>
-        public ConversationTimeline CreateTimeline() => new(Reader, Me, LowQuality, Stars, Memories.Layout(MemoryView));
+        public ConversationTimeline CreateTimeline() => new(Reader, Me, LowQuality, Stars, VisibleMemoryLayout());
 
         /// <summary>
         /// Opens <paramref name="timeline"/> where the reader last was, or at the newest messages the
@@ -305,7 +531,7 @@ namespace Chatcheology.Mobile.Conversation
         public IReadOnlyList<DateOnly> ReadCalendarDays()
         {
             var days = Reader.ReadDays();
-            var layout = Memories.Layout(MemoryView);
+            var layout = VisibleMemoryLayout();
 
             return layout.IsEmpty ? days : days.Concat(layout.Days).Distinct().Order().ToList();
         }
@@ -371,8 +597,9 @@ namespace Chatcheology.Mobile.Conversation
                 var token = _closing.Token;
                 var memories = Memories;
                 var yearly = _yearly.Select(memory => memory.EntryID).ToHashSet();
+                var own = _own;
 
-                return _memoryList = Task.Run(() => MemoryList.Build(memories, yearly, token), token);
+                return _memoryList = Task.Run(() => MemoryList.Build(memories, yearly, own.Index, own.YearlyRowIDs, token), token);
             }
         }
 
@@ -384,7 +611,7 @@ namespace Chatcheology.Mobile.Conversation
         {
             ArgumentNullException.ThrowIfNull(list);
 
-            return list.ShowInChat(key, MemoryView, !IsEmpty);
+            return list.ShowInChat(key, MemoryView, !IsEmpty, ViewOf(_own));
         }
 
         /// <summary>The gallery when it has been built, so a star toggle can update it; otherwise <see langword="null"/>.</summary>
@@ -426,10 +653,16 @@ namespace Chatcheology.Mobile.Conversation
 
         /// <summary>
         /// On this day (CH-39) for <paramref name="days"/> (from <see cref="ReadDays"/>) on <paramref name="today"/>:
-        /// yearly memories (CH-53), noted dates (CH-47) and message years.
+        /// yearly memories (CH-53: the archive's, then the phone owner's own, CH-54, whatever the layer switches say),
+        /// noted dates (CH-47) and message years.
         /// </summary>
-        public OnThisDay OnThisDayFor(IEnumerable<DateOnly> days, DateOnly today) =>
-            OnThisDay.For(_settings, _identity, days, today, _giftedNotedDates, _giftedNotedDateLinks, _yearly, Memories);
+        public OnThisDay OnThisDayFor(IEnumerable<DateOnly> days, DateOnly today)
+        {
+            var own = _own;
+            var yearly = own.Yearly.Count == 0 ? _yearly : [.. _yearly, .. own.Yearly];
+
+            return OnThisDay.For(_settings, _identity, days, today, _giftedNotedDates, _giftedNotedDateLinks, yearly, Memories, own.Index);
+        }
 
         /// <summary>
         /// The archive's yearly memories (CH-53) with their mute switches, by title, for Settings. Read from the
@@ -450,8 +683,8 @@ namespace Chatcheology.Mobile.Conversation
         }
 
         /// <summary>
-        /// Every noted date (CH-47) for Settings: the archive's gifted ones, which can only be muted, then the
-        /// phone's own. Read from the settings each time, so a change shows at once.
+        /// Every noted date (CH-47) for Settings: the archive's gifted ones, which can only be muted. Read from the
+        /// settings each time, so a change shows at once.
         /// </summary>
         public IReadOnlyList<NotedDateListing> NotedDateListings =>
             NotedDates.List(_settings, _identity, _giftedNotedDates, _giftedNotedDateLinks);
@@ -464,81 +697,6 @@ namespace Chatcheology.Mobile.Conversation
                 _settings.SetNotedDateMuted(_identity, notedDateID, muted);
             }
         }
-
-        /// <summary>
-        /// Adds a date of the phone's own, or replaces the one with <paramref name="id"/>. Nothing is stored
-        /// when a rule of <see cref="NotedDateRules"/> is broken; the broken rules are returned.
-        /// </summary>
-        /// <param name="id">
-        /// The own date to replace; when none has this id, a new one is added under it (so a repeated save of the
-        /// same new date, with an id chosen once, replaces rather than duplicates). <see langword="null"/> adds one
-        /// with a fresh id.
-        /// </param>
-        /// <param name="title">The title.</param>
-        /// <param name="month">The month.</param>
-        /// <param name="day">The day.</param>
-        /// <param name="year">The year, or none.</param>
-        /// <param name="note">The note, or none (blank is none).</param>
-        /// <param name="today">The phone's date; a year after it is refused.</param>
-        /// <remarks>An existing date keeps its gallery links (CH-48); a new one has none.</remarks>
-        public IReadOnlyDictionary<NotedDateField, string> SaveOwnNotedDate(
-            string? id, string? title, int month, int day, int? year, string? note, DateOnly today)
-        {
-            var links = id is null
-                ? []
-                : _settings.GetOwnNotedDates(_identity).FirstOrDefault(date => date.Id == id)?.Links ?? [];
-
-            return SaveOwnNotedDate(id, title, month, day, year, note, links.Select(link => ((string?)link.Url, link.Label)).ToList(), today).Errors;
-        }
-
-        /// <summary>
-        /// Adds or replaces a date of the phone's own with its ordered gallery links (CH-48). Nothing is stored when
-        /// a rule of <see cref="NotedDateRules"/> or <see cref="ExternalLinkRules"/> is broken; every broken rule
-        /// is returned at once. Rows with neither address nor label are left out.
-        /// </summary>
-        /// <param name="id">As for the overload without links.</param>
-        /// <param name="title">The title.</param>
-        /// <param name="month">The month.</param>
-        /// <param name="day">The day.</param>
-        /// <param name="year">The year, or none.</param>
-        /// <param name="note">The note, or none (blank is none).</param>
-        /// <param name="links">The edited links, in order: address and optional label.</param>
-        /// <param name="today">The phone's date; a year after it is refused.</param>
-        public OwnNotedDateSave SaveOwnNotedDate(
-            string? id, string? title, int month, int day, int? year, string? note, IReadOnlyList<(string? Url, string? Label)> links, DateOnly today)
-        {
-            ArgumentNullException.ThrowIfNull(links);
-
-            var stored = NotedDateRules.NormaliseNote(note);
-            var errors = NotedDateRules.Validate(title, month, day, year, stored, today.Year);
-            var check = GalleryLinks.Check(links);
-
-            if (errors.Count > 0 || !check.IsValid)
-            {
-                return new OwnNotedDateSave(errors, check);
-            }
-
-            var own = _settings.GetOwnNotedDates(_identity).ToList();
-            var existing = id is null ? -1 : own.FindIndex(date => date.Id == id);
-            var date = new OwnNotedDate(id ?? Guid.NewGuid().ToString("N"), title!.Trim(), month, day, year, stored) { Links = check.Links };
-
-            if (existing >= 0)
-            {
-                own[existing] = date;
-            }
-            else
-            {
-                own.Add(date);
-            }
-
-            _settings.SetOwnNotedDates(_identity, own);
-
-            return new OwnNotedDateSave(errors, check);
-        }
-
-        /// <summary>Deletes one of the phone's own noted dates; a gifted one cannot be deleted here.</summary>
-        public void DeleteOwnNotedDate(string id) =>
-            _settings.SetOwnNotedDates(_identity, _settings.GetOwnNotedDates(_identity).Where(date => date.Id != id));
 
         /// <summary>Whether On this day is on for this archive (Settings).</summary>
         public bool OnThisDayEnabled

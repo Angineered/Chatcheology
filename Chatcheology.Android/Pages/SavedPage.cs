@@ -12,7 +12,10 @@ namespace Chatcheology.Android.Pages
     /// the screen is open, so Back from a memory's details or the photo viewer finds it as it was; Back from here
     /// returns to the chat, and Show in chat from any tab closes the screen and jumps.</para>
     /// <para>The Starred tab is read again when chosen and when the screen reappears with it chosen (a star can change
-    /// in the photo viewer); the memory tabs share one list, built once per session.</para>
+    /// in the photo viewer); the memory tabs share one list, built once per session and again after an own memory
+    /// changed (CH-54).</para>
+    /// <para>On the Memories tab a "+" (Add a memory, CH-54) opens the form for a memory of the phone owner's own,
+    /// starting today.</para>
     /// </remarks>
     internal sealed class SavedPage : ContentPage
     {
@@ -24,11 +27,17 @@ namespace Chatcheology.Android.Pages
         private readonly SavedMemoriesView _memories;
         private readonly ScrollView _tabScroll;
         private readonly List<(SavedTab Tab, Button Button, BoxView Underline, View Holder)> _tabViews = [];
+        private readonly ToolbarItem? _add;
         private bool _appeared;
 
         internal SavedPage(AppState state, ArchiveSession session, ConversationPage conversation)
         {
             Title = "Saved";
+
+            if (session.HasOwnStore)
+            {
+                _add = new ToolbarItem("Add a memory", "toolbar_add.png", () => _ = conversation.AddOwnMemoryAsync(OnThisDay.TodayFrom(TimeProvider.System)));
+            }
 
             _tabs = session.CreateSavedTabs();
             _starred = new SavedStarredView(state, session, conversation, this) { IsVisible = false };
@@ -114,6 +123,11 @@ namespace Chatcheology.Android.Pages
                     _starred.Remember();
                     await _starred.ShowAsync(_tabs.StateOf(_tabs.Selected));
                 }
+                else if (_memories.IsStale)
+                {
+                    // CH-54: an own memory was added, edited or deleted meanwhile.
+                    await _memories.ReloadAsync();
+                }
             }
             catch (Exception)
             {
@@ -178,6 +192,21 @@ namespace Chatcheology.Android.Pages
         /// <summary>The chosen tab underlined, bold and in the accent colour; screen readers hear which is chosen.</summary>
         private void MarkChosen()
         {
+            // "+" belongs to the Memories tab only.
+            if (_add is not null)
+            {
+                var memories = _tabs.Selected.Kind == SavedTabKind.Memories;
+
+                if (memories && !ToolbarItems.Contains(_add))
+                {
+                    ToolbarItems.Add(_add);
+                }
+                else if (!memories)
+                {
+                    ToolbarItems.Remove(_add);
+                }
+            }
+
             foreach (var (tab, button, underline, _) in _tabViews)
             {
                 var chosen = tab == _tabs.Selected;

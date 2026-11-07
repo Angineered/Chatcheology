@@ -9,6 +9,11 @@
   <!-- The Android viewer's presentation rules and archive handling, as a plain library so it is
        unit-tested on Windows. Deliberately no MAUI or Android reference: Chatcheology.Android is a
        thin shell over this project. -->
+  <!-- Tests reach a few internal seams (CH-54 step 1b: the photo sweep's re-check). -->
+  <ItemGroup>
+    <InternalsVisibleTo Include="Chatcheology.Mobile.Tests" />
+  </ItemGroup>
+
   <ItemGroup>
     <ProjectReference Include="..\Chatcheology.Archive\Chatcheology.Archive.csproj" />
   </ItemGroup>

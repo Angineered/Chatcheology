@@ -10,16 +10,20 @@ namespace Chatcheology.Android.Pages
     /// there is more than one, CH-46; a tap opens the full-screen viewer over them), description, links and external
     /// links (CH-48, shown as "Links" since CH-59; each opens in another app only after a confirmation). Only a
     /// photo can be shared, from the viewer (CH-59); everything was read when the archive opened.
+    /// <para>One of the phone owner's own memories (CH-54) also has Edit and Delete (Delete asks first); an archive's
+    /// memory stays read-only.</para>
     /// </summary>
     internal sealed class MemoryDetailsPage : ContentPage
     {
         private readonly Func<int, Task> _showMessage;
         private readonly Func<long, Task> _showEntry;
         private readonly MemoryDetails _details;
-        private readonly string _archivesFolder;
+        private readonly IReadOnlyList<string> _shareRoots;
 
         /// <param name="details">What to show.</param>
-        /// <param name="archivesFolder">The installed archives, for sharing a photo from the viewer (CH-59).</param>
+        /// <param name="shareRoots">
+        /// The installed archives and the own photos folder (CH-54), for sharing a photo from the viewer (CH-59).
+        /// </param>
         /// <param name="showMessage">Opens the conversation at a linked message.</param>
         /// <param name="showEntry">Opens the conversation at a linked entry's row.</param>
         /// <param name="showInChat">
@@ -27,9 +31,18 @@ namespace Chatcheology.Android.Pages
         /// at the memory's row when it is visible, otherwise at its day. Given only when there is such a target (a
         /// visible row, or a day with messages); without it there is no Show in chat.
         /// </param>
-        internal MemoryDetailsPage(MemoryDetails details, string archivesFolder, Func<int, Task> showMessage, Func<long, Task> showEntry, Func<Task>? showInChat = null)
+        /// <param name="own">
+        /// Edit and Delete for one of the phone owner's own memories (CH-54); ignored for an archive's memory.
+        /// </param>
+        internal MemoryDetailsPage(
+            MemoryDetails details,
+            IReadOnlyList<string> shareRoots,
+            Func<int, Task> showMessage,
+            Func<long, Task> showEntry,
+            Func<Task>? showInChat = null,
+            OwnMemoryActions? own = null)
         {
-            _archivesFolder = archivesFolder;
+            _shareRoots = shareRoots;
             _showMessage = showMessage;
             _showEntry = showEntry;
 
@@ -81,6 +94,11 @@ namespace Chatcheology.Android.Pages
                 };
 
                 body.Add(show);
+            }
+
+            if (details.Key.IsOwn && own is not null)
+            {
+                body.Add(OwnActions(own));
             }
 
             if (details.Summary.Length > 0)
@@ -173,7 +191,7 @@ namespace Chatcheology.Android.Pages
                 {
                     if (Navigation.NavigationStack.LastOrDefault() == this && index < _details.Photos.Count)
                     {
-                        await Navigation.PushAsync(new ImageViewerPage(_details.BrowsePhotos(index), _archivesFolder));
+                        await Navigation.PushAsync(new ImageViewerPage(_details.BrowsePhotos(index), _shareRoots));
                     }
                 }
                 catch (Exception)
@@ -183,6 +201,48 @@ namespace Chatcheology.Android.Pages
             };
 
             view.GestureRecognizers.Add(tap);
+        }
+
+        /// <summary>Edit, and Delete after a confirmation that says it cannot be undone (CH-54).</summary>
+        private View OwnActions(OwnMemoryActions own)
+        {
+            var edit = new Button { Text = "Edit", HorizontalOptions = LayoutOptions.Start };
+            var delete = new Button { Text = "Delete", HorizontalOptions = LayoutOptions.Start };
+            SemanticProperties.SetDescription(edit, "Edit this memory");
+            SemanticProperties.SetDescription(delete, "Delete this memory");
+
+            edit.Clicked += async (_, _) =>
+            {
+                try
+                {
+                    if (Navigation.NavigationStack.LastOrDefault() == this)
+                    {
+                        await own.Edit();
+                    }
+                }
+                catch (Exception)
+                {
+                    // A button handler: nothing here may end the app.
+                }
+            };
+
+            delete.Clicked += async (_, _) =>
+            {
+                try
+                {
+                    if (Navigation.NavigationStack.LastOrDefault() == this
+                        && await DisplayAlertAsync("Delete memory", $"Delete \"{_details.Title}\"? This can't be undone.", "Delete", "Cancel"))
+                    {
+                        await own.Delete();
+                    }
+                }
+                catch (Exception)
+                {
+                    // A button handler: nothing here may end the app.
+                }
+            };
+
+            return new HorizontalStackLayout { Spacing = 8, Children = { edit, delete } };
         }
 
         private static View ItemView(MemoryItemLine item)
@@ -285,4 +345,9 @@ namespace Chatcheology.Android.Pages
 
         private static Label Muted(string text, double size) => new Label { Text = text, FontSize = size }.TextIn("MutedText");
     }
+
+    /// <summary>What Edit and Delete do on an own memory's details (CH-54): given by the conversation page.</summary>
+    /// <param name="Edit">Opens the form over the memory.</param>
+    /// <param name="Delete">Deletes it (already confirmed) and closes the details.</param>
+    internal sealed record OwnMemoryActions(Func<Task> Edit, Func<Task> Delete);
 }

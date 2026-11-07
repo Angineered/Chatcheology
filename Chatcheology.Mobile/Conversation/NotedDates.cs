@@ -4,45 +4,22 @@ using Chatcheology.Mobile.Memories;
 
 namespace Chatcheology.Mobile.Conversation
 {
-    /// <summary>
-    /// A noted date the phone's own user added (CH-47): kept in the app's settings for the archive, never in
-    /// the archive. Fields follow <see cref="NotedDateRules"/>.
-    /// </summary>
-    /// <param name="Id">A stable identifier made on the phone.</param>
-    /// <param name="Title">The title.</param>
-    /// <param name="Month">The month.</param>
-    /// <param name="Day">The day.</param>
-    /// <param name="Year">The year it started, or none.</param>
-    /// <param name="Note">A short note, or none.</param>
-    public sealed record OwnNotedDate(string Id, string Title, int Month, int Day, int? Year, string? Note)
-    {
-        /// <summary>Its external gallery links (CH-48), in order, each keeping <see cref="ExternalLinkRules"/>.</summary>
-        public IReadOnlyList<GalleryLink> Links { get; init; } = [];
-
-        /// <summary>Equal when every field and every link, in order, are equal.</summary>
-        public bool Equals(OwnNotedDate? other) =>
-            other is not null
-            && Id == other.Id && Title == other.Title && Month == other.Month && Day == other.Day && Year == other.Year
-            && Note == other.Note && Links.SequenceEqual(other.Links);
-
-        /// <inheritdoc />
-        public override int GetHashCode() => HashCode.Combine(Id, Title, Month, Day, Year, Note, Links.Count);
-    }
-
     /// <summary>One noted date as Settings lists it.</summary>
-    /// <param name="Id">The identifier: the archive's number for a gifted date, the phone's for an own one.</param>
+    /// <param name="Id">The identifier: the archive's number for the gifted date.</param>
     /// <param name="Title">The title.</param>
     /// <param name="Month">The month.</param>
     /// <param name="Day">The day.</param>
     /// <param name="Year">The year it started, or none.</param>
     /// <param name="Note">A short note, or none.</param>
-    /// <param name="IsGifted">Whether it came with the archive (read-only here; it can only be muted).</param>
-    /// <param name="Notify">Whether it notifies (step 3 uses this); an own date always does.</param>
+    /// <param name="IsGifted">
+    /// Whether it came with the archive (read-only here; it can only be muted). Always true since CH-54 step 2 removed
+    /// the phone's own noted dates (the phone owner's own memories replace them).
+    /// </param>
+    /// <param name="Notify">Whether it notifies (step 3 uses this).</param>
     public sealed record NotedDateListing(string Id, string Title, int Month, int Day, int? Year, string? Note, bool IsGifted, bool Notify)
     {
         /// <summary>
-        /// Its external gallery links (CH-48), in order: a gifted date's from the archive, an own date's from the
-        /// phone's settings.
+        /// Its external gallery links (CH-48), in order, from the archive.
         /// </summary>
         public IReadOnlyList<GalleryLink> Galleries { get; init; } = [];
 
@@ -94,10 +71,10 @@ namespace Chatcheology.Mobile.Conversation
             || (month == 2 && day == 29 && today is { Month: 2, Day: 28 } && !DateTime.IsLeapYear(today.Year));
 
         /// <summary>
-        /// Every noted date of the archive for Settings: the gifted ones (with their mute switch) and the
-        /// phone's own, each group by title.
+        /// Every noted date of the archive for Settings: the gifted ones, with their mute switch, by title. (The phone's
+        /// own noted dates were removed by CH-54 step 2; a leftover settings key is never read.)
         /// </summary>
-        /// <param name="settings">The app's settings (own dates and mutes).</param>
+        /// <param name="settings">The app's settings (the mutes).</param>
         /// <param name="contentsSha256">The archive's identity.</param>
         /// <param name="gifted">The archive's noted dates.</param>
         /// <param name="giftedLinks">The gifted dates' gallery links by noted-date identifier (CH-48), or none.</param>
@@ -117,16 +94,11 @@ namespace Chatcheology.Mobile.Conversation
                     Galleries = giftedLinks?.GetValueOrDefault(date.NotedDateID) ?? [],
                 })
                 .OrderBy(date => date.Title, StringComparer.CurrentCultureIgnoreCase)
-                .Concat(settings.GetOwnNotedDates(contentsSha256)
-                    .Select(date => new NotedDateListing(date.Id, date.Title, date.Month, date.Day, date.Year, date.Note, IsGifted: false, Notify: true)
-                    {
-                        Galleries = date.Links,
-                    }))
                 .ToList();
         }
 
         /// <summary>
-        /// Today's noted dates, by title: gifted and own together. <paramref name="days"/> are the days with
+        /// Today's noted dates, by title. <paramref name="days"/> are the days with
         /// messages, for the jump.
         /// </summary>
         public static IReadOnlyList<NotedToday> For(

@@ -147,6 +147,22 @@ namespace Chatcheology.Mobile.Memories
             return end is { } last && DateOf(precision, last) is var to && to != from ? from + " to " + to : from;
         }
 
+        /// <summary>The mark on the phone owner's own memories in the Saved screen's Memories tab (CH-54).</summary>
+        public const string MineMark = "Mine";
+
+        /// <summary>
+        /// What a screen reader hears for a row of a Saved memory tab: its title, "mine" for one of the phone owner's own
+        /// (CH-54), then its lines, comma separated.
+        /// </summary>
+        public static string ListRowScreenReaderText(MemoryListItem item)
+        {
+            ArgumentNullException.ThrowIfNull(item);
+
+            return string.Join(
+                ", ",
+                new[] { item.Title, item.IsOwn ? "mine" : null, item.Line, item.MutedLine }.Where(part => !string.IsNullOrEmpty(part)));
+        }
+
         private static string DateOf(string precision, DateTime local) => precision switch
         {
             "Month" => local.ToString("MMMM yyyy", CultureInfo.CurrentCulture),

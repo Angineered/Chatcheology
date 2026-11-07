@@ -2,6 +2,7 @@ using System.Globalization;
 using Chatcheology.Archive;
 using Chatcheology.Mobile.Conversation;
 using Chatcheology.Mobile.Library;
+using Chatcheology.Mobile.OwnMemories;
 using Chatcheology.Mobile.Settings;
 using Microsoft.Data.Sqlite;
 
@@ -11,7 +12,7 @@ namespace Chatcheology.Mobile.Notifications
     /// <param name="ArchiveId">The archive's folder name under <c>archives/</c> (what a tap opens).</param>
     /// <param name="ContentsSha256">The archive's identity.</param>
     /// <param name="OnThisDayEnabled">Whether On this day is on for the archive; off, it never notifies.</param>
-    /// <param name="Dates">Its gifted and own noted dates, each with whether it notifies (a muted gifted date does not).</param>
+    /// <param name="Dates">Its gifted noted dates, each with whether it notifies (a muted one does not).</param>
     /// <param name="PostedThrough">The last day this archive's notification was posted, if any: it is not posted twice that day.</param>
     public sealed record ArchiveNotedDates(
         string ArchiveId, string ContentsSha256, bool OnThisDayEnabled, IReadOnlyList<NotedDateListing> Dates, DateOnly? PostedThrough = null)
@@ -37,6 +38,33 @@ namespace Chatcheology.Mobile.Notifications
             + NotifyingYearly.Count(memory => YearlyMemories.ShowsOn(memory.Start, day));
     }
 
+    /// <summary>
+    /// The phone owner's own yearly memories (CH-54) as the notification schedule sees them: counted once per phone,
+    /// whatever archives are installed, in their own daily notification.
+    /// </summary>
+    /// <param name="RemindersOn">The My memories reminders switch (per phone); off, they never notify.</param>
+    /// <param name="Yearly">The own yearly memories, each with whether it notifies (a muted one does not).</param>
+    /// <param name="PostedThrough">The last day the own notification was posted, if any: it is not posted twice that day.</param>
+    /// <param name="TapArchiveId">What a tap opens: the last-opened installed archive's folder name, or none (the start screen).</param>
+    public sealed record OwnMemoryReminders(
+        bool RemindersOn, IReadOnlyList<OwnYearlyMemoryListing> Yearly, DateOnly? PostedThrough = null, string? TapArchiveId = null)
+    {
+        /// <summary>The own yearly memories that can notify: none with reminders off, otherwise every one not muted.</summary>
+        public IEnumerable<OwnYearlyMemoryListing> NotifyingYearly => RemindersOn ? Yearly.Where(memory => memory.Notify) : [];
+
+        /// <summary>Whether an own memory can notify on some day.</summary>
+        public bool CanNotify => NotifyingYearly.Any();
+
+        /// <summary>How many own yearly memories notify on <paramref name="day"/>: only on or after their own date.</summary>
+        public int CountOn(DateOnly day) => NotifyingYearly.Count(memory => YearlyMemories.ShowsOn(memory.Start, day));
+    }
+
+    /// <summary>The one own memories notification of a day (CH-54).</summary>
+    /// <param name="Count">How many own yearly memories fall on the day.</param>
+    /// <param name="Text">What it says: see <see cref="NotedDateSchedule.TextForOwn"/>; never a title.</param>
+    /// <param name="TapArchiveId">The archive a tap opens at today's On this day card, or none: the start screen.</param>
+    public sealed record DueOwnNotification(int Count, string Text, string? TapArchiveId);
+
     /// <summary>The one notification an archive gets on a day.</summary>
     /// <param name="ArchiveId">The archive's folder name.</param>
     /// <param name="ContentsSha256">The archive's identity.</param>
@@ -51,7 +79,25 @@ namespace Chatcheology.Mobile.Notifications
     /// time has already passed without today being posted, a moment from now (<see cref="NotedDateSchedule.CatchUpDelay"/>).
     /// </param>
     /// <param name="Due">One notification per archive with noted dates that day, in archive order.</param>
-    public sealed record NextNotification(DateOnly Day, DateTime LocalMoment, IReadOnlyList<DueNotification> Due);
+    public sealed record NextNotification(DateOnly Day, DateTime LocalMoment, IReadOnlyList<DueNotification> Due)
+    {
+        /// <summary>The own memories notification posted at the same moment (CH-54), or none.</summary>
+        public DueOwnNotification? Own { get; init; }
+
+        /// <summary>
+        /// A retry after the own store could not be read now (<see cref="NotedDateSchedule.WithRetry"/>): nothing of its
+        /// own is due; the alarm reads afresh and schedules again.
+        /// </summary>
+        public bool IsRetry { get; init; }
+    }
+
+    /// <summary>One read of the own memories for the schedule (CH-54).</summary>
+    /// <param name="Reminders">What was read, or none when the store could not be read.</param>
+    /// <param name="MayPass">
+    /// The read failed in a way that may pass (busy, locked, an I/O error): retry later rather than treat the own memories
+    /// as gone. False for a store that was read, and for one that is damaged, foreign or newer.
+    /// </param>
+    public sealed record OwnRead(OwnMemoryReminders? Reminders, bool MayPass);
 
     /// <summary>
     /// When noted dates notify (CH-47 step 3), without any Android type: from every installed archive's noted
@@ -131,13 +177,26 @@ namespace Chatcheology.Mobile.Notifications
         /// <param name="archives">Every installed archive's noted dates.</param>
         /// <param name="time">The app's notification time.</param>
         /// <param name="localNow">The phone's local time now.</param>
-        public static NextNotification? Next(IEnumerable<ArchiveNotedDates> archives, TimeOnly time, DateTime localNow)
+        public static NextNotification? Next(IEnumerable<ArchiveNotedDates> archives, TimeOnly time, DateTime localNow) =>
+            Next(archives, null, time, localNow);
+
+        /// <summary>
+        /// As <see cref="Next(IEnumerable{ArchiveNotedDates}, TimeOnly, DateTime)"/>, with the phone owner's own yearly
+        /// memories (CH-54) too: the next moment is the earlier of the archives' and the own one, and a moment that is
+        /// both carries both. A due, unposted own day after the time is scheduled <see cref="CatchUpDelay"/> from now,
+        /// as an archive's is.
+        /// </summary>
+        /// <param name="archives">Every installed archive's noted dates.</param>
+        /// <param name="own">The own yearly memories, or none.</param>
+        /// <param name="time">The app's notification time.</param>
+        /// <param name="localNow">The phone's local time now.</param>
+        public static NextNotification? Next(IEnumerable<ArchiveNotedDates> archives, OwnMemoryReminders? own, TimeOnly time, DateTime localNow)
         {
             ArgumentNullException.ThrowIfNull(archives);
 
             var list = archives.ToList();
 
-            if (!list.Any(archive => archive.CanNotify))
+            if (!list.Any(archive => archive.CanNotify) && own?.CanNotify != true)
             {
                 return null;
             }
@@ -148,10 +207,11 @@ namespace Chatcheology.Mobile.Notifications
             if (day.ToDateTime(time) <= now)
             {
                 var late = DueOn(list, day);
+                var lateOwn = OwnDueOn(own, day);
 
-                if (late.Count > 0)
+                if (late.Count > 0 || lateOwn is not null)
                 {
-                    return new NextNotification(day, now + CatchUpDelay, late);
+                    return new NextNotification(day, now + CatchUpDelay, late) { Own = lateOwn };
                 }
 
                 day = day.AddDays(1);
@@ -162,10 +222,11 @@ namespace Chatcheology.Mobile.Notifications
                 for (var i = 0; i < DaysAhead && day < DateOnly.MaxValue; i++, day = day.AddDays(1))
                 {
                     var due = DueOn(list, day);
+                    var dueOwn = OwnDueOn(own, day);
 
-                    if (due.Count > 0)
+                    if (due.Count > 0 || dueOwn is not null)
                     {
-                        return new NextNotification(day, day.ToDateTime(time), due);
+                        return new NextNotification(day, day.ToDateTime(time), due) { Own = dueOwn };
                     }
                 }
 
@@ -173,7 +234,9 @@ namespace Chatcheology.Mobile.Notifications
                 // on its own date. Jump there and search on; every jump moves forward, so this ends.
                 if (day >= DateOnly.MaxValue
                     || list.SelectMany(archive => archive.NotifyingYearly)
-                        .Select(memory => (DateOnly?)memory.Start)
+                        .Select(memory => memory.Start)
+                        .Concat((own?.NotifyingYearly ?? []).Select(memory => memory.Start))
+                        .Select(start => (DateOnly?)start)
                         .Where(start => start >= day)
                         .Min() is not { } later)
                 {
@@ -183,6 +246,154 @@ namespace Chatcheology.Mobile.Notifications
                 day = later;
             }
         }
+
+        /// <summary>
+        /// What the own memories notification (CH-54) says for <paramref name="count"/>: "A memory today" or
+        /// "N memories today". Never a title.
+        /// </summary>
+        public static string TextForOwn(int count) =>
+            count == 1 ? "A memory today" : $"{count.ToString(CultureInfo.CurrentCulture)} memories today";
+
+        /// <summary>
+        /// The own memories notification for <paramref name="day"/>, or none: none when nothing of <paramref name="own"/>
+        /// falls on it or it was already posted that day.
+        /// </summary>
+        public static DueOwnNotification? OwnDueOn(OwnMemoryReminders? own, DateOnly day)
+        {
+            if (own is null || own.PostedThrough == day)
+            {
+                return null;
+            }
+
+            var count = own.CountOn(day);
+
+            return count > 0 ? new DueOwnNotification(count, TextForOwn(count), own.TapArchiveId) : null;
+        }
+
+        /// <summary>
+        /// What a tap on the own memories notification opens (CH-54): the installed archive opened last, or none (the
+        /// start screen) when no archive is installed or none was ever opened. A tie goes to the first folder name.
+        /// </summary>
+        /// <param name="archives">Each installed archive's folder name and when it was last opened, if ever.</param>
+        public static string? OwnTapTarget(IEnumerable<(string ArchiveId, DateTime? LastOpenedUtc)> archives)
+        {
+            ArgumentNullException.ThrowIfNull(archives);
+
+            return archives
+                .Where(archive => archive.LastOpenedUtc is not null)
+                .OrderByDescending(archive => archive.LastOpenedUtc)
+                .ThenBy(archive => archive.ArchiveId, StringComparer.Ordinal)
+                .Select(archive => archive.ArchiveId)
+                .FirstOrDefault();
+        }
+
+        /// <summary>
+        /// The own yearly memories from <paramref name="store"/> with the reminders switch, mutes and posted day kept
+        /// there, and the tap target among <paramref name="archives"/> (from <see cref="Read"/>, so only archives that can
+        /// be opened). None when the store cannot be read, now or at all (nothing then notifies for it; see
+        /// <see cref="ReadOwnWithRetry"/> to tell the two apart). The store's busy timeout lets this read wait for a
+        /// write the UI is committing. Call it off the UI thread.
+        /// </summary>
+        public static OwnMemoryReminders? ReadOwn(OwnMemoryStore store, IEnumerable<ArchiveNotedDates> archives, ArchiveSettings settings) =>
+            ReadOwnOnce(store, archives, settings).Reminders;
+
+        /// <summary>
+        /// As <see cref="ReadOwn"/>, telling a failure that may pass (the file busy past its timeout, an I/O error) from
+        /// an unreadable store (damaged, foreign, a newer version) (1b review S2). A failure that may pass is tried again
+        /// up to <paramref name="attempts"/> times, <paramref name="pause"/> apart; still failing, the result says
+        /// <see cref="OwnRead.MayPass"/>, and the caller schedules a retry (<see cref="WithRetry"/>) rather than leaving
+        /// the own reminders silent until the app next reschedules. Call it off the UI thread.
+        /// </summary>
+        public static OwnRead ReadOwnWithRetry(
+            OwnMemoryStore store, IEnumerable<ArchiveNotedDates> archives, ArchiveSettings settings, int attempts = 3, TimeSpan? pause = null)
+        {
+            ArgumentOutOfRangeException.ThrowIfLessThan(attempts, 1);
+
+            var list = archives as IReadOnlyCollection<ArchiveNotedDates> ?? archives.ToList();
+            var read = ReadOwnOnce(store, list, settings);
+
+            for (var attempt = 1; attempt < attempts && read.MayPass; attempt++)
+            {
+                Thread.Sleep(pause ?? TimeSpan.FromMilliseconds(500));
+                read = ReadOwnOnce(store, list, settings);
+            }
+
+            return read;
+        }
+
+        /// <summary>How long after a failed own read that may pass the alarm is tried again.</summary>
+        public static readonly TimeSpan RetryDelay = TimeSpan.FromMinutes(15);
+
+        /// <summary>
+        /// <paramref name="next"/>, or a retry <see cref="RetryDelay"/> from now when the own store could not be read now
+        /// (<paramref name="ownMayPass"/>) and nothing is due sooner. A retry moment posts nothing of its own: the alarm
+        /// then reads everything afresh, posts what is due today and schedules again.
+        /// </summary>
+        public static NextNotification? WithRetry(NextNotification? next, bool ownMayPass, DateTime localNow)
+        {
+            if (!ownMayPass)
+            {
+                return next;
+            }
+
+            var now = DateTime.SpecifyKind(localNow, DateTimeKind.Unspecified);
+            var retry = now + RetryDelay;
+
+            return next is not null && next.LocalMoment <= retry
+                ? next
+                : new NextNotification(DateOnly.FromDateTime(retry), retry, []) { IsRetry = true };
+        }
+
+        /// <summary>
+        /// Whether an alarm scheduled for <paramref name="scheduledDay"/> may post when it fires at <paramref name="localNow"/>
+        /// (step 2 review S1): only when that day is today and today's notification <paramref name="time"/> has passed. A
+        /// retry alarm (<see cref="WithRetry"/>) that fires earlier, such as 07:15 for 09:00, or just after midnight for the
+        /// next day, posts nothing; it only schedules again.
+        /// </summary>
+        public static bool MayPostNow(DateOnly scheduledDay, TimeOnly time, DateTime localNow)
+        {
+            var now = DateTime.SpecifyKind(localNow, DateTimeKind.Unspecified);
+            var today = DateOnly.FromDateTime(now);
+
+            return scheduledDay == today && today.ToDateTime(time) <= now;
+        }
+
+        private static OwnRead ReadOwnOnce(OwnMemoryStore store, IEnumerable<ArchiveNotedDates> archives, ArchiveSettings settings)
+        {
+            ArgumentNullException.ThrowIfNull(store);
+            ArgumentNullException.ThrowIfNull(archives);
+            ArgumentNullException.ThrowIfNull(settings);
+
+            var tap = OwnTapTarget(archives.Select(archive => (archive.ArchiveId, settings.GetLastOpenedUtc(archive.ContentsSha256))));
+
+            try
+            {
+                return new OwnRead(
+                    new OwnMemoryReminders(
+                        store.Settings.RemindersOn,
+                        OwnMemoryIndex.YearlyListings(store),
+                        store.Settings.PostedDay,
+                        tap),
+                    MayPass: false);
+            }
+            catch (Exception exception) when (exception is OwnMemoriesStoreException or SqliteException or IOException or UnauthorizedAccessException)
+            {
+                return new OwnRead(null, MayPass(exception));
+            }
+        }
+
+        /// <summary>Whether a failed read may succeed later: the file busy or locked, or an I/O error; not a damaged, foreign or newer file.</summary>
+        internal static bool MayPass(Exception exception)
+        {
+            var sqlite = exception as SqliteException ?? exception.InnerException as SqliteException;
+
+            return sqlite is not null
+                ? sqlite.SqliteErrorCode is 5 or 6 or 10 // SQLITE_BUSY, SQLITE_LOCKED, SQLITE_IOERR
+                : exception is IOException;
+        }
+
+        /// <summary>The own memories notification's number: one per phone, the same on every run, never an archive's.</summary>
+        public static int OwnNotificationId { get; } = NotificationId("own-memories");
 
         /// <summary>
         /// The instant at which the local wall-clock time <paramref name="local"/> happens in <paramref name="zone"/>.
@@ -274,6 +485,12 @@ namespace Chatcheology.Mobile.Notifications
 
             return id == 0 ? 1 : id;
         }
+
+        /// <summary>Counts for the log with the own memories (CH-54): <c>own=N ownNotifying=N</c> added; never a title, a name or a date.</summary>
+        public static string DescribeCounts(IReadOnlyCollection<ArchiveNotedDates> archives, OwnMemoryReminders? own, NextNotification? next) =>
+            DescribeCounts(archives, next) + string.Create(
+                CultureInfo.InvariantCulture,
+                $" own={own?.Yearly.Count ?? 0} ownNotifying={own?.NotifyingYearly.Count() ?? 0}{(next?.IsRetry == true ? " retry=yes" : string.Empty)}");
 
         /// <summary>Counts for the log: never a title, a name or a date.</summary>
         public static string DescribeCounts(IReadOnlyCollection<ArchiveNotedDates> archives, NextNotification? next) =>

@@ -83,7 +83,7 @@ namespace Chatcheology.Mobile.Tests
             return builder;
         }
 
-        private ArchiveSession Open(MemoryArchiveBuilder builder, Action<ArchiveSettings, string>? configure = null)
+        private ArchiveSession Open(MemoryArchiveBuilder builder, Action<ArchiveSettings, string>? configure = null, OwnMemories.OwnMemoryStore? own = null)
         {
             var library = new ArchiveLibrary(Path.Combine(_root.Path, "library-" + Guid.NewGuid().ToString("N")));
             var settings = new ArchiveSettings(_store);
@@ -97,7 +97,7 @@ namespace Chatcheology.Mobile.Tests
             var archive = library.ListArchives(settings).Single();
             configure?.Invoke(settings, archive.ContentsSha256!);
 
-            return ArchiveSession.Open(archive, settings);
+            return ArchiveSession.Open(archive, settings, ownStore: own);
         }
 
         private static ArchiveSession AllOn(ArchiveSession session)
@@ -141,6 +141,45 @@ namespace Chatcheology.Mobile.Tests
             Assert.Equal(timeline.OpenAtDay(new DateOnly(2025, 3, 11)), plain.OpenAtDay(new DateOnly(2025, 3, 11)));
             Assert.Empty(session.FindMemories("Racer"));
         }
+
+        [Fact]
+        public void WithEveryLayerOff_IncludingMyMemories_TheConversationIsExactlyAsWithoutMemories()
+        {
+            // CH-54: the phone owner's own memories, one before, one among and one after the messages, then every layer
+            // off, the My memories switch included.
+            var own = new OwnMemories.OwnMemoryStore(Path.Combine(_root.Path, "files-" + Guid.NewGuid().ToString("N")));
+            own.Add(OwnDraft("Invented Racer night", new DateOnly(2025, 3, 1)));
+            own.Add(OwnDraft("Invented Racer rematch", new DateOnly(2025, 3, 11)));
+            own.Add(OwnDraft("Invented Racer final", new DateOnly(2025, 4, 2)));
+
+            using var session = Open(Sample(), own: own);
+            var before = session.CreateTimeline();
+            before.OpenAtLatest();
+            Assert.Equal(3, before.Rows.OfType<EntryCardRow>().Count(row => row.Key.IsOwn));
+
+            session.SetLayerShown(MemoryArchiveBuilder.Personal, false);
+            session.OwnLayerShown = false;
+
+            var timeline = session.CreateTimeline();
+            timeline.OpenAtLatest();
+
+            var plain = new ConversationTimeline(session.Reader, session.Me, session.LowQuality, session.Stars);
+            plain.OpenAtLatest();
+
+            Assert.Equal(Describe(plain.Rows), Describe(timeline.Rows));
+            Assert.Equal(["D 03-10", "M 1", "M 2", "M 3", "D 03-12", "M 4", "M 5"], Describe(timeline.Rows));
+            Assert.Equal(session.ReadDays(), session.ReadCalendarDays());
+            Assert.Equal(timeline.OpenAtDay(new DateOnly(2025, 3, 11)), plain.OpenAtDay(new DateOnly(2025, 3, 11)));
+            Assert.Equal(timeline.OpenAtDay(new DateOnly(2025, 3, 1)), plain.OpenAtDay(new DateOnly(2025, 3, 1)));
+            Assert.Empty(session.FindMemories("Racer"));
+        }
+
+        private static OwnMemories.OwnMemoryDraft OwnDraft(string title, DateOnly day) => new()
+        {
+            Title = title,
+            Start = day,
+            Precision = MemoryDatePrecision.Day,
+        };
 
         [Fact]
         public void TheDefaults_AreTheCollections_SharedGamingOff_PersonalOn()

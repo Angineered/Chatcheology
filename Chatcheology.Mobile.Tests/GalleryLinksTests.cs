@@ -327,121 +327,8 @@ namespace Chatcheology.Mobile.Tests
             Assert.Equal([link], index.Details(new MemoryKey(11, null))!.Galleries);
         }
 
-        // ---------------------------------------------------------------------------------------------
-        // Own dates' links in settings.
-        // ---------------------------------------------------------------------------------------------
-
-        [Fact]
-        public void Own_date_links_are_saved_in_order_and_cleared_by_forget()
-        {
-            var builder = new MemoryArchiveBuilder();
-            builder.Message(Day);
-            var (session, _) = Open(builder);
-            var today = new DateOnly(2026, 3, 10);
-
-            using (session)
-            {
-                var result = session.SaveOwnNotedDate(
-                    "own", "Trip", 3, 10, null, null,
-                    [(Two, "Second first"), ("  ", null), (" " + One + " ", "  ")],
-                    today);
-
-                Assert.True(result.Saved);
-
-                var own = session.NotedDateListings.Single(l => !l.IsGifted);
-                Assert.Equal([Two, One], own.Galleries.Select(g => g.Url));
-                Assert.Equal(["Second first", null], own.Galleries.Select(g => g.Label));
-                Assert.Equal("2 links", own.GalleryText);
-
-                // Reordered and one removed.
-                Assert.True(session.SaveOwnNotedDate("own", "Trip", 3, 10, null, null, [(One, null), (Two, "Second first")], today).Saved);
-                Assert.Equal([One, Two], session.NotedDateListings.Single(l => !l.IsGifted).Galleries.Select(g => g.Url));
-
-                // The overload without links keeps them.
-                Assert.Empty(session.SaveOwnNotedDate("own", "Trip renamed", 3, 10, null, null, today));
-                Assert.Equal(2, session.NotedDateListings.Single(l => !l.IsGifted).Galleries.Count);
-
-                Assert.True(session.SaveOwnNotedDate("own", "Trip", 3, 10, null, null, [(One, null)], today).Saved);
-                Assert.Equal("Link · photos.example.org", session.NotedDateListings.Single(l => !l.IsGifted).GalleryText);
-                Assert.Equal("Link · photos.example.org", session.OnThisDayFor([], today).Noted.Single().GalleryText);
-
-                var hash = session.Archive.ContentsSha256!;
-                Assert.Contains(One, _store.Values["archive." + hash + ".ownNotedDates"], StringComparison.Ordinal);
-
-                _settings.Forget(hash);
-                Assert.Empty(_settings.GetOwnNotedDates(hash));
-                Assert.False(_store.Values.ContainsKey("archive." + hash + ".ownNotedDates"));
-            }
-        }
-
-        [Fact]
-        public void A_bad_link_shows_every_problem_and_nothing_is_stored()
-        {
-            var builder = new MemoryArchiveBuilder();
-            builder.Message(Day);
-            var (session, _) = Open(builder);
-            var today = new DateOnly(2026, 3, 10);
-
-            using (session)
-            {
-                var result = session.SaveOwnNotedDate(
-                    "own", " ", 3, 10, null, null,
-                    [(One, null), ("http://photos.example.org/x", null), (Two, new string('x', 61)), (null, "Label only")],
-                    today);
-
-                Assert.False(result.Saved);
-                Assert.Equal([NotedDateField.Title], result.Errors.Keys);
-                Assert.Equal([1, 2, 3], result.Links.RowErrors.Keys.Order());
-                Assert.Equal(ExternalLinkRules.UrlError("http://photos.example.org/x"), result.Links.RowErrors[1]);
-                Assert.Equal(ExternalLinkRules.LabelError(new string('x', 61)), result.Links.RowErrors[2]);
-                Assert.Equal(ExternalLinkRules.UrlError(null), result.Links.RowErrors[3]);
-                Assert.Empty(session.NotedDateListings);
-
-                // A good date with a bad link is not stored either.
-                Assert.False(session.SaveOwnNotedDate("own", "Trip", 3, 10, null, null, [("javascript:alert(1)", null)], today).Saved);
-                Assert.Empty(session.NotedDateListings);
-
-                // Eleven links: the count.
-                var eleven = Enumerable.Range(1, 11).Select(i => ((string?)(One + i), (string?)null)).ToList();
-                var tooMany = session.SaveOwnNotedDate("own", "Trip", 3, 10, null, null, eleven, today);
-                Assert.Equal(ExternalLinkRules.CountError(11), tooMany.Links.CountError);
-                Assert.Empty(session.NotedDateListings);
-            }
-        }
-
-        [Fact]
-        public void Damaged_link_values_in_settings_are_dropped_and_never_throw()
-        {
-            const string Date = "\"Id\":\"a\",\"Title\":\"Trip\",\"Month\":3,\"Day\":10";
-
-            foreach (var links in new[]
-            {
-                "\"Links\":\"not a list\"",
-                "\"Links\":42",
-                "\"Links\":{\"Url\":\"" + One + "\"}",
-                "\"Links\":[1,\"x\",null,[],{}]",
-                "\"Links\":[{\"Url\":5},{\"Url\":\"http://photos.example.org/x\"},{\"Url\":\"" + One + "\",\"Label\":7}]",
-                "\"Links\":[{\"Url\":\"javascript:alert(1)\"},{\"Url\":\"https://a@b.example/x\"}]",
-            })
-            {
-                _store.Set("archive.hash.ownNotedDates", "[{" + Date + "," + links + "}]");
-
-                var date = Assert.Single(_settings.GetOwnNotedDates("hash"));
-                Assert.Equal("Trip", date.Title);
-                Assert.Empty(date.Links);
-            }
-
-            // Good links survive beside bad ones, in order, up to ten.
-            var mixed = string.Join(",", Enumerable.Range(1, 12).Select(i => "{\"Url\":\"" + One + i + "\",\"Label\":\"L" + i + "\"}"));
-            _store.Set("archive.hash.ownNotedDates", "[{" + Date + ",\"Links\":[{\"Url\":\"http://x.example/\"}," + mixed + "]}]");
-
-            var kept = Assert.Single(_settings.GetOwnNotedDates("hash")).Links;
-            Assert.Equal(Enumerable.Range(1, 10).Select(i => "L" + i), kept.Select(l => l.Label));
-
-            // Older values without links read as before.
-            _store.Set("archive.hash.ownNotedDates", "[{" + Date + "}]");
-            Assert.Empty(Assert.Single(_settings.GetOwnNotedDates("hash")).Links);
-        }
+        // The phone's own noted dates and their links in settings were removed by CH-54 step 2; the own memories'
+        // links are checked by the form (OwnMemoryFormTests) with the same rules.
 
         [Fact]
         public void The_synthetic_archive_with_memories_carries_gallery_links_and_validates()
@@ -457,20 +344,6 @@ namespace Chatcheology.Mobile.Tests
 
             Assert.Equal("2 links", GalleryLinks.Summary(grouped[(ExternalLinkOwnerKind.Entry, 10)]));
             Assert.Equal("Link · example.org", GalleryLinks.Summary(grouped[(ExternalLinkOwnerKind.Entry, 501)]));
-        }
-
-        [Fact]
-        public void Own_dates_with_links_round_trip_through_settings()
-        {
-            var date = new OwnNotedDate("x", "Trip", 9, 3, 2018, "Note")
-            {
-                Links = [GalleryLinks.Keep(One, "Day 1")!, GalleryLinks.Keep(Two, null)!],
-            };
-
-            _settings.SetOwnNotedDates("hash", [date]);
-
-            Assert.Equal([date], _settings.GetOwnNotedDates("hash"));
-            Assert.NotEqual(date, date with { Links = [date.Links[1], date.Links[0]] });
         }
     }
 }

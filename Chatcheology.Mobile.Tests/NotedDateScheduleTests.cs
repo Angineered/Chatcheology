@@ -291,10 +291,11 @@ namespace Chatcheology.Mobile.Tests
         }
 
         [Fact]
-        public void Installed_archives_are_read_with_gifted_and_own_dates_mutes_and_the_switch_and_forget_clears_them()
+        public void Installed_archives_are_read_with_gifted_dates_mutes_and_the_switch_and_forget_clears_them()
         {
             var library = new ArchiveLibrary(_root.Path);
-            var settings = new ArchiveSettings(new MemorySettings());
+            var store = new MemorySettings();
+            var settings = new ArchiveSettings(store);
 
             var withMessages = new ArchiveBuilder();
             withMessages.Add("Hello", ArchiveBuilder.Other, new DateTime(2020, 4, 4, 10, 0, 0));
@@ -311,33 +312,35 @@ namespace Chatcheology.Mobile.Tests
             var secondHash = ArchiveLibrary.ContentsSha256Of(second)!;
 
             settings.SetNotedDateMuted(firstHash, 2, true);
-            settings.SetOwnNotedDates(firstHash, [new OwnNotedDate("own", "Own one", 4, 4, null, null)]);
+
+            // A leftover own noted date (removed by CH-54 step 2) is never read and never notifies.
+            store.Values["archive." + firstHash + ".ownNotedDates"] = "[{\"Id\":\"own\",\"Title\":\"Own one\",\"Month\":4,\"Day\":4}]";
 
             var archives = NotedDateSchedule.Read(library, settings);
 
             Assert.Equal(2, archives.Count);
             var read = archives.Single(a => a.ContentsSha256 == firstHash);
             Assert.Equal(Path.GetFileName(first), read.ArchiveId);
-            Assert.Equal(3, read.Dates.Count);
-            Assert.Equal(["Gifted one", "Own one"], read.Notifying.Select(d => d.Title).Order().ToList());
+            Assert.Equal(2, read.Dates.Count);
+            Assert.Equal(["Gifted one"], read.Notifying.Select(d => d.Title).Order().ToList());
 
             var due = NotedDateSchedule.DueOn(archives, new DateOnly(2026, 4, 4));
             Assert.Equal(2, due.Count);
-            Assert.Equal("2 noted dates today", due.Single(d => d.ContentsSha256 == firstHash).Text);
+            Assert.Equal("A noted date today", due.Single(d => d.ContentsSha256 == firstHash).Text);
             Assert.Equal("A noted date today", due.Single(d => d.ContentsSha256 == secondHash).Text);
 
             // The day posted is read per archive.
             settings.SetNotedDatesPostedThrough(firstHash, new DateOnly(2026, 4, 4));
             Assert.Equal([secondHash], NotedDateSchedule.DueOn(NotedDateSchedule.Read(library, settings), new DateOnly(2026, 4, 4)).Select(d => d.ContentsSha256).ToList());
-            Assert.Equal("archives=2 notedDates=4 yearly=0 notifying=3 scheduled=yes", NotedDateSchedule.DescribeCounts(archives, NotedDateSchedule.Next(archives, Nine, At(2026, 4, 1))));
+            Assert.Equal("archives=2 notedDates=3 yearly=0 notifying=2 scheduled=yes", NotedDateSchedule.DescribeCounts(archives, NotedDateSchedule.Next(archives, Nine, At(2026, 4, 1))));
 
             // On this day off for the empty archive: it is left out.
             settings.SetOnThisDayEnabled(secondHash, false);
             Assert.Equal([firstHash], NotedDateSchedule.DueOn(NotedDateSchedule.Read(library, settings), new DateOnly(2027, 4, 4)).Select(d => d.ContentsSha256).ToList());
 
-            // Removed: gone from the schedule, and its own dates and mutes are forgotten.
+            // Removed: gone from the schedule, and a leftover own dates key and the mutes are forgotten.
             library.Remove(library.ListArchives(settings).Single(a => a.ContentsSha256 == firstHash), settings);
-            Assert.Empty(settings.GetOwnNotedDates(firstHash));
+            Assert.False(store.Values.ContainsKey("archive." + firstHash + ".ownNotedDates"));
             Assert.Empty(settings.GetMutedNotedDates(firstHash));
             Assert.Null(settings.GetNotedDatesPostedThrough(firstHash));
             var after = NotedDateSchedule.Read(library, settings);
