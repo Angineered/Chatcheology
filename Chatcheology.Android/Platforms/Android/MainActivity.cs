@@ -23,6 +23,51 @@ namespace Chatcheology.Android
         private TaskCompletionSource<AndroidUri?>? _picking;
         private ActivityResultLauncher? _pickPhoto;
         private TaskCompletionSource<AndroidUri?>? _pickingPhoto;
+        private ActivityResultLauncher? _document;
+        private TaskCompletionSource<AndroidUri?>? _pickingDocument;
+
+        /// <summary>
+        /// Opens the system Save dialog (<c>ACTION_CREATE_DOCUMENT</c>) for a new file of <paramref name="mimeType"/>, suggesting
+        /// <paramref name="name"/> (CH-54 step 3), and returns its address, or <see langword="null"/> when cancelled. No
+        /// permission: the app may write that one file.
+        /// </summary>
+        internal Task<AndroidUri?> CreateDocumentAsync(string mimeType, string name)
+        {
+            var intent = new Intent(Intent.ActionCreateDocument)
+                .AddCategory(Intent.CategoryOpenable)
+                .SetType(mimeType)
+                .PutExtra(Intent.ExtraTitle, name);
+
+            return LaunchDocument(intent);
+        }
+
+        /// <summary>
+        /// Opens the system Open dialog (<c>ACTION_OPEN_DOCUMENT</c>) for one file of <paramref name="mimeTypes"/> (CH-54 step 3)
+        /// and returns its address, or <see langword="null"/> when cancelled. No permission: the app may read that one file.
+        /// </summary>
+        internal Task<AndroidUri?> OpenDocumentAsync(string[] mimeTypes)
+        {
+            var intent = new Intent(Intent.ActionOpenDocument)
+                .AddCategory(Intent.CategoryOpenable)
+                .SetType(mimeTypes.Length == 1 ? mimeTypes[0] : "*/*")
+                .PutExtra(Intent.ExtraMimeTypes, mimeTypes);
+
+            return LaunchDocument(intent);
+        }
+
+        private Task<AndroidUri?> LaunchDocument(Intent intent)
+        {
+            if (_document is null)
+            {
+                return Task.FromResult<AndroidUri?>(null);
+            }
+
+            _pickingDocument?.TrySetResult(null);
+            _pickingDocument = new TaskCompletionSource<AndroidUri?>(TaskCreationOptions.RunContinuationsAsynchronously);
+            _document.Launch(intent);
+
+            return _pickingDocument.Task;
+        }
 
         /// <summary>The running activity, while it exists.</summary>
         internal static MainActivity? Current { get; private set; }
@@ -96,6 +141,7 @@ namespace Chatcheology.Android
             // Registered before the activity starts, as the result API requires.
             _pickFolder = RegisterForActivityResult(new ActivityResultContracts.OpenDocumentTree(), new FolderPicked(this));
             _pickPhoto = RegisterForActivityResult(new ActivityResultContracts.PickVisualMedia(), new PhotoPicked(this));
+            _document = RegisterForActivityResult(new ActivityResultContracts.StartActivityForResult(), new DocumentPicked(this));
         }
 
         /// <summary>
@@ -166,7 +212,15 @@ namespace Chatcheology.Android
 
             _picking?.TrySetResult(null);
             _pickingPhoto?.TrySetResult(null);
+            _pickingDocument?.TrySetResult(null);
             base.OnDestroy();
+        }
+
+        private sealed class DocumentPicked(MainActivity activity) : Java.Lang.Object, IActivityResultCallback
+        {
+            public void OnActivityResult(Java.Lang.Object? result) =>
+                activity._pickingDocument?.TrySetResult(
+                    result is ActivityResult { ResultCode: (int)Result.Ok } done ? done.Data?.Data : null);
         }
 
         private sealed class FolderPicked(MainActivity activity) : Java.Lang.Object, IActivityResultCallback

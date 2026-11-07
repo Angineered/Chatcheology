@@ -148,7 +148,7 @@ namespace Chatcheology.Mobile.OwnMemories
         }
 
         /// <summary>
-        /// Deletes partial files older than <see cref="OwnPhotoIntake.PartialFileAge"/> and photo files that no memory
+        /// Deletes partial files and load stages (step 3) older than <see cref="OwnPhotoIntake.PartialFileAge"/> and photo files that no memory
         /// uses and that were last written before <paramref name="nowUtc"/> minus <see cref="UnusedPhotoAge"/>. A
         /// photo a memory uses is never deleted. Runs once by itself at first use; step 2 may call it again.
         /// </summary>
@@ -157,7 +157,7 @@ namespace Chatcheology.Mobile.OwnMemories
         {
             lock (_writeLock)
             {
-                var deleted = OwnPhotoIntake.SweepPartialFiles(PhotosFolder, nowUtc);
+                var deleted = OwnPhotoIntake.SweepPartialFiles(PhotosFolder, nowUtc) + SweepLoadStages(nowUtc);
 
                 if (!Directory.Exists(PhotosFolder))
                 {
@@ -192,6 +192,210 @@ namespace Chatcheology.Mobile.OwnMemories
                     return File.GetLastWriteTimeUtc(Path.Combine(PhotosFolder, name)) < nowUtc - UnusedPhotoAge;
                 }));
             }
+        }
+
+        // ---------------------------------------------------------------- Load from a file (CH-54 step 3)
+
+        private const string LoadStagePrefix = ".incoming-load-";
+
+        private static readonly ConcurrentDictionary<string, bool> ActiveStages = new(StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>The own folder, which holds the file, the photos folder and load stages.</summary>
+        private string OwnFolder => Path.GetDirectoryName(DatabasePath)!;
+
+        /// <summary>Whether <paramref name="name"/> is a load stage folder's name: <c>.incoming-load-&lt;guid&gt;</c>.</summary>
+        public static bool IsLoadStageName(string? name) =>
+            name is not null
+            && name.StartsWith(LoadStagePrefix, StringComparison.Ordinal)
+            && Guid.TryParseExact(name[LoadStagePrefix.Length..], "N", out _);
+
+        /// <summary>A new, empty stage folder for one load, <c>files/own/.incoming-load-&lt;guid&gt;/</c>; never swept while in use.</summary>
+        internal string BeginLoadStage()
+        {
+            // First use sweeps leftovers (and stages of an earlier process) before this one exists.
+            using (Open())
+            {
+            }
+
+            var stage = Path.Combine(OwnFolder, LoadStagePrefix + Guid.NewGuid().ToString("N"));
+            ActiveStages[Path.GetFullPath(stage)] = true;
+            Directory.CreateDirectory(stage);
+            return stage;
+        }
+
+        /// <summary>Deletes a load's stage folder and whatever is left in it. Never throws; a stage left behind is swept later.</summary>
+        internal void EndLoadStage(string stage)
+        {
+            try
+            {
+                if (Directory.Exists(stage))
+                {
+                    Directory.Delete(stage, recursive: true);
+                }
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                // Swept as a leftover at a later first use.
+            }
+            finally
+            {
+                ActiveStages.TryRemove(Path.GetFullPath(stage), out _);
+            }
+        }
+
+        /// <summary>Deletes load stages left by a killed process (older than <see cref="OwnPhotoIntake.PartialFileAge"/>, not in use).</summary>
+        private int SweepLoadStages(DateTime nowUtc)
+        {
+            if (!Directory.Exists(OwnFolder))
+            {
+                return 0;
+            }
+
+            var deleted = 0;
+
+            foreach (var folder in Directory.EnumerateDirectories(OwnFolder, LoadStagePrefix + "*"))
+            {
+                if (!IsLoadStageName(Path.GetFileName(folder))
+                    || ActiveStages.ContainsKey(Path.GetFullPath(folder))
+                    || Directory.GetLastWriteTimeUtc(folder) >= nowUtc - OwnPhotoIntake.PartialFileAge)
+                {
+                    continue;
+                }
+
+                try
+                {
+                    Directory.Delete(folder, recursive: true);
+                    deleted++;
+                }
+                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+                {
+                    // Tried again at a later first use.
+                }
+            }
+
+            return deleted;
+        }
+
+        /// <summary>
+        /// Adds the loaded memories whose identity is not here yet, in one transaction, with their staged photos and the
+        /// file's mutes for them; one already here is never changed (counted as the same or different). The photos the
+        /// added memories need are moved from <paramref name="stage"/> into the photos folder first; when the transaction
+        /// fails, the ones moved in are deleted again and nothing has changed.
+        /// </summary>
+        internal OwnMemoryLoadResult CommitLoad(IReadOnlyList<OwnMemoryFile.LoadCandidate> candidates, IReadOnlySet<Guid> muted, string stage)
+        {
+            lock (_writeLock)
+            {
+                var existing = Read(null).ToDictionary(m => m.Id);
+                var added = new List<OwnMemoryFile.LoadCandidate>();
+                int same = 0, different = 0;
+
+                foreach (var candidate in candidates)
+                {
+                    if (existing.TryGetValue(candidate.Id, out var here))
+                    {
+                        if (IsSame(here, candidate.Draft))
+                        {
+                            same++;
+                        }
+                        else
+                        {
+                            different++;
+                        }
+                    }
+                    else
+                    {
+                        added.Add(candidate);
+                    }
+                }
+
+                var placed = new List<string>();
+
+                try
+                {
+                    Directory.CreateDirectory(PhotosFolder);
+
+                    foreach (var name in added.SelectMany(c => c.Draft.Photos).Select(p => p.FileName).Distinct(StringComparer.Ordinal))
+                    {
+                        var target = Path.Combine(PhotosFolder, name);
+
+                        if (File.Exists(target))
+                        {
+                            // The same bytes (the name is their hash): in use again, so the unused-photo sweep leaves it.
+                            File.SetLastWriteTimeUtc(target, DateTime.UtcNow);
+                            continue;
+                        }
+
+                        File.Move(Path.Combine(stage, name), target, overwrite: false);
+                        placed.Add(name);
+                    }
+
+                    foreach (var candidate in added)
+                    {
+                        Check(candidate.Draft);
+                    }
+
+                    using var connection = Open();
+                    using var transaction = connection.BeginTransaction();
+
+                    foreach (var candidate in added)
+                    {
+                        using (var command = Command(
+                            connection,
+                            transaction,
+                            """
+                            INSERT INTO OwnMemory (MemoryGuid, StartDate, EndDate, DatePrecision, Title, Summary, EveryYear)
+                            VALUES ($guid, $start, $end, $precision, $title, $summary, $everyYear);
+                            SELECT last_insert_rowid();
+                            """))
+                        {
+                            command.Parameters.AddWithValue("$guid", GuidText(candidate.Id));
+                            AddFields(command, candidate.Draft);
+                            var rowID = Convert.ToInt64(command.ExecuteScalar(), CultureInfo.InvariantCulture);
+                            WriteChildren(connection, transaction, rowID, candidate.Draft);
+                        }
+
+                        if (muted.Contains(candidate.Id))
+                        {
+                            using var mute = Command(connection, transaction, "INSERT INTO OwnNotifyMute (MemoryGuid) VALUES ($guid);");
+                            mute.Parameters.AddWithValue("$guid", GuidText(candidate.Id));
+                            mute.ExecuteNonQuery();
+                        }
+                    }
+
+                    BeforeLoadCommit?.Invoke();
+                    transaction.Commit();
+                }
+                catch
+                {
+                    // Nothing uses them: the rows were never committed.
+                    DeleteFiles(placed);
+                    throw;
+                }
+
+                return new OwnMemoryLoadResult(added.Count, same, different, 0, 0, placed.Count);
+            }
+        }
+
+        /// <summary>Tests only: called inside a load's transaction just before its commit.</summary>
+        internal Action? BeforeLoadCommit { get; set; }
+
+        /// <summary>Whether the stored memory has exactly the fields <paramref name="draft"/> would store.</summary>
+        private static bool IsSame(OwnMemory here, OwnMemoryDraft draft)
+        {
+            var start = PersonalMemoryFieldRules.Normalise(draft.Start!.Value, draft.Precision);
+            var end = draft.End is { } last ? PersonalMemoryFieldRules.Normalise(last, draft.Precision) : (DateOnly?)null;
+
+            return here.Start == start
+                && here.End == end
+                && here.Precision == draft.Precision
+                && here.Title == draft.Title.Trim()
+                && here.Summary == PersonalMemoryFieldRules.NormaliseText(draft.Summary)
+                && here.EveryYear == draft.EveryYear
+                && here.Photos.Select(p => (p.FileName, p.Caption))
+                    .SequenceEqual(draft.Photos.Select(p => (p.FileName, PersonalMemoryFieldRules.NormaliseText(p.Caption))))
+                && here.Links.Select(l => (l.Url, l.Label))
+                    .SequenceEqual(draft.Links.Select(l => (ExternalLinkRules.NormaliseUrl(l.Url)!, ExternalLinkRules.NormaliseLabel(l.Label))));
         }
 
         /// <summary>Tests only: called with each unused old file's name just before the sweep reads its time again.</summary>

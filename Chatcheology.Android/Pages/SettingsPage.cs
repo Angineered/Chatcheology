@@ -34,6 +34,10 @@ namespace Chatcheology.Android.Pages
         private bool _loading;
         private bool _revertingLayer;
 
+        /// <summary>A save or load is running (CH-54 step 3): the file buttons and Delete all are off.</summary>
+        private bool _fileBusy;
+        private readonly Label _fileWorking = new Label { FontSize = 13, IsVisible = false }.TextIn("MutedText");
+
         /// <param name="session">The open archive.</param>
         /// <param name="ownStore">The phone owner's own memories (CH-54), or none: no My memories section.</param>
         /// <param name="meChanged">"Me" was changed.</param>
@@ -94,7 +98,7 @@ namespace Chatcheology.Android.Pages
             RebuildNotedDates();
 
             var memories = MemoriesSection(session, layersChanged);
-            RebuildOwn();
+            _ = RebuildOwnAsync();
 
             var remove = new Button { Text = "Remove archive…", TextColor = Colors.White, BackgroundColor = Color.FromArgb("#B3261E") };
             remove.Clicked += OnRemoveClicked;
@@ -316,35 +320,51 @@ namespace Chatcheology.Android.Pages
         /// <summary>
         /// "My memories" (CH-54): per phone, the same in every archive. The layer switch (rebuilds the conversation like
         /// any layer), the reminders switch, a Notify switch per own yearly memory, and Delete all my memories (asks
-        /// first; it cannot be undone). Save and Load come in CH-54 step 3, below Delete all.
+        /// first; it cannot be undone), with Save to a file and Load from a file above it (CH-54 step 3). The store is read
+        /// off the UI thread (step 2 review N3). Never throws.
         /// </summary>
-        private void RebuildOwn()
+        private async Task RebuildOwnAsync()
+        {
+            try
+            {
+                if (_ownStore is not { } store)
+                {
+                    _own.Children.Clear();
+                    return;
+                }
+
+                (IReadOnlyList<OwnYearlyMemoryListing> Yearly, bool Reminders, int Count)? read;
+
+                try
+                {
+                    read = await Task.Run(() => (OwnMemoryIndex.YearlyListings(store), store.Settings.RemindersOn, store.Count()));
+                }
+                catch (Exception exception) when (IsStoreFailure(exception))
+                {
+                    read = null;
+                }
+
+                BuildOwn(store, read);
+            }
+            catch (Exception)
+            {
+                // Settings stays open; the section shows what it had.
+            }
+        }
+
+        private void BuildOwn(OwnMemoryStore store, (IReadOnlyList<OwnYearlyMemoryListing> Yearly, bool Reminders, int Count)? read)
         {
             _own.Children.Clear();
-
-            if (_ownStore is not { } store)
-            {
-                return;
-            }
-
             _own.Add(Heading("My memories"));
             _own.Add(new Label { Text = "Memories you add on this phone. They show in every archive on this phone and are never written into an archive.", FontSize = 13 }.TextIn("MutedText"));
 
-            IReadOnlyList<OwnYearlyMemoryListing> yearly;
-            bool reminders;
-            int count;
-
-            try
-            {
-                yearly = OwnMemoryIndex.YearlyListings(store);
-                reminders = store.Settings.RemindersOn;
-                count = store.Count();
-            }
-            catch (Exception exception) when (IsStoreFailure(exception))
+            if (read is not { } values)
             {
                 _own.Add(new Label { Text = "Your memories could not be read just now.", FontSize = 13 }.TextIn("ErrorText"));
                 return;
             }
+
+            var (yearly, reminders, count) = values;
 
             Switch? layerSwitch = null;
             var layerRow = SwitchRow("Show my memories in the chat", 15, _session.OwnLayerShown, async on =>
@@ -381,7 +401,7 @@ namespace Chatcheology.Android.Pages
                 }
                 catch (Exception exception) when (IsStoreFailure(exception))
                 {
-                    RebuildOwn();
+                    _ = RebuildOwnAsync();
                     return Task.CompletedTask;
                 }
 
@@ -409,7 +429,7 @@ namespace Chatcheology.Android.Pages
                     }
                     catch (Exception exception) when (IsStoreFailure(exception))
                     {
-                        RebuildOwn();
+                        _ = RebuildOwnAsync();
                         return;
                     }
 
@@ -437,24 +457,127 @@ namespace Chatcheology.Android.Pages
                 _own.Add(row);
             }
 
-            // CH-54 step 3 puts Save to a file and Load from a file here, above Delete all.
+            // CH-54 step 3: a file of the memories, to keep or to bring them to another phone.
+            _own.Add(new Label { Text = "Keep your memories in a file, or bring them back from one. Loading only adds memories that are not here yet.", FontSize = 13, Margin = new Thickness(0, 6, 0, 0) }.TextIn("MutedText"));
+
+            var save = new Button { Text = "Save to a file…", HorizontalOptions = LayoutOptions.Start, IsEnabled = count > 0 && !_fileBusy };
+            var load = new Button { Text = "Load from a file…", HorizontalOptions = LayoutOptions.Start, IsEnabled = !_fileBusy };
+            SemanticProperties.SetDescription(save, count > 0 ? "Save my memories to a file" : "Save my memories to a file, nothing to save yet");
+            SemanticProperties.SetDescription(load, "Load memories from a file");
+            save.Clicked += async (_, _) => await SaveToFileAsync(store);
+            load.Clicked += async (_, _) => await LoadFromFileAsync(store);
+            _own.Add(new HorizontalStackLayout { Spacing = 8, Children = { save, load } });
+            _own.Add(_fileWorking);
+
             var deleteAll = new Button
             {
                 Text = "Delete all my memories…",
                 TextColor = Colors.White,
                 BackgroundColor = Color.FromArgb("#B3261E"),
-                IsEnabled = count > 0,
+                IsEnabled = count > 0 && !_fileBusy,
             };
 
             deleteAll.Clicked += async (_, _) => await DeleteAllAsync(store);
             _own.Add(deleteAll);
         }
 
+        /// <summary>
+        /// Save to a file (CH-54 step 3): one plain sentence first, then the system Save dialog; the result in counts.
+        /// Never throws.
+        /// </summary>
+        private async Task SaveToFileAsync(OwnMemoryStore store)
+        {
+            if (_fileBusy || Navigation.NavigationStack.LastOrDefault() != this)
+            {
+                return;
+            }
+
+            try
+            {
+                if (!await DisplayAlertAsync("Save to a file", OwnMemoryFile.SaveWarning, "Save", "Cancel"))
+                {
+                    return;
+                }
+
+                await WhileWorkingAsync("Saving your memories…", async () =>
+                {
+                    if (await OwnMemoryFileDialogs.SaveAsync(store) is { } message)
+                    {
+                        await DisplayAlertAsync("Save to a file", message, "OK");
+                    }
+                });
+            }
+            catch (Exception)
+            {
+                // A button handler: nothing here may end the app.
+            }
+        }
+
+        /// <summary>
+        /// Load from a file (CH-54 step 3): what it does to deleted memories first, then the system Open dialog; the result
+        /// in counts, and everything refreshed as after a save. Never throws.
+        /// </summary>
+        private async Task LoadFromFileAsync(OwnMemoryStore store)
+        {
+            if (_fileBusy || Navigation.NavigationStack.LastOrDefault() != this)
+            {
+                return;
+            }
+
+            try
+            {
+                if (!await DisplayAlertAsync("Load from a file", OwnMemoryFile.LoadWarning, "Load", "Cancel"))
+                {
+                    return;
+                }
+
+                await WhileWorkingAsync("Loading memories…", async () =>
+                {
+                    if (await OwnMemoryFileDialogs.LoadAsync(store) is not { } outcome)
+                    {
+                        return;
+                    }
+
+                    if (outcome.Added)
+                    {
+                        await _ownChanged();
+                    }
+
+                    await DisplayAlertAsync("Load from a file", outcome.Message, "OK");
+                });
+            }
+            catch (Exception)
+            {
+                // A button handler: nothing here may end the app.
+            }
+        }
+
+        /// <summary>Runs <paramref name="work"/> with the file buttons off and a line saying what is happening, then reads the section again.</summary>
+        private async Task WhileWorkingAsync(string text, Func<Task> work)
+        {
+            _fileBusy = true;
+            _fileWorking.Text = text;
+            _fileWorking.IsVisible = true;
+            await RebuildOwnAsync();
+
+            try
+            {
+                await work();
+            }
+            finally
+            {
+                _fileBusy = false;
+                _fileWorking.IsVisible = false;
+                await RebuildOwnAsync();
+            }
+        }
+
         private async Task DeleteAllAsync(OwnMemoryStore store)
         {
             try
             {
-                if (!await DisplayAlertAsync(
+                if (_fileBusy
+                    || !await DisplayAlertAsync(
                         "Delete all my memories",
                         "Delete every memory you added on this phone, with their photos? This can't be undone.",
                         "Delete all",
@@ -467,11 +590,23 @@ namespace Chatcheology.Android.Pages
                 AppState.LogTiming("own-memories-deleted-all", TimeSpan.Zero, $"deleted={deleted}");
 
                 await _ownChanged();
-                RebuildOwn();
+                await RebuildOwnAsync();
             }
             catch (Exception exception) when (IsStoreFailure(exception))
             {
                 await DisplayAlertAsync("Delete all my memories", "Your memories could not be deleted. Try again.", "OK");
+            }
+            catch (Exception)
+            {
+                // Step 2 review N4: anything else from the refresh is reported, never the end of the app.
+                try
+                {
+                    await DisplayAlertAsync("Delete all my memories", "Something went wrong. Open Settings again to see your memories.", "OK");
+                }
+                catch (Exception)
+                {
+                    // The page may be gone.
+                }
             }
         }
 

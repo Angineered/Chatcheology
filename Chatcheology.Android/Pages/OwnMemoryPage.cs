@@ -79,6 +79,7 @@ namespace Chatcheology.Android.Pages
             _hasEnd.IsToggled = form.End is not null;
             _end.Date = (form.End ?? form.Start ?? DateOnly.FromDateTime(DateTime.Today)).ToDateTime(TimeOnly.MinValue);
             _everyYear.IsToggled = form.EveryYear;
+            FollowStart();
             _loading = false;
 
             _hasEnd.Themed(Switch.OnColorProperty, "Primary");
@@ -92,7 +93,17 @@ namespace Chatcheology.Android.Pages
 
             _title.TextChanged += (_, e) => _form.Title = e.NewTextValue ?? string.Empty;
             _summary.TextChanged += (_, e) => _form.Summary = e.NewTextValue;
-            _start.DateSelected += (_, _) => ReadDates();
+            _start.DateSelected += (_, _) =>
+            {
+                if (!_loading)
+                {
+                    _loading = true;
+                    FollowStart();
+                    _loading = false;
+                }
+
+                ReadDates();
+            };
             _end.DateSelected += (_, _) => ReadDates();
             _hasEnd.Toggled += (_, _) => ReadDates();
             _everyYear.Toggled += (_, e) =>
@@ -245,6 +256,25 @@ namespace Chatcheology.Android.Pages
         }
 
         private void ShowDates() => _end.IsVisible = _hasEnd.IsToggled;
+
+        /// <summary>
+        /// Step 2 review N5: the end date picker follows the start. It cannot be set before the start, and an end left
+        /// before a later start moves to the start. Call with <see cref="_loading"/> set, so its own change is not read twice.
+        /// </summary>
+        private void FollowStart()
+        {
+            if (_start.Date is not { } start)
+            {
+                return;
+            }
+
+            if (_end.Date is not { } end || end < start)
+            {
+                _end.Date = start;
+            }
+
+            _end.MinimumDate = start;
+        }
 
         /// <summary>Every year: off and disabled with its reason unless Day without an end.</summary>
         private void ShowEveryYear()

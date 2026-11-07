@@ -63,6 +63,9 @@ namespace Chatcheology.Android.Pages
         /// <summary>Whether the page has begun closing its archive: nothing more is read.</summary>
         private bool _closed => _gate.IsClosed;
 
+        /// <summary>An own memory form is being opened (step 2 review N1): further taps on "+", Edit or Add a memory wait.</summary>
+        private bool _openingForm;
+
         /// <summary>
         /// A page over a conversation the caller opened off the UI thread. The page owns the session from
         /// here on and closes it when it is closed.
@@ -1140,28 +1143,63 @@ namespace Chatcheology.Android.Pages
         /// <summary>Opens the form for a new own memory starting on <paramref name="day"/>; after Save, back here or to Saved.</summary>
         internal async Task AddOwnMemoryAsync(DateOnly day)
         {
-            if (_closed || !_session.HasOwnStore || Navigation.NavigationStack.LastOrDefault() is OwnMemoryPage)
+            // Step 2 review N1: a second tap while the first form is still being pushed opens nothing.
+            if (_closed || _openingForm || !_session.HasOwnStore || Navigation.NavigationStack.LastOrDefault() is OwnMemoryPage)
             {
                 return;
             }
 
-            OwnMemoryPage? form = null;
-            form = new OwnMemoryPage(_state.OwnMemories, new OwnMemoryForm(day), _ =>
-                OwnMemoriesChangedAsync(() => PopAsync(form!)));
+            _openingForm = true;
 
-            await Navigation.PushAsync(form);
+            try
+            {
+                OwnMemoryPage? form = null;
+                form = new OwnMemoryPage(_state.OwnMemories, new OwnMemoryForm(day), _ =>
+                    OwnMemoriesChangedAsync(() => PopAsync(form!)));
+
+                await Navigation.PushAsync(form);
+            }
+            finally
+            {
+                _openingForm = false;
+            }
         }
 
         /// <summary>Edit on an own memory's details: the form; after Save, the details shown again with what was saved.</summary>
         private async Task EditOwnMemoryAsync(MemoryKey key)
         {
-            if (_closed)
+            if (_closed || _openingForm || Navigation.NavigationStack.LastOrDefault() is OwnMemoryPage)
             {
                 return;
             }
 
+            _openingForm = true;
+
+            try
+            {
+                await OpenEditFormAsync(key);
+            }
+            finally
+            {
+                _openingForm = false;
+            }
+        }
+
+        private async Task OpenEditFormAsync(MemoryKey key)
+        {
             var details = Navigation.NavigationStack.LastOrDefault();
-            var memory = await Task.Run(() => _state.OwnMemories.List().FirstOrDefault(m => m.RowID == key.EntryID));
+            OwnMemory? memory;
+
+            try
+            {
+                memory = await Task.Run(() => _state.OwnMemories.List().FirstOrDefault(m => m.RowID == key.EntryID));
+            }
+            catch (Exception exception) when (exception is OwnMemoriesStoreException or SqliteException or IOException or UnauthorizedAccessException)
+            {
+                // Step 2 review N2: said, not swallowed by the button's catch-all.
+                await DisplayAlertAsync("Memories", "This memory could not be opened just now.", "OK");
+                return;
+            }
 
             if (memory is null)
             {

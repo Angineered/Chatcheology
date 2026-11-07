@@ -117,11 +117,19 @@ namespace Chatcheology.Android
         {
             lock (Lock)
             {
-                var today = DateOnly.FromDateTime(DateTime.Now);
+                var now = DateTime.Now;
+                var today = DateOnly.FromDateTime(now);
 
                 if (!DateOnly.TryParseExact(scheduledDay, DayFormat, CultureInfo.InvariantCulture, DateTimeStyles.None, out var day) || day != today)
                 {
                     AndroidLog.Info(AppState.LogTag, "noted-dates posted=0 stale=yes");
+                    return;
+                }
+
+                // Step 2 review S1: a retry alarm before today's time posts nothing; the reschedule after this sets the real one.
+                if (!NotedDateSchedule.MayPostNow(day, Notifications.Time, now))
+                {
+                    AndroidLog.Info(AppState.LogTag, "noted-dates posted=0 early=yes");
                     return;
                 }
 

@@ -715,6 +715,43 @@ namespace Chatcheology.Mobile.Tests
             Assert.True(NotedDateSchedule.WithRetry(null, ownMayPass: true, now)!.IsRetry);
         }
 
+        // ---- Step 2 review S1: a retry alarm never posts early ----
+
+        [Fact]
+        public void A_retry_at_0715_for_a_0900_time_posts_nothing_and_the_0900_alarm_does()
+        {
+            var at = new DateTime(2026, 3, 15, 7, 0, 0);
+            var retry = NotedDateSchedule.WithRetry(null, ownMayPass: true, at)!;
+
+            Assert.True(retry.IsRetry);
+            Assert.Equal(new DateTime(2026, 3, 15, 7, 15, 0), retry.LocalMoment);
+            Assert.False(NotedDateSchedule.MayPostNow(retry.Day, Nine, retry.LocalMoment));
+            Assert.False(NotedDateSchedule.MayPostNow(retry.Day, Nine, new DateTime(2026, 3, 15, 8, 59, 59)));
+            Assert.True(NotedDateSchedule.MayPostNow(retry.Day, Nine, new DateTime(2026, 3, 15, 9, 0, 0)));
+            Assert.True(NotedDateSchedule.MayPostNow(retry.Day, Nine, new DateTime(2026, 3, 15, 9, 0, 30)));
+        }
+
+        [Fact]
+        public void A_retry_at_0005_after_a_busy_2350_posts_nothing_for_the_next_day()
+        {
+            var at = new DateTime(2026, 3, 14, 23, 50, 0);
+            var retry = NotedDateSchedule.WithRetry(null, ownMayPass: true, at)!;
+
+            Assert.Equal(new DateOnly(2026, 3, 15), retry.Day);
+            Assert.Equal(new DateTime(2026, 3, 15, 0, 5, 0), retry.LocalMoment);
+            Assert.False(NotedDateSchedule.MayPostNow(retry.Day, Nine, retry.LocalMoment));
+        }
+
+        [Fact]
+        public void A_late_catch_up_after_the_time_still_posts_and_a_stale_day_never_does()
+        {
+            var now = new DateTime(2026, 3, 15, 18, 0, 0);
+
+            Assert.True(NotedDateSchedule.MayPostNow(new DateOnly(2026, 3, 15), Nine, now + NotedDateSchedule.CatchUpDelay));
+            Assert.False(NotedDateSchedule.MayPostNow(new DateOnly(2026, 3, 14), Nine, now));
+            Assert.False(NotedDateSchedule.MayPostNow(new DateOnly(2026, 3, 16), Nine, now));
+        }
+
         // ---- 1b review S3: what a refresh always refreshes, and what its result gates ----
 
         [Fact]

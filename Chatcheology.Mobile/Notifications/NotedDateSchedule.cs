@@ -344,6 +344,20 @@ namespace Chatcheology.Mobile.Notifications
                 : new NextNotification(DateOnly.FromDateTime(retry), retry, []) { IsRetry = true };
         }
 
+        /// <summary>
+        /// Whether an alarm scheduled for <paramref name="scheduledDay"/> may post when it fires at <paramref name="localNow"/>
+        /// (step 2 review S1): only when that day is today and today's notification <paramref name="time"/> has passed. A
+        /// retry alarm (<see cref="WithRetry"/>) that fires earlier, such as 07:15 for 09:00, or just after midnight for the
+        /// next day, posts nothing; it only schedules again.
+        /// </summary>
+        public static bool MayPostNow(DateOnly scheduledDay, TimeOnly time, DateTime localNow)
+        {
+            var now = DateTime.SpecifyKind(localNow, DateTimeKind.Unspecified);
+            var today = DateOnly.FromDateTime(now);
+
+            return scheduledDay == today && today.ToDateTime(time) <= now;
+        }
+
         private static OwnRead ReadOwnOnce(OwnMemoryStore store, IEnumerable<ArchiveNotedDates> archives, ArchiveSettings settings)
         {
             ArgumentNullException.ThrowIfNull(store);

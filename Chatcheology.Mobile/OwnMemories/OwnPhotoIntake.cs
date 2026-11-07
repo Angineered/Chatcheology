@@ -260,19 +260,12 @@ namespace Chatcheology.Mobile.OwnMemories
                 return new OwnPhotoResult(OwnPhotoStatus.TooLarge, null);
             }
 
-            // The CH-59 checks on the very bytes that are kept, as a second line: any doubt refuses. Nothing was
-            // removed by ExifInterface, so the strict (plain copy) rules apply.
-            var method = format == PhotoFormat.Jpeg ? PhotoShareMethod.RemoveLocation : PhotoShareMethod.PlainCopy;
-
-            using (var check = new MemoryStream(rebuilt, writable: false))
+            if (MayStillCarryLocation(rebuilt, format))
             {
-                if (PhotoShare.MayStillCarryLocation(check, format, method))
-                {
-                    return new OwnPhotoResult(OwnPhotoStatus.HasLocation, null);
-                }
+                return new OwnPhotoResult(OwnPhotoStatus.HasLocation, null);
             }
 
-            var name = Convert.ToHexStringLower(SHA256.HashData(rebuilt)) + "." + ExtensionFor(format);
+            var name = StoredName(rebuilt, format);
             var target = Path.Combine(_folder, name);
 
             if (File.Exists(target))
@@ -299,6 +292,53 @@ namespace Chatcheology.Mobile.OwnMemories
 
             partials.Remove(stored);
             return new OwnPhotoResult(OwnPhotoStatus.Stored, name);
+        }
+
+        /// <summary>
+        /// The CH-59 checks on the very bytes that are kept, as a second line after the rebuild: any doubt is true. Nothing
+        /// was removed by ExifInterface, so the strict (plain copy) rules apply. Also used by the save file (step 3).
+        /// </summary>
+        internal static bool MayStillCarryLocation(byte[] bytes, PhotoFormat format)
+        {
+            var method = format == PhotoFormat.Jpeg ? PhotoShareMethod.RemoveLocation : PhotoShareMethod.PlainCopy;
+
+            using var check = new MemoryStream(bytes, writable: false);
+            return PhotoShare.MayStillCarryLocation(check, format, method);
+        }
+
+        /// <summary>The stored name of <paramref name="bytes"/>: <c>&lt;sha256&gt;.&lt;ext&gt;</c>.</summary>
+        internal static string StoredName(byte[] bytes, PhotoFormat format) =>
+            Convert.ToHexStringLower(SHA256.HashData(bytes)) + "." + ExtensionFor(format);
+
+        /// <summary>
+        /// The pure part of storing a photo, without the platform (CH-54 step 3, for a loaded file): the photo rebuilt from
+        /// its allow-list (<see cref="PhotoRebuild"/>) and checked again, exactly as a picked photo is. Null when it is
+        /// refused, with the reason in <paramref name="refused"/>.
+        /// </summary>
+        internal static byte[]? CleanWithoutPlatform(byte[] source, out PhotoFormat format, out OwnPhotoStatus refused, long maxBytes = MaxPhotoBytes)
+        {
+            format = PhotoShare.Sniff(source.AsSpan(0, Math.Min(source.Length, PhotoShare.HeaderLength)));
+            refused = OwnPhotoStatus.NotSupported;
+
+            if (ExtensionFor(format) is null || PhotoRebuild.Rebuild(source, format) is not { } rebuilt)
+            {
+                return null;
+            }
+
+            if (rebuilt.Length > maxBytes)
+            {
+                refused = OwnPhotoStatus.TooLarge;
+                return null;
+            }
+
+            if (MayStillCarryLocation(rebuilt, format))
+            {
+                refused = OwnPhotoStatus.HasLocation;
+                return null;
+            }
+
+            refused = OwnPhotoStatus.Stored;
+            return rebuilt;
         }
 
         /// <summary>The file is in use again: its time is renewed so the unused-photo sweep does not take it from an open form.</summary>
