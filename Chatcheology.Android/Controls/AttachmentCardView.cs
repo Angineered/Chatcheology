@@ -130,7 +130,20 @@ namespace Chatcheology.Android.Controls
             };
         }
 
-        private void OnPlaybackChanged(object? sender, EventArgs e) => ShowPlayback();
+        /// <remarks>
+        /// A card in a CollectionView cell is not always given a null handler when its page closes (CH-60),
+        /// so it may still be subscribed with its Android view gone: it then unsubscribes itself.
+        /// </remarks>
+        private void OnPlaybackChanged(object? sender, EventArgs e)
+        {
+            if (Handler?.PlatformView is not Java.Lang.Object { Handle: var handle } || handle == IntPtr.Zero)
+            {
+                AudioPlayback.Changed -= OnPlaybackChanged;
+                return;
+            }
+
+            ShowPlayback();
+        }
 
         /// <inheritdoc />
         protected override void OnBindingContextChanged()
