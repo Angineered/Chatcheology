@@ -12,6 +12,8 @@
   <Project Path="Chatcheology.Mobile/Chatcheology.Mobile.csproj" />
   <Project Path="tools/MemoryImport.Tests/MemoryImport.Tests.csproj" />
   <Project Path="tools/MemoryImport/MemoryImport.csproj" />
+  <Project Path="tools/MsgstoreImport.Tests/MsgstoreImport.Tests.csproj" />
+  <Project Path="tools/MsgstoreImport/MsgstoreImport.csproj" />
   <Project Path="tools/OlderExportImport.Tests/OlderExportImport.Tests.csproj" />
   <Project Path="tools/OlderExportImport/OlderExportImport.csproj" />
 </Solution>

@@ -9,7 +9,7 @@ namespace Chatcheology.Data.Tests.OlderExports
         private static readonly DateTime Now = new(2026, 10, 26, 9, 0, 0, DateTimeKind.Utc);
 
         [Fact]
-        public void Create_MakesAVersionFiveWorkspaceWithTheAddedTablesAndMarker()
+        public void Create_MakesACurrentVersionWorkspaceWithTheAddedTablesAndMarker()
         {
             using var folders = new SyntheticExportFolders();
 
@@ -135,6 +135,127 @@ namespace Chatcheology.Data.Tests.OlderExports
                 () => OlderExportsDatabase.OpenConnection(folders.OlderExportsPath));
 
             Assert.Contains("earlier format", exception.Message, StringComparison.Ordinal);
+        }
+
+        /// <summary>
+        /// Turns a fresh older-exports file into one the previous build wrote: workspace schema
+        /// version 5, without the version-6 caption table.
+        /// </summary>
+        private static void MakeVersionFive(string path)
+        {
+            using (var connection = WorkspaceDatabase.OpenConnection(path))
+            using (var command = connection.CreateCommand())
+            {
+                command.CommandText = "DROP TABLE AttachmentCaptionFact; PRAGMA user_version = 5;";
+                command.ExecuteNonQuery();
+            }
+
+            SqliteConnection.ClearAllPools();
+        }
+
+        [Fact]
+        public void A_version_five_file_is_refused_until_migrated_and_then_opens()
+        {
+            using var folders = new SyntheticExportFolders();
+            OlderExportsDatabase.Create(folders.OlderExportsPath, Now);
+            MakeVersionFive(folders.OlderExportsPath);
+
+            var refused = Assert.Throws<InvalidOperationException>(
+                () => OlderExportsDatabase.OpenConnection(folders.OlderExportsPath));
+            Assert.Contains("schema version 5", refused.Message, StringComparison.Ordinal);
+
+            // The main workspace's own migration refuses it: the older-exports tables are unexpected.
+            SqliteConnection.ClearAllPools();
+            var before = File.ReadAllBytes(folders.OlderExportsPath);
+            Assert.Throws<InvalidOperationException>(() => WorkspaceDatabase.Initialise(folders.OlderExportsPath));
+            SqliteConnection.ClearAllPools();
+            Assert.Equal(before, File.ReadAllBytes(folders.OlderExportsPath));
+
+            Assert.True(OlderExportsDatabase.MigrateToCurrent(folders.OlderExportsPath));
+            SqliteConnection.ClearAllPools();
+
+            using (var connection = OlderExportsDatabase.OpenConnection(folders.OlderExportsPath))
+            {
+                Assert.Equal(WorkspaceDatabase.SchemaVersion, WorkspaceDatabase.ReadSchemaVersion(connection));
+
+                var tables = WorkspaceDatabase.ReadApplicationTableNames(connection);
+                Assert.Contains("AttachmentCaptionFact", tables);
+                Assert.All(OlderExportsDatabase.AddedTableNames, name => Assert.Contains(name, tables));
+            }
+
+            SqliteConnection.ClearAllPools();
+
+            // Already current: nothing written.
+            var current = File.ReadAllBytes(folders.OlderExportsPath);
+            Assert.False(OlderExportsDatabase.MigrateToCurrent(folders.OlderExportsPath));
+            SqliteConnection.ClearAllPools();
+            Assert.Equal(current, File.ReadAllBytes(folders.OlderExportsPath));
+        }
+
+        [Fact]
+        public void Migrate_refuses_a_main_workspace_under_the_fixed_name_and_writes_nothing()
+        {
+            using var folders = new SyntheticExportFolders();
+            WorkspaceDatabase.Initialise(folders.OlderExportsPath);
+
+            using (var connection = WorkspaceDatabase.OpenConnection(folders.OlderExportsPath))
+            using (var command = connection.CreateCommand())
+            {
+                command.CommandText = "DROP TABLE AttachmentCaptionFact; PRAGMA user_version = 5;";
+                command.ExecuteNonQuery();
+            }
+
+            SqliteConnection.ClearAllPools();
+            var before = File.ReadAllBytes(folders.OlderExportsPath);
+
+            var exception = Assert.Throws<InvalidOperationException>(
+                () => OlderExportsDatabase.MigrateToCurrent(folders.OlderExportsPath));
+            Assert.Contains("not an older-exports file", exception.Message, StringComparison.Ordinal);
+
+            SqliteConnection.ClearAllPools();
+            Assert.Equal(before, File.ReadAllBytes(folders.OlderExportsPath));
+        }
+
+        [Fact]
+        public void Migrate_refuses_other_versions_extra_tables_and_missing_files()
+        {
+            using var folders = new SyntheticExportFolders();
+
+            Assert.Throws<FileNotFoundException>(() => OlderExportsDatabase.MigrateToCurrent(folders.OlderExportsPath));
+            Assert.False(File.Exists(folders.OlderExportsPath));
+
+            OlderExportsDatabase.Create(folders.OlderExportsPath, Now);
+            MakeVersionFive(folders.OlderExportsPath);
+
+            using (var connection = WorkspaceDatabase.OpenConnection(folders.OlderExportsPath))
+            using (var command = connection.CreateCommand())
+            {
+                command.CommandText = "CREATE TABLE Stray (Id INTEGER PRIMARY KEY);";
+                command.ExecuteNonQuery();
+            }
+
+            SqliteConnection.ClearAllPools();
+
+            var shape = Assert.Throws<InvalidOperationException>(
+                () => OlderExportsDatabase.MigrateToCurrent(folders.OlderExportsPath));
+            Assert.Contains("Stray", shape.Message, StringComparison.Ordinal);
+
+            using (var connection = WorkspaceDatabase.OpenConnection(folders.OlderExportsPath))
+            using (var command = connection.CreateCommand())
+            {
+                command.CommandText = "DROP TABLE Stray; PRAGMA user_version = 4;";
+                command.ExecuteNonQuery();
+            }
+
+            SqliteConnection.ClearAllPools();
+
+            var version = Assert.Throws<InvalidOperationException>(
+                () => OlderExportsDatabase.MigrateToCurrent(folders.OlderExportsPath));
+            Assert.Contains("schema version 4", version.Message, StringComparison.Ordinal);
+
+            using var check = WorkspaceDatabase.OpenReadOnlyConnection(folders.OlderExportsPath);
+            Assert.Equal(4, WorkspaceDatabase.ReadSchemaVersion(check));
+            Assert.DoesNotContain("AttachmentCaptionFact", WorkspaceDatabase.ReadApplicationTableNames(check));
         }
 
         [Fact]

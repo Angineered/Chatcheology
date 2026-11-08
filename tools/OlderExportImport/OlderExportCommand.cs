@@ -70,6 +70,7 @@ namespace Chatcheology.Tools.OlderExportImport
                 {
                     "senders" => RunSenders(parsed, output),
                     "import" => RunImport(parsed, output, utcNow),
+                    "migrate" => RunMigrate(parsed, output),
                     _ => RunDryRun(parsed, output),
                 };
             }
@@ -456,6 +457,71 @@ namespace Chatcheology.Tools.OlderExportImport
         private static string FormatDate(DateTime? value) =>
             value?.ToString(DateFormat, CultureInfo.InvariantCulture) ?? "none";
 
+        /// <summary>
+        /// <c>migrate</c> (CH-71): brings the older-exports file from workspace schema version 5 to
+        /// the current version through <see cref="OlderExportsDatabase.MigrateToCurrent"/>. A dry
+        /// run unless <c>--apply</c>; the dry run opens the file read-only.
+        /// </summary>
+        private static int RunMigrate(ParsedArguments parsed, TextWriter output)
+        {
+            if (parsed.ExportFolders.Count != 0)
+            {
+                throw new UsageException("migrate takes no export folder, only --workspace-folder.");
+            }
+
+            var workspaceFolder = parsed.WorkspaceFolder
+                ?? throw new UsageException("migrate needs --workspace-folder.");
+            var databasePath = Path.Combine(workspaceFolder, OlderExportsDatabase.FileName);
+
+            if (!File.Exists(databasePath))
+            {
+                throw new InvalidOperationException(
+                    "There is no older-exports file in the workspace folder. Nothing was written.");
+            }
+
+            int before;
+
+            try
+            {
+                using var connection = Chatcheology.Data.Workspace.WorkspaceDatabase.OpenReadOnlyConnection(databasePath);
+                before = Chatcheology.Data.Workspace.WorkspaceDatabase.ReadSchemaVersion(connection);
+            }
+            finally
+            {
+                SqliteConnection.ClearAllPools();
+            }
+
+            var current = Chatcheology.Data.Workspace.WorkspaceDatabase.SchemaVersion;
+
+            output.WriteLine($"older-exports workspace schema version: {before.ToString(CultureInfo.InvariantCulture)}");
+
+            if (!parsed.Apply)
+            {
+                output.WriteLine(before == current
+                    ? "Already current; nothing to migrate."
+                    : $"Dry run: nothing was written. Back up the file, close the viewer, then add --apply to migrate it to version {current.ToString(CultureInfo.InvariantCulture)}.");
+
+                return Success;
+            }
+
+            bool migrated;
+
+            try
+            {
+                migrated = OlderExportsDatabase.MigrateToCurrent(databasePath);
+            }
+            finally
+            {
+                SqliteConnection.ClearAllPools();
+            }
+
+            output.WriteLine(migrated
+                ? $"Migrated to version {current.ToString(CultureInfo.InvariantCulture)} in one transaction."
+                : "Already current; nothing was written.");
+
+            return Success;
+        }
+
         private static void WriteHelp(TextWriter output)
         {
             output.WriteLine("OlderExportImport: dry run, sender listing and import of older WhatsApp exports.");
@@ -465,6 +531,7 @@ namespace Chatcheology.Tools.OlderExportImport
             output.WriteLine("  senders <export-folder>");
             output.WriteLine("  import <export-folder> --workspace-folder <folder> --local <name> --other <name>");
             output.WriteLine("         --position <n> --shown yes|no [--fallback-folder <folder>] [--shown-after <inner-folder>] [--create]");
+            output.WriteLine("  migrate --workspace-folder <folder> [--apply]   (workspace schema 5 to the current version; dry run without --apply)");
             output.WriteLine();
             output.WriteLine("  --parent <folder>  export folders (and --overlap/--fallback-folder) are names under this folder.");
             output.WriteLine();
@@ -506,13 +573,15 @@ namespace Chatcheology.Tools.OlderExportImport
 
             internal bool OverlapLines { get; private set; }
 
+            internal bool Apply { get; private set; }
+
             internal static ParsedArguments Parse(string[] args)
             {
                 var parsed = new ParsedArguments();
                 string? parent = null;
                 var index = 0;
 
-                if (args.Length > 0 && args[0] is "dry-run" or "senders" or "import")
+                if (args.Length > 0 && args[0] is "dry-run" or "senders" or "import" or "migrate")
                 {
                     parsed.Command = args[0];
                     index = 1;
@@ -604,6 +673,10 @@ namespace Chatcheology.Tools.OlderExportImport
                             parsed.Create = true;
                             break;
 
+                        case "--apply":
+                            parsed.Apply = true;
+                            break;
+
                         default:
                             if (argument.StartsWith("--", StringComparison.Ordinal))
                             {
@@ -618,11 +691,28 @@ namespace Chatcheology.Tools.OlderExportImport
                     }
                 }
 
-                if (parsed.Command != "import"
-                    && (parsed.WorkspaceFolder ?? parsed.Local ?? parsed.Other) is not null)
+                if (parsed.Command != "import" && (parsed.Local ?? parsed.Other) is not null)
                 {
-                    throw new UsageException(
-                        "--workspace-folder, --local and --other belong to import only.");
+                    throw new UsageException("--local and --other belong to import only.");
+                }
+
+                if (parsed.Command is not ("import" or "migrate") && parsed.WorkspaceFolder is not null)
+                {
+                    throw new UsageException("--workspace-folder belongs to import and migrate only.");
+                }
+
+                if (parsed.Command != "migrate" && parsed.Apply)
+                {
+                    throw new UsageException("--apply belongs to migrate only.");
+                }
+
+                if (parsed.Command == "migrate"
+                    && (parsed.Position is not null || parsed.Shown is not null || parsed.Create
+                        || parsed.FallbackFolder is not null || parsed.OverlapFolders is not null
+                        || parsed.CutFolders is not null || parsed.ShownAfterFolder is not null
+                        || parsed.OverlapLines || parent is not null))
+                {
+                    throw new UsageException("migrate takes only --workspace-folder and --apply.");
                 }
 
                 if (parsed.OverlapLines && parsed.OverlapFolders is null)

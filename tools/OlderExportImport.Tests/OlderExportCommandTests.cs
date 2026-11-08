@@ -342,6 +342,66 @@ namespace Chatcheology.Tools.OlderExportImport.Tests
         }
 
         [Fact]
+        public void Migrate_DryRunWritesNothing_ApplyBringsAVersionFiveFileToTheCurrentVersion()
+        {
+            var workspace = Path.Combine(_root, "workspace");
+            var file = Path.Combine(workspace, "older-exports.db");
+
+            Assert.Equal(0, Run(
+                "import", Folder("olderzz"), "--workspace-folder", workspace,
+                "--local", "Alex Example", "--other", "Sam Sample", "--position", "1", "--shown", "yes", "--create").Code);
+
+            // What the previous build left: workspace schema version 5, no caption table.
+            using (var connection = new SqliteConnection($"Data Source={file};Pooling=False"))
+            {
+                connection.Open();
+                using var command = connection.CreateCommand();
+                command.CommandText = "DROP TABLE AttachmentCaptionFact; PRAGMA user_version = 5;";
+                command.ExecuteNonQuery();
+            }
+
+            SqliteConnection.ClearAllPools();
+            var before = File.ReadAllBytes(file);
+
+            var (dryCode, dryOutput, dryError) = Run("migrate", "--workspace-folder", workspace);
+
+            Assert.Equal(string.Empty, dryError);
+            Assert.Equal(0, dryCode);
+            Assert.Contains("schema version: 5", dryOutput, StringComparison.Ordinal);
+            Assert.Contains("Dry run: nothing was written.", dryOutput, StringComparison.Ordinal);
+            Assert.DoesNotContain(_root, dryOutput, StringComparison.Ordinal);
+            SqliteConnection.ClearAllPools();
+            Assert.Equal(before, File.ReadAllBytes(file));
+
+            var (code, output, error) = Run("migrate", "--workspace-folder", workspace, "--apply");
+
+            Assert.Equal(string.Empty, error);
+            Assert.Equal(0, code);
+            Assert.Contains(
+                $"Migrated to version {Chatcheology.Data.Workspace.WorkspaceDatabase.SchemaVersion} in one transaction.",
+                output,
+                StringComparison.Ordinal);
+            AssertNoSecrets(output);
+
+            var (againCode, againOutput, _) = Run("migrate", "--workspace-folder", workspace, "--apply");
+            Assert.Equal(0, againCode);
+            Assert.Contains("Already current; nothing was written.", againOutput, StringComparison.Ordinal);
+        }
+
+        [Fact]
+        public void Migrate_TakesOnlyTheWorkspaceFolderAndApply()
+        {
+            Assert.Equal(OlderExportCommand.UsageError, Run("migrate").Code);
+            Assert.Equal(OlderExportCommand.UsageError, Run("migrate", "--workspace-folder", _root, "--create").Code);
+            Assert.Equal(OlderExportCommand.UsageError, Run("migrate", Folder("olderzz"), "--workspace-folder", _root).Code);
+            Assert.Equal(OlderExportCommand.UsageError, Run(Folder("olderzz"), "--apply").Code);
+
+            var (code, _, error) = Run("migrate", "--workspace-folder", Path.Combine(_root, "workspace"));
+            Assert.Equal(OlderExportCommand.Failed, code);
+            Assert.Contains("no older-exports file", error, StringComparison.Ordinal);
+        }
+
+        [Fact]
         public void Import_WithoutCreate_DoesNotCreateTheFile()
         {
             var (code, _, error) = Run(
