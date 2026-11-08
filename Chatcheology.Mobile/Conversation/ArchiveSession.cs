@@ -57,7 +57,7 @@ namespace Chatcheology.Mobile.Conversation
         private readonly CancellationTokenSource _closing = new();
         private readonly object _searchLock = new();
         private Task<ConversationSearch>? _search;
-        private Task<Gallery.PhotoGallery>? _gallery;
+        private Gallery.PhotoGalleryLoad? _gallery;
         private Task<MemoryList>? _memoryList;
         private string? _savedTab;
         private readonly OwnMemoryStore? _ownStore;
@@ -554,27 +554,34 @@ namespace Chatcheology.Mobile.Conversation
         }
 
         /// <summary>
-        /// The photo gallery (CH-37), built in the background the first time it is asked for, with a reader
-        /// of its own like the search index. Later calls return the same task.
+        /// The photo gallery (CH-37) as it loads, newest months first (CH-66), started in the background the
+        /// first time it is asked for, with a reader of its own like the search index. Later calls return the
+        /// same load, which is kept for the session; closing the session stops it.
         /// </summary>
-        public Task<Gallery.PhotoGallery> GetGalleryAsync()
+        /// <exception cref="ObjectDisposedException">The session is closed.</exception>
+        public Gallery.PhotoGalleryLoad GetGalleryLoad()
         {
             lock (_searchLock)
             {
                 ObjectDisposedException.ThrowIf(_closing.IsCancellationRequested, this);
 
-                var token = _closing.Token;
-                var folder = Reader.FolderPath;
-                var me = Me;
+                return _gallery ??= Gallery.PhotoGalleryLoad.Start(Reader.FolderPath, Me, LowQuality, Stars, _closing.Token);
+            }
+        }
 
-                return _gallery ??= Task.Run(
-                    () =>
-                    {
-                        using var reader = ArchiveReader.Open(folder);
+        /// <summary>The whole photo gallery, once it has loaded (<see cref="GetGalleryLoad"/>). Later calls return the same gallery.</summary>
+        /// <exception cref="ObjectDisposedException">The session is closed.</exception>
+        public Task<Gallery.PhotoGallery> GetGalleryAsync() => GetGalleryLoad().Completion;
 
-                        return Gallery.PhotoGallery.Build(reader, me, LowQuality, Stars, token);
-                    },
-                    token);
+        /// <summary>The gallery's load when it has been started, so a star toggle can update its photos; otherwise <see langword="null"/>.</summary>
+        public Gallery.PhotoGalleryLoad? GalleryLoadIfStarted
+        {
+            get
+            {
+                lock (_searchLock)
+                {
+                    return _gallery;
+                }
             }
         }
 
@@ -621,7 +628,7 @@ namespace Chatcheology.Mobile.Conversation
             {
                 lock (_searchLock)
                 {
-                    return _gallery is { IsCompletedSuccessfully: true } built ? built.Result : null;
+                    return _gallery?.Gallery;
                 }
             }
         }

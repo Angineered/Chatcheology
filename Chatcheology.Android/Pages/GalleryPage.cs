@@ -1,9 +1,8 @@
+using System.Collections.ObjectModel;
 using System.Diagnostics;
 using Chatcheology.Android.Controls;
-using Chatcheology.Archive;
 using Chatcheology.Mobile.Conversation;
 using Chatcheology.Mobile.Gallery;
-using Microsoft.Data.Sqlite;
 
 namespace Chatcheology.Android.Pages
 {
@@ -13,9 +12,12 @@ namespace Chatcheology.Android.Pages
     /// and Show in chat opens the conversation at its message.
     /// </summary>
     /// <remarks>
-    /// Built in the background from the whole conversation the first time it opens, with a reader of its
-    /// own (<see cref="ArchiveSession.GetGalleryAsync"/>), and kept for the session. Thumbnails are decoded
-    /// at cell size through the chat's own decoder and cache.
+    /// <para>Loaded in the background the first time it opens, newest months first, with a reader of its own
+    /// (<see cref="ArchiveSession.GetGalleryLoad"/>, CH-66), and kept for the session. The newest batch is
+    /// shown as soon as it is in; older months are added below it as they come, so a list read near the top
+    /// does not move. Thumbnails are decoded at cell size through the chat's own decoder and cache.</para>
+    /// <para>A photo tapped before every batch is in opens a viewer over the photos shown at that moment; once
+    /// the gallery is complete the viewer has all of it.</para>
     /// </remarks>
     internal sealed class GalleryPage : ContentPage
     {
@@ -31,7 +33,15 @@ namespace Chatcheology.Android.Pages
         private readonly CollectionView _list = new() { SelectionMode = SelectionMode.None };
         private readonly Label _status = new() { FontSize = 14, Margin = new Thickness(16), HorizontalTextAlignment = TextAlignment.Center };
         private readonly ActivityIndicator _working = new() { IsVisible = false, IsRunning = false, HorizontalOptions = LayoutOptions.Center, VerticalOptions = LayoutOptions.Center };
-        private PhotoGallery? _gallery;
+        private readonly CancellationTokenSource _closing = new();
+
+        // The batches shown, in order, and their photos; changed only on the UI thread.
+        private readonly List<GalleryBatch> _batches = [];
+        private readonly List<AttachmentCard> _photos = [];
+        private ObservableCollection<GalleryRow>? _rows;
+        private bool _complete;
+        private bool _started;
+        private bool _closed;
         private double _cellSize;
         private bool _opening;
 
@@ -68,7 +78,7 @@ namespace Chatcheology.Android.Pages
 
             var size = Math.Floor((width - Gap * (Columns + 1)) / Columns);
 
-            if (width > 0 && size > 0 && Math.Abs(size - _cellSize) >= 1)
+            if (!_closed && width > 0 && size > 0 && Math.Abs(size - _cellSize) >= 1)
             {
                 _cellSize = size;
                 Bind();
@@ -82,11 +92,47 @@ namespace Chatcheology.Android.Pages
 
             _opening = false;
 
-            if (_gallery is not null)
+            if (_started || _closed)
             {
                 return;
             }
 
+            _started = true;
+
+            try
+            {
+                await LoadAsync();
+            }
+            catch (Exception)
+            {
+                // LoadAsync reports its own failures; nothing else may end the app.
+            }
+        }
+
+        /// <inheritdoc />
+        protected override void OnNavigatedFrom(NavigatedFromEventArgs args)
+        {
+            base.OnNavigatedFrom(args);
+
+            // Covered by the viewer, the gallery keeps loading; only a closed page stops.
+            if (_closed || Navigation.NavigationStack.Contains(this))
+            {
+                return;
+            }
+
+            _closed = true;
+
+            // Stops this page's wait only: the session's load goes on and is kept for the next gallery.
+            _closing.Cancel();
+            _list.ItemsSource = null;
+        }
+
+        /// <summary>
+        /// Shows the gallery's batches as they come, from the first: the status goes as soon as the newest is
+        /// on screen. Every await is followed by a check that the page is still open.
+        /// </summary>
+        private async Task LoadAsync()
+        {
             _status.Text = "Finding the photos…";
             _working.IsVisible = _working.IsRunning = true;
 
@@ -94,38 +140,107 @@ namespace Chatcheology.Android.Pages
 
             try
             {
-                _gallery = await _session.GetGalleryAsync();
+                var load = _session.GetGalleryLoad();
+                var token = _closing.Token;
 
-                // Stars may have changed since the gallery was built.
-                _gallery.RefreshStars(_session.Stars);
-                AppState.LogTiming("gallery", watch.Elapsed, $"photos={_gallery.Photos.Count} months={_gallery.Months.Count}");
+                while (await load.NextAsync(_batches.Count, token) is { } batch)
+                {
+                    if (_closed)
+                    {
+                        return;
+                    }
 
-                _status.Text = _gallery.IsEmpty ? "This archive has no restored photos." : string.Empty;
-                _status.IsVisible = _gallery.IsEmpty;
-                Bind();
+                    Add(batch);
+
+                    if (_batches.Count == 1)
+                    {
+                        AppState.LogTiming("gallery-first", watch.Elapsed, $"photos={batch.Photos.Count} months={batch.Months.Count}");
+                        _status.Text = string.Empty;
+                        _status.IsVisible = false;
+                        _working.IsVisible = _working.IsRunning = false;
+                    }
+
+                    // Lets the list draw what it has before the next batch, even one already in.
+                    await Task.Yield();
+
+                    if (_closed)
+                    {
+                        return;
+                    }
+                }
+
+                _complete = true;
+                AppState.LogTiming("gallery", watch.Elapsed, $"photos={_photos.Count} months={_batches.Sum(b => b.Months.Count)} batches={_batches.Count}");
+
+                if (_photos.Count == 0)
+                {
+                    _status.Text = "This archive has no restored photos.";
+                    _status.IsVisible = true;
+                }
             }
-            catch (Exception exception) when (exception is ArchiveFormatException or SqliteException or IOException or OperationCanceledException or ObjectDisposedException)
+            catch (Exception) when (_closed)
             {
+                // Closed while loading: nothing on this page is touched again.
+            }
+            catch (Exception)
+            {
+                // A batch that cannot be read fails the whole gallery, as before: nothing half-shown.
+                _batches.Clear();
+                _photos.Clear();
+                _rows = null;
+                _list.ItemsSource = null;
                 _status.Text = "The photos could not be read.";
+                _status.IsVisible = true;
             }
             finally
             {
-                _working.IsVisible = _working.IsRunning = false;
+                if (!_closed)
+                {
+                    _working.IsVisible = _working.IsRunning = false;
+                }
             }
         }
 
+        /// <summary>Adds a batch below the rows shown (stars read now, as they may have changed since it was built).</summary>
+        private void Add(GalleryBatch batch)
+        {
+            foreach (var photo in batch.Photos)
+            {
+                _session.Stars.Apply(photo);
+            }
+
+            _batches.Add(batch);
+            _photos.AddRange(batch.Photos);
+
+            if (_rows is null)
+            {
+                Bind();
+                return;
+            }
+
+            foreach (var row in batch.Rows(Columns))
+            {
+                _rows.Add(row);
+            }
+        }
+
+        /// <summary>Binds every row shown so far afresh (first batch, or a new cell size).</summary>
         private void Bind()
         {
-            if (_gallery is { IsEmpty: false } gallery && _cellSize > 0)
+            if (_photos.Count > 0 && _cellSize > 0)
             {
-                _list.ItemsSource = gallery.Rows(Columns);
+                _rows = new ObservableCollection<GalleryRow>(_batches.SelectMany(batch => batch.Rows(Columns)));
+                _list.ItemsSource = _rows;
             }
         }
 
-        /// <summary>A cell was tapped: the photo full screen, swiping through the gallery.</summary>
+        /// <summary>
+        /// A cell was tapped: the photo full screen, swiping through the gallery, or through the photos shown
+        /// so far while older ones are still loading.
+        /// </summary>
         internal async Task OpenAsync(AttachmentCard photo)
         {
-            if (_opening || _gallery is not { } gallery || gallery.IndexOf(photo.AttachmentID) is not (var index and >= 0))
+            if (_opening || _closed || _photos.FindIndex(shown => shown.AttachmentID == photo.AttachmentID) is not (var index and >= 0))
             {
                 return;
             }
@@ -134,8 +249,10 @@ namespace Chatcheology.Android.Pages
 
             try
             {
+                IReadOnlyList<AttachmentCard> photos = _complete ? _photos : [.. _photos];
+
                 await Navigation.PushAsync(new ImageViewerPage(
-                    _state, new PhotoBrowser(gallery.Photos, index), _session.Stars, ShowInChatAsync));
+                    _state, new PhotoBrowser(photos, index), _session.Stars, ShowInChatAsync));
             }
             finally
             {
@@ -226,9 +343,16 @@ namespace Chatcheology.Android.Pages
                 var tap = new TapGestureRecognizer();
                 tap.Tapped += async (_, _) =>
                 {
-                    if (_photo is { } photo)
+                    try
                     {
-                        await page.OpenAsync(photo);
+                        if (_photo is { } photo)
+                        {
+                            await page.OpenAsync(photo);
+                        }
+                    }
+                    catch (Exception)
+                    {
+                        // A viewer that cannot open (the page closing under it) must not end the app.
                     }
                 };
 

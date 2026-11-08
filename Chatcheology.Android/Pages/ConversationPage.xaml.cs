@@ -1246,10 +1246,8 @@ namespace Chatcheology.Android.Pages
 
             _timeline.RefreshStars();
 
-            if (_session.GalleryIfBuilt is { } gallery)
-            {
-                gallery.RefreshStars(_session.Stars);
-            }
+            // The gallery's photos loaded so far (CH-66); photos still to come read the stars as they are built.
+            _session.GalleryLoadIfStarted?.RefreshStars(_session.Stars);
         }
 
         private async Task OpenSearchAsync()
