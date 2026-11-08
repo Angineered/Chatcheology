@@ -1,7 +1,7 @@
 namespace Chatcheology.Mobile.Library
 {
     /// <summary>One installed archive, as the start screen lists it.</summary>
-    /// <param name="Id">The folder name under <c>archives/</c>.</param>
+    /// <param name="InstallId">The folder name under <c>archives/</c> (not the format's archive id).</param>
     /// <param name="Folder">The archive's folder in the app's private storage.</param>
     /// <param name="ContentsSha256">
     /// The archive's identity (SHA-256 of its <c>CONTENTS.sha256</c>), or <see langword="null"/> when that
@@ -13,7 +13,7 @@ namespace Chatcheology.Mobile.Library
     /// <param name="LastOpenedUtc">When it was last opened in the app, or <see langword="null"/> when never.</param>
     /// <param name="IsReadable">Whether its database opens and its identity is known.</param>
     public sealed record InstalledArchive(
-        string Id,
+        string InstallId,
         string Folder,
         string? ContentsSha256,
         string? ConversationTitle,
@@ -75,7 +75,7 @@ namespace Chatcheology.Mobile.Library
                 .OrderBy(archive => archive.LastOpenedUtc is null)
                 .ThenByDescending(archive => archive.LastOpenedUtc)
                 .ThenByDescending(archive => archive.CreatedUtc)
-                .ThenBy(archive => archive.Id, StringComparer.Ordinal)
+                .ThenBy(archive => archive.InstallId, StringComparer.Ordinal)
                 .ToList();
     }
 }

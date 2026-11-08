@@ -1555,7 +1555,7 @@ namespace Chatcheology.Android.Pages
             }
 
             // Its noted dates no longer notify (CH-47).
-            NotedDateNotifier.Cancel(archive.Id);
+            NotedDateNotifier.Cancel(archive.InstallId);
             _ = NotedDateNotifier.UpdateAsync();
 
             await Navigation.PopToRootAsync();

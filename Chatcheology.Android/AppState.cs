@@ -55,7 +55,32 @@ namespace Chatcheology.Android
         /// </summary>
         internal sealed class PreferencesStore : ISettingsStore
         {
+            /// <summary>
+            /// MAUI's default preferences file (Essentials: package name + <c>.microsoft.maui.essentials.preferences</c>),
+            /// the one <see cref="Preferences.Default"/> writes to with <c>apply()</c>, which reaches disk later.
+            /// </summary>
+            private static string SharedName => AppInfo.PackageName + ".microsoft.maui.essentials.preferences";
+
             public string? Get(string key) => Preferences.Default.Get<string?>(key, null);
+
+            /// <summary>
+            /// CH-71 step 2: a synchronous <c>commit()</c> on the same file. Android writes a file's changes in order and
+            /// <c>commit()</c> waits for its own write, so every earlier <c>apply()</c> is on disk when it returns true.
+            /// </summary>
+            public bool Flush()
+            {
+                try
+                {
+                    using var preferences = global::Android.App.Application.Context.GetSharedPreferences(SharedName, global::Android.Content.FileCreationMode.Private);
+                    using var editor = preferences?.Edit();
+
+                    return editor?.Commit() == true;
+                }
+                catch (Java.Lang.Exception)
+                {
+                    return false;
+                }
+            }
 
             public void Set(string key, string? value)
             {

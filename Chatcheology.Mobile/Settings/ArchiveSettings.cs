@@ -18,6 +18,12 @@ namespace Chatcheology.Mobile.Settings
 
         /// <summary>Stores <paramref name="value"/> under <paramref name="key"/>; <see langword="null"/> removes it.</summary>
         void Set(string key, string? value);
+
+        /// <summary>
+        /// Makes every earlier <see cref="Set"/> reach storage before it returns (CH-71 step 2: a refresh's carried
+        /// settings are on disk before any archive folder moves). False when that could not be confirmed.
+        /// </summary>
+        bool Flush();
     }
 
     /// <summary>What the app remembers about one archive, keyed by its <c>CONTENTS.sha256</c> hash.</summary>
@@ -40,7 +46,12 @@ namespace Chatcheology.Mobile.Settings
     /// clears a leftover one.</para>
     /// <para>Stars (CH-38) are private to the phone and never written into the archive. They are the one
     /// thing removing the archive keeps (Angie, 2026-10-22): the same archive (same hash) imported again
-    /// has its stars back. A re-exported archive has a new hash and starts with none.</para>
+    /// has its stars back. A re-exported archive imported as a new one has a new hash and starts with none.</para>
+    /// <para>Refresh (CH-71 step 2): <c>.messageDigest</c> is the installed archive's <see cref="Import.MessageDigest"/>,
+    /// stored when a version 4 archive is installed so a later refresh need not read it again. When a refreshed export
+    /// (same archive id, every earlier message unchanged) or an adopted one replaces an installed archive,
+    /// <see cref="CopyArchive"/> carries every setting above, stars included, to the new hash (validation and digest
+    /// excepted: the new copy has its own), and <see cref="Purge"/> then removes the old hash's keys.</para>
     /// </remarks>
     public sealed class ArchiveSettings
     {
@@ -51,7 +62,18 @@ namespace Chatcheology.Mobile.Settings
         [
             "me", "position", "lastOpenedUtc", "validatedUtc", "validation", "onThisDay", "onThisDayShown",
             "layers", "memoryFilters", "ownNotedDates", "mutedNotedDates", "notedDatesPosted", "mutedYearlyMemories",
+            "messageDigest",
         ];
+
+        /// <summary>What a refresh carries to the new hash (<see cref="CopyArchive"/>): every setting but validation and digest.</summary>
+        private static readonly string[] Carried =
+        [
+            "me", "position", "lastOpenedUtc", "onThisDay", "onThisDayShown", "layers", "memoryFilters",
+            "mutedNotedDates", "notedDatesPosted", "mutedYearlyMemories", "starredMessages", "starredAttachments",
+        ];
+
+        /// <summary>Everything kept per archive, for <see cref="Purge"/>.</summary>
+        private static readonly string[] All = [.. Names, "starredMessages", "starredAttachments"];
 
         private readonly ISettingsStore _store;
 
@@ -355,6 +377,59 @@ namespace Chatcheology.Mobile.Settings
         public void Forget(string contentsSha256)
         {
             foreach (var name in Names)
+            {
+                Set(contentsSha256, name, null);
+            }
+        }
+
+        /// <summary>The installed archive's message digest (CH-71 step 2), or <see langword="null"/> when none of this version is stored.</summary>
+        public Import.MessageDigest? GetMessageDigest(string contentsSha256) =>
+            Import.MessageDigest.Parse(Get(contentsSha256, "messageDigest"));
+
+        /// <summary>Stores the installed archive's message digest; <see langword="null"/> removes it.</summary>
+        public void SetMessageDigest(string contentsSha256, Import.MessageDigest? digest) =>
+            Set(contentsSha256, "messageDigest", digest?.Format());
+
+        /// <summary>
+        /// Carries every setting of the archive <paramref name="fromSha256"/> (stars, position, me, last opened, On this
+        /// day, layers, filters, mutes, noted-date posted day) to <paramref name="toSha256"/>. Stars are joined: stars
+        /// already kept under the new hash (left by removing that same archive earlier) stay, with the old archive's added.
+        /// Every other setting takes the old archive's value exactly: one it does not have is removed from the new one.
+        /// Validation and the message digest are not carried: they belong to the files they were worked out from. The
+        /// old keys stay until <see cref="Purge"/>. Call <see cref="Flush"/> before relying on them.
+        /// </summary>
+        public void CopyArchive(string fromSha256, string toSha256)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(fromSha256);
+            ArgumentException.ThrowIfNullOrWhiteSpace(toSha256);
+
+            if (string.Equals(fromSha256, toSha256, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            var messages = GetStarredMessages(toSha256).Union(GetStarredMessages(fromSha256)).ToList();
+            var attachments = GetStarredAttachments(toSha256).Union(GetStarredAttachments(fromSha256)).ToList();
+
+            foreach (var name in Carried)
+            {
+                Set(toSha256, name, Get(fromSha256, name));
+            }
+
+            SetStarredMessages(toSha256, messages);
+            SetStarredAttachments(toSha256, attachments);
+        }
+
+        /// <summary>Makes every setting written so far reach storage; false when that could not be confirmed (CH-71 step 2).</summary>
+        public bool Flush() => _store.Flush();
+
+        /// <summary>
+        /// Removes everything stored for the archive, stars included: only after a refresh or adoption carried them to
+        /// the archive that replaced it (<see cref="CopyArchive"/>). Removing an archive uses <see cref="Forget"/>.
+        /// </summary>
+        public void Purge(string contentsSha256)
+        {
+            foreach (var name in All)
             {
                 Set(contentsSha256, name, null);
             }

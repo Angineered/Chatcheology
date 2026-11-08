@@ -5,22 +5,26 @@ namespace Chatcheology.Mobile.Synthetic
     /// the tests check exactly what the buttons write: the current archive format (version 4, CH-71), with the
     /// invented yearly memories, a few picture captions (CH-71) and, for the memories button, the invented memory
     /// layers (CH-42). Gifted noted dates
-    /// (version 2) stay a test fixture (<see cref="SyntheticArchiveOptions.NotedDates"/>).
+    /// (version 2) stay a test fixture (<see cref="SyntheticArchiveOptions.NotedDates"/>). Each option carries its own
+    /// invented archive id (CH-71 step 2), so installing one after another is never taken for a refresh.
     /// </summary>
     internal static class SyntheticDebugInstalls
     {
         /// <summary>"Install synthetic archive": every card and label the screens show, and the yearly memories.</summary>
         internal static readonly SyntheticArchiveOptions Standard = new(
-            Audio: 2, Documents: 1, BrokenImages: 1, LowQualityCopies: 3, Forwarded: 30, Links: 20, YearlyMemories: true, Captions: 4);
+            Audio: 2, Documents: 1, BrokenImages: 1, LowQualityCopies: 3, Forwarded: 30, Links: 20, YearlyMemories: true, Captions: 4,
+            ArchiveId: "3f1c9b20-6d4e-4a57-8e12-c0b7a5d9e461");
 
         /// <summary>
         /// "Install synthetic archive (mid-day joins)": 130 days for 3,000 messages, about 23 a day, so 150-message
         /// pages join inside a day; with the yearly memories.
         /// </summary>
-        internal static readonly SyntheticArchiveOptions MidDay = new(Days: 130, YearlyMemories: true, Captions: 3);
+        internal static readonly SyntheticArchiveOptions MidDay = new(
+            Days: 130, YearlyMemories: true, Captions: 3, ArchiveId: "8a2d4e61-0b3c-4f95-a7d8-1e6c2b9f0a37");
 
         /// <summary>"Install synthetic archive with memories": the Shared gaming and Holidays layers, and the yearly memories.</summary>
         internal static readonly SyntheticArchiveOptions WithMemories = new(
-            Audio: 1, Documents: 1, LowQualityCopies: 2, Forwarded: 10, Links: 10, Memories: true, YearlyMemories: true, Captions: 3);
+            Audio: 1, Documents: 1, LowQualityCopies: 2, Forwarded: 10, Links: 10, Memories: true, YearlyMemories: true, Captions: 3,
+            ArchiveId: "c5e7a1d3-92f0-4b68-b4a1-6d8e3f2c7b05");
     }
 }

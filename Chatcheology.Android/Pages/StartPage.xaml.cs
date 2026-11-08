@@ -53,7 +53,7 @@ namespace Chatcheology.Android.Pages
 
             // Started from a noted-date notification: that archive, with its On this day card.
             if (MainActivity.TakePendingArchive() is { } pending
-                && opening?.Archives.FirstOrDefault(archive => archive.Id == pending) is { IsReadable: true } notified)
+                && opening?.Archives.FirstOrDefault(archive => archive.InstallId == pending) is { IsReadable: true } notified)
             {
                 await OpenAsync(notified, showOnThisDay: true);
             }
@@ -68,7 +68,7 @@ namespace Chatcheology.Android.Pages
         {
             var opening = await RefreshAsync();
 
-            if (opening?.Archives.FirstOrDefault(archive => archive.Id == id) is { IsReadable: true } archive)
+            if (opening?.Archives.FirstOrDefault(archive => archive.InstallId == id) is { IsReadable: true } archive)
             {
                 await OpenAsync(archive, showOnThisDay);
             }
@@ -283,7 +283,7 @@ namespace Chatcheology.Android.Pages
             }
 
             // Its noted dates no longer notify (CH-47).
-            NotedDateNotifier.Cancel(archive.Id);
+            NotedDateNotifier.Cancel(archive.InstallId);
             _ = NotedDateNotifier.UpdateAsync();
 
             await RefreshAsync();
@@ -336,6 +336,26 @@ namespace Chatcheology.Android.Pages
         private async Task InstallSyntheticAsync(SyntheticArchiveOptions options)
         {
             Status.Text = "Writing the synthetic archive…";
+
+            // CH-71 step 2: each option has its own archive id; a second install of the same option would put two
+            // archives with one id side by side, which makes a later refresh ambiguous. Remove the first one instead.
+            var archiveId = options.ArchiveId ?? SyntheticArchive.ArchiveId;
+            bool present;
+
+            try
+            {
+                present = await Task.Run(() => _state.Library.ReadIdentities().Any(identity => identity.ArchiveId == archiveId));
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                present = false;
+            }
+
+            if (present)
+            {
+                Status.Text = "This synthetic archive is already installed. Remove it first to install it again.";
+                return;
+            }
 
             var (outcome, seconds) = await Task.Run(() =>
             {

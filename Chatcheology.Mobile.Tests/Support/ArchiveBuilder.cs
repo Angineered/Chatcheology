@@ -77,6 +77,7 @@ namespace Chatcheology.Mobile.Tests.Support
                 IsForwarded = forwarded,
                 ForwardScore = score,
                 Attachments = attachments.Select((spec, index) => Attachment(spec, messageID, index + 1)).ToList(),
+                Source = Source,
             });
 
             return sequence;
@@ -93,8 +94,17 @@ namespace Chatcheology.Mobile.Tests.Support
         /// <summary>The synthetic archive id a version 4 archive carries (CH-71).</summary>
         internal string ArchiveId { get; set; } = "2c6b8e14-3a5f-4d07-b9e2-71a0c4d58f36";
 
-        /// <summary>Version 2 when there are gifted noted dates (only version 2 carries them, CH-53), otherwise the current one.</summary>
-        private int Version => _notedDates.Count > 0 ? ArchiveFormat.NotedDatesFormatVersion : ArchiveFormat.FormatVersion;
+        /// <summary>A format version to write instead of the usual one (CH-71 step 2: a version 3 archive installed before version 4).</summary>
+        internal int? FormatVersion { get; set; }
+
+        /// <summary>The source the next messages get (CH-71: <see cref="ArchiveMessageSource.Msgstore"/> for newer ones).</summary>
+        internal ArchiveMessageSource Source { get; set; } = ArchiveMessageSource.Workspace;
+
+        /// <summary>
+        /// The format version: <see cref="FormatVersion"/> when set, else version 2 when there are gifted noted dates (only
+        /// version 2 carries them, CH-53), otherwise the current one.
+        /// </summary>
+        private int Version => FormatVersion ?? (_notedDates.Count > 0 ? ArchiveFormat.NotedDatesFormatVersion : ArchiveFormat.FormatVersion);
 
         /// <summary>Writes the archive into <paramref name="folder"/>: database, media, manifest, contents list.</summary>
         internal string Write(string folder)
@@ -201,6 +211,23 @@ namespace Chatcheology.Mobile.Tests.Support
     internal sealed class MemorySettings : Settings.ISettingsStore
     {
         internal Dictionary<string, string> Values { get; } = new(StringComparer.Ordinal);
+
+        /// <summary>How many times <see cref="Flush"/> was called.</summary>
+        internal int Flushes { get; private set; }
+
+        /// <summary>Called on each flush, before it returns (CH-71 step 2: to check what is on "disk" when).</summary>
+        internal Action? OnFlush { get; set; }
+
+        /// <summary>What <see cref="Flush"/> answers.</summary>
+        internal bool FlushSucceeds { get; set; } = true;
+
+        public bool Flush()
+        {
+            Flushes++;
+            OnFlush?.Invoke();
+
+            return FlushSucceeds;
+        }
 
         public string? Get(string key) => Values.TryGetValue(key, out var value) ? value : null;
 

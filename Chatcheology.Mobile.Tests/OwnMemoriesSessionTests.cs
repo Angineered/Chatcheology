@@ -501,7 +501,7 @@ namespace Chatcheology.Mobile.Tests
             Assert.NotNull(next.Own);
             Assert.Equal(1, next.Own.Count);
             Assert.Equal("A memory today", next.Own.Text);
-            Assert.Equal(Path.GetFileName(second.Folder), next.Own.TapArchiveId);
+            Assert.Equal(Path.GetFileName(second.Folder), next.Own.TapInstallId);
             Assert.DoesNotContain("Invented", next.Own.Text, StringComparison.Ordinal);
 
             // Each archive's own notification never counts it.
@@ -568,10 +568,10 @@ namespace Chatcheology.Mobile.Tests
             var listing = new OwnYearlyMemoryListing(Guid.NewGuid(), 1, "Own", new DateOnly(2024, 6, 1), true);
             var late = new DateTime(2026, 6, 1, 15, 30, 0);
 
-            var catchUp = NotedDateSchedule.Next([], new OwnMemoryReminders(true, [listing], TapArchiveId: "a1"), Nine, late)!;
+            var catchUp = NotedDateSchedule.Next([], new OwnMemoryReminders(true, [listing], TapInstallId: "a1"), Nine, late)!;
             Assert.Equal(new DateOnly(2026, 6, 1), catchUp.Day);
             Assert.Equal(late + NotedDateSchedule.CatchUpDelay, catchUp.LocalMoment);
-            Assert.Equal("a1", catchUp.Own!.TapArchiveId);
+            Assert.Equal("a1", catchUp.Own!.TapInstallId);
 
             var posted = NotedDateSchedule.Next([], new OwnMemoryReminders(true, [listing], new DateOnly(2026, 6, 1)), Nine, late)!;
             Assert.Equal(new DateOnly(2027, 6, 1), posted.Day);
@@ -593,7 +593,7 @@ namespace Chatcheology.Mobile.Tests
 
             // No archive installed: the start screen.
             _own.Add(Draft("Invented anniversary", new DateOnly(2024, 3, 15), everyYear: true));
-            Assert.Null(Next(new DateTime(2026, 3, 2, 8, 0, 0))!.Own!.TapArchiveId);
+            Assert.Null(Next(new DateTime(2026, 3, 2, 8, 0, 0))!.Own!.TapInstallId);
         }
 
         [Fact]
@@ -645,7 +645,7 @@ namespace Chatcheology.Mobile.Tests
             var next = NotedDateSchedule.WithRetry(NotedDateSchedule.Next([archive], own.Reminders, Nine, new DateTime(2026, 3, 2, 8, 0, 0)), own.MayPass, new DateTime(2026, 3, 2, 8, 0, 0))!;
             Assert.Equal(new DateOnly(2026, 3, 15), next.Day);
             Assert.False(next.IsRetry);
-            Assert.Equal("a1", Assert.Single(next.Due).ArchiveId);
+            Assert.Equal("a1", Assert.Single(next.Due).InstallId);
             Assert.Null(next.Own);
             Assert.Contains("own=0", NotedDateSchedule.DescribeCounts([archive], null, next), StringComparison.Ordinal);
         }

@@ -25,6 +25,18 @@ namespace Chatcheology.Mobile.Tests
         }
 
         [Fact]
+        public void Each_Debug_install_option_has_its_own_archive_id_so_installing_one_after_another_is_not_a_refresh()
+        {
+            // CH-71 step 2 review note on step 1b: one fixed id for every option made the second install look like a
+            // refresh of the first.
+            string?[] ids = [SyntheticDebugInstalls.Standard.ArchiveId, SyntheticDebugInstalls.MidDay.ArchiveId, SyntheticDebugInstalls.WithMemories.ArchiveId];
+
+            Assert.All(ids, id => Assert.True(ArchiveFormat.IsArchiveId(id)));
+            Assert.Equal(3, ids.Distinct(StringComparer.Ordinal).Count());
+            Assert.DoesNotContain(SyntheticArchive.ArchiveId, ids);
+        }
+
+        [Fact]
         public void Every_Debug_install_writes_version_four_with_its_yearly_memories_and_captions_and_validates()
         {
             foreach (var options in new[] { SyntheticDebugInstalls.Standard, SyntheticDebugInstalls.MidDay, SyntheticDebugInstalls.WithMemories })
@@ -42,7 +54,8 @@ namespace Chatcheology.Mobile.Tests
                 Assert.False(reader.HasNotedDates);
 
                 // CH-71: the invented archive id, and a few captioned pictures (at least one with a link).
-                Assert.Equal(SyntheticArchive.ArchiveId, reader.Info.ArchiveId);
+                Assert.Equal(options.ArchiveId, reader.Info.ArchiveId);
+                Assert.True(ArchiveFormat.IsArchiveId(options.ArchiveId));
                 Assert.Equal(options.Captions, counts.Captions);
                 Assert.InRange(counts.Captions, 3, 10);
 

@@ -256,16 +256,16 @@ namespace Chatcheology.Mobile.Tests
 
             // 3 March 2026: one noted date and two yearly memories in "a" (one dated 2030, one muted: left out); one in "b".
             var due = NotedDateSchedule.DueOn(archives, D(2026, 3, 3));
-            Assert.Equal(["a", "b"], due.Select(d => d.ArchiveId).ToList());
+            Assert.Equal(["a", "b"], due.Select(d => d.InstallId).ToList());
             Assert.Equal([3, 1], due.Select(d => d.Count).ToList());
             Assert.Equal(["3 noted dates today", "A noted date today"], due.Select(d => d.Text).ToList());
             Assert.DoesNotContain(due, d => d.Text.Contains("T1", StringComparison.Ordinal) || d.Text.Contains("T2", StringComparison.Ordinal));
 
             // In 2030, the memory dated that year counts too.
-            Assert.Equal(4, NotedDateSchedule.DueOn(archives, D(2030, 3, 3)).Single(d => d.ArchiveId == "a").Count);
+            Assert.Equal(4, NotedDateSchedule.DueOn(archives, D(2030, 3, 3)).Single(d => d.InstallId == "a").Count);
 
             // Posted today: not again that day.
-            Assert.Equal(["b"], NotedDateSchedule.DueOn([both with { PostedThrough = D(2026, 3, 3) }, other], D(2026, 3, 3)).Select(d => d.ArchiveId).ToList());
+            Assert.Equal(["b"], NotedDateSchedule.DueOn([both with { PostedThrough = D(2026, 3, 3) }, other], D(2026, 3, 3)).Select(d => d.InstallId).ToList());
 
             // Only a yearly memory: a moment is found; only one dated in the future: none before its day.
             Assert.Equal(At(2026, 3, 3, 9, 0), NotedDateSchedule.Next([other], Nine, At(2026, 1, 1))!.LocalMoment);

@@ -9,7 +9,11 @@ namespace Chatcheology.Android.Pages
     /// "Checking…" without Cancel while the copy is validated, the screen kept on throughout, then the
     /// outcome. Sizes, counts and check names only: never a file name, path or message text.
     /// </summary>
-    internal sealed class ImportPage : ContentPage
+    /// <remarks>
+    /// CH-71 step 2: the page also asks the one-time adoption question (<see cref="IImportQuestions"/>) when a version 4
+    /// archive's earlier messages are exactly an archive installed before version 4: Replace / Import as new / Cancel.
+    /// </remarks>
+    internal sealed class ImportPage : ContentPage, IImportQuestions
     {
         private readonly AppState _state;
         private readonly IImportSource _source;
@@ -76,8 +80,13 @@ namespace Chatcheology.Android.Pages
 
             try
             {
-                result = await Task.Run(() => _state.Importer.Import(_source, progress, _cancel.Token));
-                AppState.LogTiming("import", watch.Elapsed, $"outcome={result.Outcome} {_readCounts}");
+                result = await Task.Run(() => _state.Importer.Import(_source, progress, _cancel.Token, this));
+
+                // Counts only: never an id, a title or text.
+                var refreshed = result.Outcome == ImportOutcome.Refreshed
+                    ? $" added={result.AddedMessages} adopted={(result.Adopted ? 1 : 0)} replacedRemoved={(result.ReplacedRemoved ? 1 : 0)}"
+                    : result.UnmatchedOlderArchives > 0 ? $" unmatchedOlder={result.UnmatchedOlderArchives}" : string.Empty;
+                AppState.LogTiming("import", watch.Elapsed, $"outcome={result.Outcome} refusal={result.Refusal}{refreshed} {_readCounts}");
             }
             catch (Exception)
             {
@@ -98,6 +107,43 @@ namespace Chatcheology.Android.Pages
 
         /// <inheritdoc />
         protected override bool OnBackButtonPressed() => _running || base.OnBackButtonPressed();
+
+        /// <summary>
+        /// The adoption question (CH-71 step 2), asked on the UI thread while the import's worker thread waits. Back,
+        /// a dismissed sheet or any failure answers Cancel, so nothing is replaced without a Replace tap.
+        /// </summary>
+        public AdoptionAnswer AskAdoption(AdoptionQuestion question, CancellationToken cancellationToken)
+        {
+            try
+            {
+                var button = MainThread.InvokeOnMainThreadAsync(async () =>
+                {
+                    var stage = _stage.Text;
+                    var detail = _detail.Text;
+
+                    try
+                    {
+                        _stage.Text = AdoptionQuestion.Heading;
+                        _detail.Text = question.Detail;
+
+                        return await DisplayActionSheetAsync(
+                            question.Text, AdoptionQuestion.CancelButton, null, AdoptionQuestion.ReplaceButton, AdoptionQuestion.ImportAsNewButton);
+                    }
+                    finally
+                    {
+                        _stage.Text = stage;
+                        _detail.Text = detail;
+                    }
+                }).WaitAsync(cancellationToken).GetAwaiter().GetResult();
+
+                return AdoptionQuestion.AnswerFor(button);
+            }
+            catch (Exception)
+            {
+                // Never replace on doubt; nothing here may end the app.
+                return AdoptionAnswer.Cancel;
+            }
+        }
 
         private void Report(ImportProgress value)
         {
@@ -135,6 +181,7 @@ namespace Chatcheology.Android.Pages
             _stage.Text = result?.Outcome switch
             {
                 ImportOutcome.Installed => "Imported",
+                ImportOutcome.Refreshed => "Updated",
                 ImportOutcome.AlreadyInstalled => "Already imported",
                 ImportOutcome.NotEnoughSpace => "Not enough space",
                 ImportOutcome.Cancelled => "Cancelled",
@@ -163,13 +210,24 @@ namespace Chatcheology.Android.Pages
                 }
             }
 
-            if (result is { Outcome: ImportOutcome.Installed })
+            if (result is { Outcome: ImportOutcome.Refreshed, ReplacedRemoved: true, ReplacedInstallId: { } replaced })
+            {
+                // CH-71 step 2: the replaced copy's noted-date notification goes; the new copy's is scheduled below.
+                // The own-memories notification ("A memory today", one per phone) is deliberately not cancelled even when
+                // its tap names the replaced folder: cancelling would remove the owner's reminder for the day. Its tap then
+                // finds no such folder and falls back to the start screen, or at app start to the usual opening rule (StartPage
+                // looks the id up and opens nothing for a missing one); the next one names the
+                // new folder (UpdateAsync below picks the last-opened archive, whose last-opened time was carried over).
+                NotedDateNotifier.Cancel(replaced);
+            }
+
+            if (result is { Outcome: ImportOutcome.Installed or ImportOutcome.Refreshed })
             {
                 // Its noted dates notify from now on (CH-47).
                 _ = NotedDateNotifier.UpdateAsync();
             }
 
-            if (result is { Outcome: ImportOutcome.Installed or ImportOutcome.AlreadyInstalled, ArchiveId: { } id })
+            if (result is { Outcome: ImportOutcome.Installed or ImportOutcome.Refreshed or ImportOutcome.AlreadyInstalled, InstallId: { } id })
             {
                 var open = new Button { Text = "Open the archive", TextColor = Colors.White }.Themed(VisualElement.BackgroundColorProperty, "Primary");
                 open.Clicked += async (_, _) =>
@@ -196,9 +254,18 @@ namespace Chatcheology.Android.Pages
             var back = new Button { Text = "Back" };
             back.Clicked += async (_, _) =>
             {
-                if (Leave())
+                if (!Leave())
+                {
+                    return;
+                }
+
+                try
                 {
                     await Navigation.PopAsync();
+                }
+                catch (Exception)
+                {
+                    // Nothing here may end the app (CH-60).
                 }
             };
             _outcome.Children.Add(back);

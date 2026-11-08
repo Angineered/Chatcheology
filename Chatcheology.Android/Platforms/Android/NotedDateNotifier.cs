@@ -175,7 +175,7 @@ namespace Chatcheology.Android
 
                 foreach (var notification in due)
                 {
-                    manager.Notify(NotedDateSchedule.NotificationId(notification.ArchiveId), Build(notification));
+                    manager.Notify(NotedDateSchedule.NotificationId(notification.InstallId), Build(notification));
                 }
 
                 if (dueOwn is not null)
@@ -188,11 +188,11 @@ namespace Chatcheology.Android
         }
 
         /// <summary>Removes an archive's notification when it is removed (the alarm is rescheduled separately).</summary>
-        internal static void Cancel(string archiveId)
+        internal static void Cancel(string installId)
         {
             try
             {
-                Manager?.Cancel(NotedDateSchedule.NotificationId(archiveId));
+                Manager?.Cancel(NotedDateSchedule.NotificationId(installId));
             }
             catch (Exception exception) when (exception is Java.Lang.Exception or ArgumentException)
             {
@@ -266,23 +266,23 @@ namespace Chatcheology.Android
         }
 
         private static Notification Build(DueNotification due) =>
-            Build(NotedDateSchedule.NotificationId(due.ArchiveId), due.Text, due.ArchiveId);
+            Build(NotedDateSchedule.NotificationId(due.InstallId), due.Text, due.InstallId);
 
         /// <summary>
         /// The own memories notification (CH-54): generic text, never a title; a tap opens the last-opened archive at
         /// today's On this day card, or, with none, the start screen (no archive extra).
         /// </summary>
         private static Notification BuildOwn(DueOwnNotification due) =>
-            Build(NotedDateSchedule.OwnNotificationId, due.Text, due.TapArchiveId);
+            Build(NotedDateSchedule.OwnNotificationId, due.Text, due.TapInstallId);
 
-        private static Notification Build(int id, string text, string? archiveId)
+        private static Notification Build(int id, string text, string? installId)
         {
             var open = new Intent(Context, typeof(MainActivity))
                 .SetFlags(ActivityFlags.NewTask | ActivityFlags.SingleTop | ActivityFlags.ClearTop);
 
-            if (archiveId is not null)
+            if (installId is not null)
             {
-                open.PutExtra(ArchiveExtra, archiveId);
+                open.PutExtra(ArchiveExtra, installId);
             }
 
             var tap = PendingIntent.GetActivity(Context, id, open, PendingIntentFlags.Immutable | PendingIntentFlags.UpdateCurrent);

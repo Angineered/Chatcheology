@@ -163,6 +163,95 @@ namespace Chatcheology.Mobile.Library
         /// <exception cref="ArgumentException">The folder is not directly inside the staging area.</exception>
         public InstallOutcome Install(string stagingFolder)
         {
+            var result = Validate(stagingFolder);
+
+            if (!result.Passed)
+            {
+                Directory.Delete(StagingPath(stagingFolder), recursive: true);
+
+                return new InstallOutcome(result, null);
+            }
+
+            return new InstallOutcome(result, MoveIn(stagingFolder));
+        }
+
+        /// <summary>Validates a staging folder and leaves it where it is (CH-71 step 2: a refresh decides before the move).</summary>
+        /// <exception cref="ArgumentException">The folder is not directly inside the staging area.</exception>
+        public ArchiveValidationResult Validate(string stagingFolder) => ArchiveValidator.Validate(StagingPath(stagingFolder));
+
+        /// <summary>Moves a validated staging folder into the installed archives, by one move, and returns its new folder.</summary>
+        /// <exception cref="ArgumentException">The folder is not directly inside the staging area.</exception>
+        public string MoveIn(string stagingFolder)
+        {
+            var folder = StagingPath(stagingFolder);
+
+            Directory.CreateDirectory(ArchivesFolder);
+
+            var installed = Path.Combine(ArchivesFolder, Path.GetFileName(folder));
+            Directory.Move(folder, installed);
+
+            return installed;
+        }
+
+        /// <summary>
+        /// Takes an installed archive out after a refresh replaced it (CH-71 step 2): one move into the staging area,
+        /// then deleted there, so a delete cut short is finished by <see cref="CleanStaging"/> and never leaves a
+        /// half-deleted archive installed. Settings are the caller's (<see cref="ArchiveSettings.Purge"/>).
+        /// </summary>
+        /// <exception cref="ArgumentException">The folder is not directly inside the installed archives.</exception>
+        public void Retire(string installedFolder)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(installedFolder);
+
+            var folder = Path.TrimEndingDirectorySeparator(Path.GetFullPath(installedFolder));
+
+            if (!string.Equals(Path.GetDirectoryName(folder), ArchivesFolder, StringComparison.Ordinal) || !Directory.Exists(folder))
+            {
+                throw new ArgumentException("Only a folder directly inside the installed archives can be retired.", nameof(installedFolder));
+            }
+
+            SqliteConnection.ClearAllPools();
+            Directory.CreateDirectory(StagingFolder);
+
+            var retired = Path.Combine(StagingFolder, "retired-" + Guid.NewGuid().ToString("N"));
+            Directory.Move(folder, retired);
+
+            try
+            {
+                Directory.Delete(retired, recursive: true);
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                // Out of the installed archives already; CleanStaging finishes it on the next start.
+            }
+        }
+
+        /// <summary>
+        /// Each installed archive's identity for a refresh (CH-71 step 2): folder, contents hash, the format's archive id
+        /// (version 4; <see langword="null"/> below), title and message count. Reads each database; off the UI thread.
+        /// </summary>
+        /// <remarks>An archive that cannot be read is listed with <see cref="InstalledIdentity.IsReadable"/> false.</remarks>
+        public IReadOnlyList<InstalledIdentity> ReadIdentities() =>
+            ListInstalled().Select(folder =>
+            {
+                var hash = ContentsSha256Of(folder);
+
+                try
+                {
+                    using var reader = ArchiveReader.Open(folder);
+
+                    return new InstalledIdentity(
+                        folder, hash, reader.Info.ArchiveId, reader.Info.FormatVersion, reader.Info.ConversationTitle, reader.ReadMessageCount(),
+                        IsReadable: hash is not null);
+                }
+                catch (Exception exception) when (exception is ArchiveFormatException or SqliteException or IOException or UnauthorizedAccessException)
+                {
+                    return new InstalledIdentity(folder, hash, null, 0, null, 0, IsReadable: false);
+                }
+            }).ToList();
+
+        private string StagingPath(string stagingFolder)
+        {
             ArgumentException.ThrowIfNullOrWhiteSpace(stagingFolder);
 
             var folder = Path.TrimEndingDirectorySeparator(Path.GetFullPath(stagingFolder));
@@ -173,22 +262,23 @@ namespace Chatcheology.Mobile.Library
                 throw new ArgumentException("Only a folder directly inside the staging area can be installed.", nameof(stagingFolder));
             }
 
-            var result = ArchiveValidator.Validate(folder);
-
-            if (!result.Passed)
-            {
-                Directory.Delete(folder, recursive: true);
-
-                return new InstallOutcome(result, null);
-            }
-
-            Directory.CreateDirectory(ArchivesFolder);
-
-            var installed = Path.Combine(ArchivesFolder, Path.GetFileName(folder));
-            Directory.Move(folder, installed);
-
-            return new InstallOutcome(result, installed);
+            return folder;
         }
+    }
+
+    /// <summary>An installed archive's identity, for a refresh (CH-71 step 2). No message text.</summary>
+    /// <param name="Folder">Its folder under <c>archives/</c>.</param>
+    /// <param name="ContentsSha256">Its contents hash (the settings key), or <see langword="null"/> when unreadable.</param>
+    /// <param name="ArchiveId">The format's fixed archive id (version 4), or <see langword="null"/> below version 4.</param>
+    /// <param name="FormatVersion">Its format version; 0 when unreadable.</param>
+    /// <param name="ConversationTitle">Its title, for the adoption question; <see langword="null"/> when unreadable.</param>
+    /// <param name="MessageCount">How many messages it holds.</param>
+    /// <param name="IsReadable">Whether its database opens and its contents hash is known.</param>
+    public sealed record InstalledIdentity(
+        string Folder, string? ContentsSha256, string? ArchiveId, int FormatVersion, string? ConversationTitle, int MessageCount, bool IsReadable)
+    {
+        /// <summary>The folder name under <c>archives/</c>.</summary>
+        public string InstallId => Path.GetFileName(Folder);
     }
 
     /// <summary>What installing a staging folder did.</summary>
