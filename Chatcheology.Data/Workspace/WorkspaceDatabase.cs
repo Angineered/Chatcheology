@@ -15,7 +15,7 @@ namespace Chatcheology.Data.Workspace
     /// The schema version lives in SQLite's own <c>PRAGMA user_version</c> header field rather than
     /// in a table of our own, so a workspace file describes itself without needing to be queried
     /// through application code. There is no migration engine: version 0 is created as the current
-    /// schema outright, versions 1, 2, 3 and 4 are each migrated by one explicit step, version
+    /// schema outright, versions 1, 2, 3, 4 and 5 are each migrated by one explicit step, version
     /// <see cref="SchemaVersion"/> is accepted, and anything else is rejected.
     /// </para>
     /// <para>
@@ -34,7 +34,7 @@ namespace Chatcheology.Data.Workspace
         /// <summary>
         /// The workspace schema version this build creates and accepts.
         /// </summary>
-        public const int SchemaVersion = 5;
+        public const int SchemaVersion = 6;
 
         /// <summary>
         /// The <c>user_version</c> of a SQLite database that has never had a workspace schema
@@ -58,11 +58,16 @@ namespace Chatcheology.Data.Workspace
         internal const int VersionThreeSchemaVersion = 3;
 
         /// <summary>
-        /// The schema version immediately before the current one: the Phase 7 schema plus the
-        /// attachment msgstore facts, and the version every workspace written by the previous build
-        /// carries.
+        /// The Phase 7 schema plus the attachment msgstore facts (CH-10).
         /// </summary>
         internal const int VersionFourSchemaVersion = 4;
+
+        /// <summary>
+        /// The schema version immediately before the current one: version 4 plus the text-message
+        /// msgstore facts (CH-22), and the version every workspace written by the previous build
+        /// carries.
+        /// </summary>
+        internal const int VersionFiveSchemaVersion = 5;
 
         /// <summary>
         /// The tables version 3 adds, in creation order: the Phase 7 evidence and decision tables.
@@ -111,6 +116,15 @@ namespace Chatcheology.Data.Workspace
         internal static readonly string[] VersionFiveIndexNames =
         [
             "IX_MessageMsgstoreFact_SourceBatch",
+        ];
+
+        /// <summary>The table version 6 adds, and the only one.</summary>
+        internal const string CaptionFactTableName = "AttachmentCaptionFact";
+
+        /// <summary>The index version 6 declares by name, and the only one.</summary>
+        internal static readonly string[] VersionSixIndexNames =
+        [
+            "IX_AttachmentCaptionFact_SourceBatch",
         ];
 
         /// <summary>
@@ -923,6 +937,48 @@ namespace Chatcheology.Data.Workspace
         ];
 
         /// <summary>
+        /// The table and index version 6 adds, one statement per element, in creation order.
+        /// </summary>
+        /// <remarks>
+        /// Purely additive, like versions 4 and 5: no existing table, column, constraint or index is
+        /// altered, and the only relationship to the existing schema is one child foreign key into
+        /// <c>Attachment</c>. The table starts empty; nothing is backfilled.
+        /// <para>
+        /// The rows are picture captions copied from WhatsApp's own message store (CH-63, CH-71) by
+        /// a batch the operator runs. An export line for a picture is exactly the media placeholder,
+        /// so the caption exists only in the msgstore. One row per attachment that has a caption;
+        /// an attachment with no row simply has no known caption. <c>CaptionText</c> is stored
+        /// exactly as the msgstore holds it, never trimmed or normalised, and is never empty.
+        /// <c>FromPartner</c> is 1 when the caption was read from the message linked to the
+        /// attachment's own message by msgstore association type 12 (either side of the link: the
+        /// hidden low-quality copy or the shown full copy) rather than from its own message.
+        /// </para>
+        /// </remarks>
+        private static readonly string[] VersionSixSchemaStatements =
+        [
+            """
+            CREATE TABLE AttachmentCaptionFact (
+                AttachmentID        INTEGER PRIMARY KEY,
+                CaptionText         TEXT NOT NULL,
+                FromPartner         INTEGER NOT NULL,
+                SourceBatch         TEXT NOT NULL,
+                RecordedDateTimeUtc TEXT NOT NULL,
+
+                CHECK (length(CaptionText) > 0),
+                CHECK (FromPartner IN (0, 1)),
+                CHECK (length(SourceBatch) > 0),
+
+                FOREIGN KEY (AttachmentID) REFERENCES Attachment (AttachmentID)
+            );
+            """,
+
+            """
+            CREATE INDEX IX_AttachmentCaptionFact_SourceBatch
+                ON AttachmentCaptionFact (SourceBatch);
+            """,
+        ];
+
+        /// <summary>
         /// Creates one unresolved attachment for every already-persisted message whose content is
         /// exactly the media placeholder.
         /// </summary>
@@ -1166,7 +1222,11 @@ namespace Chatcheology.Data.Workspace
                     break;
 
                 case VersionFourSchemaVersion:
-                    MigrateVersionFourToVersionFive(connection);
+                    MigrateVersionFourToCurrent(connection);
+                    break;
+
+                case VersionFiveSchemaVersion:
+                    MigrateVersionFiveToVersionSix(connection, []);
                     break;
 
                 default:
@@ -1174,8 +1234,8 @@ namespace Chatcheology.Data.Workspace
                         $"The workspace database reports schema version {existingVersion}, which " +
                         $"this build does not support. This build creates and accepts version " +
                         $"{SchemaVersion} and can migrate versions {VersionOneSchemaVersion}, " +
-                        $"{VersionTwoSchemaVersion}, {VersionThreeSchemaVersion} and " +
-                        $"{VersionFourSchemaVersion}.");
+                        $"{VersionTwoSchemaVersion}, {VersionThreeSchemaVersion}, " +
+                        $"{VersionFourSchemaVersion} and {VersionFiveSchemaVersion}.");
             }
         }
 
@@ -1195,6 +1255,7 @@ namespace Chatcheology.Data.Workspace
                 ApplyStatements(command, VersionThreeSchemaStatements);
                 ApplyStatements(command, VersionFourSchemaStatements);
                 ApplyStatements(command, VersionFiveSchemaStatements);
+                ApplyStatements(command, VersionSixSchemaStatements);
 
                 SetSchemaVersion(command);
             }
@@ -1208,7 +1269,8 @@ namespace Chatcheology.Data.Workspace
         /// <remarks>
         /// The version-1 tables, columns and rows are left exactly as they are. Nothing is rewritten
         /// and nothing is dropped: the migration adds the version-2 tables, derives attachments from
-        /// messages that are already persisted, and adds the version-3, version-4 and version-5 tables.
+        /// messages that are already persisted, and adds the version-3, version-4, version-5 and
+        /// version-6 tables.
         /// <para>
         /// One transaction covering every version step, rather than migrations run back to back.
         /// A version-1 workspace has always reached the current version in one atomic jump, and that
@@ -1242,6 +1304,7 @@ namespace Chatcheology.Data.Workspace
                 ApplyStatements(command, VersionThreeSchemaStatements);
                 ApplyStatements(command, VersionFourSchemaStatements);
                 ApplyStatements(command, VersionFiveSchemaStatements);
+                ApplyStatements(command, VersionSixSchemaStatements);
 
                 SetSchemaVersion(command);
             }
@@ -1254,8 +1317,8 @@ namespace Chatcheology.Data.Workspace
         /// </summary>
         /// <remarks>
         /// Purely additive. The version-2 tables, columns, constraints and rows are left exactly as
-        /// they are; the migration only creates the Phase 7 tables, the version-4 and version-5
-        /// msgstore fact tables and their indexes, in one transaction. There is no
+        /// they are; the migration only creates the Phase 7 tables, the version-4, version-5 and
+        /// version-6 msgstore fact tables and their indexes, in one transaction. There is no
         /// backfill, because no Phase 7 row can be derived from anything the workspace already holds
         /// without asserting a matching decision that has not been justified.
         /// <para>
@@ -1276,6 +1339,7 @@ namespace Chatcheology.Data.Workspace
                 ApplyStatements(command, VersionThreeSchemaStatements);
                 ApplyStatements(command, VersionFourSchemaStatements);
                 ApplyStatements(command, VersionFiveSchemaStatements);
+                ApplyStatements(command, VersionSixSchemaStatements);
 
                 SetSchemaVersion(command);
             }
@@ -1289,8 +1353,8 @@ namespace Chatcheology.Data.Workspace
         /// <remarks>
         /// Purely additive. Every version-1, version-2 and Phase 7 table, column, constraint, index
         /// and row is left exactly as it is; the migration only creates
-        /// <c>AttachmentMsgstoreFact</c>, <c>MessageMsgstoreFact</c> and their indexes. There is no
-        /// backfill.
+        /// <c>AttachmentMsgstoreFact</c>, <c>MessageMsgstoreFact</c>, <c>AttachmentCaptionFact</c>
+        /// and their indexes. There is no backfill.
         /// <para>
         /// The shape gate runs first, outside the transaction, so a workspace this build refuses to
         /// migrate is never written to at all.
@@ -1312,6 +1376,7 @@ namespace Chatcheology.Data.Workspace
 
                 ApplyStatements(command, VersionFourSchemaStatements);
                 ApplyStatements(command, VersionFiveSchemaStatements);
+                ApplyStatements(command, VersionSixSchemaStatements);
 
                 SetSchemaVersion(command);
             }
@@ -1320,18 +1385,19 @@ namespace Chatcheology.Data.Workspace
         }
 
         /// <summary>
-        /// Migrates a version-4 workspace to version 5 in one transaction.
+        /// Migrates a version-4 workspace to version <see cref="SchemaVersion"/> in one transaction.
         /// </summary>
         /// <remarks>
         /// Purely additive. Every version-1, version-2, Phase 7 and version-4 table, column,
         /// constraint, index and row is left exactly as it is; the migration only creates
-        /// <c>MessageMsgstoreFact</c> and its index. There is no backfill.
+        /// <c>MessageMsgstoreFact</c>, <c>AttachmentCaptionFact</c> and their indexes. There is no
+        /// backfill.
         /// <para>
         /// The shape gate runs first, outside the transaction, so a workspace this build refuses to
         /// migrate is never written to at all.
         /// </para>
         /// </remarks>
-        private static void MigrateVersionFourToVersionFive(SqliteConnection connection)
+        private static void MigrateVersionFourToCurrent(SqliteConnection connection)
         {
             RequireExactShape(
                 connection,
@@ -1346,11 +1412,72 @@ namespace Chatcheology.Data.Workspace
                 command.Transaction = transaction;
 
                 ApplyStatements(command, VersionFiveSchemaStatements);
+                ApplyStatements(command, VersionSixSchemaStatements);
 
                 SetSchemaVersion(command);
             }
 
             transaction.Commit();
+        }
+
+        /// <summary>
+        /// Migrates a version-5 workspace to version 6 in one transaction (CH-71).
+        /// </summary>
+        /// <remarks>
+        /// Purely additive. Every version-1, version-2, Phase 7, version-4 and version-5 table,
+        /// column, constraint, index and row is left exactly as it is; the migration only creates
+        /// <c>AttachmentCaptionFact</c> and its index. There is no backfill.
+        /// <para>
+        /// The shape gate runs first, outside the transaction, so a workspace this build refuses to
+        /// migrate is never written to at all.
+        /// </para>
+        /// </remarks>
+        /// <param name="connection">An open read-write connection on the version-5 workspace.</param>
+        /// <param name="additionalTables">
+        /// Tables a caller's own file format adds beside the workspace schema, which the shape gate
+        /// must therefore expect (the older-exports file's own tables). Empty for a main workspace,
+        /// which is what <see cref="Initialise"/> always passes.
+        /// </param>
+        internal static void MigrateVersionFiveToVersionSix(
+            SqliteConnection connection, IReadOnlyCollection<string> additionalTables)
+        {
+            RequireVersionFiveShape(connection, additionalTables);
+
+            using var transaction = connection.BeginTransaction();
+
+            using (var command = connection.CreateCommand())
+            {
+                command.Transaction = transaction;
+
+                ApplyStatements(command, VersionSixSchemaStatements);
+
+                SetSchemaVersion(command);
+            }
+
+            transaction.Commit();
+        }
+
+        /// <summary>
+        /// The version-5-to-6 shape gate on its own: throws unless the database holds exactly the
+        /// version-5 tables and named indexes plus <paramref name="additionalTables"/>. Read-only, so
+        /// a dry run can ask what the migration would do.
+        /// </summary>
+        /// <exception cref="InvalidOperationException">The shape is not the version-5 shape.</exception>
+        internal static void RequireVersionFiveShape(
+            SqliteConnection connection, IReadOnlyCollection<string> additionalTables)
+        {
+            ArgumentNullException.ThrowIfNull(connection);
+            ArgumentNullException.ThrowIfNull(additionalTables);
+
+            RequireExactShape(
+                connection,
+                VersionFiveSchemaVersion,
+                VersionTwoTableNames
+                    .Concat(VersionThreeTableNames)
+                    .Append(MsgstoreFactTableName)
+                    .Append(MessageMsgstoreFactTableName)
+                    .Concat(additionalTables),
+                VersionThreeIndexNames.Concat(VersionFourIndexNames).Concat(VersionFiveIndexNames));
         }
 
         /// <summary>
@@ -1361,7 +1488,7 @@ namespace Chatcheology.Data.Workspace
         /// The same reasoning as <see cref="RequireExactVersionTwoTableSet"/>: an unexpected or a
         /// missing object means this is not the workspace the next version's statements were written
         /// against, and neither case is worth guessing about. Archive-agnostic: it checks shape,
-        /// never contents. Used by the version-3 and version-4 gates.
+        /// never contents. Used by the version-3, version-4 and version-5 gates.
         /// </remarks>
         /// <exception cref="InvalidOperationException">
         /// The database does not have the expected shape. Nothing has been written and the

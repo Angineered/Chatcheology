@@ -289,6 +289,120 @@ namespace Chatcheology.Data.OlderExports
 
             WorkspaceSchemaGuard.RequireCurrentSchemaVersion(connection, "an older-exports operation");
 
+            RequireOlderExportsTablesAndMarker(connection);
+        }
+
+        /// <summary>
+        /// Brings an older-exports file written by the previous build (workspace schema version 5)
+        /// to the current workspace schema version, in one transaction (CH-71).
+        /// </summary>
+        /// <remarks>
+        /// The same additive step as the main workspace's version-5-to-6 migration, with the
+        /// older-exports tables expected by the shape gate. The file is proved to be an
+        /// older-exports file (its tables and a valid marker row) before anything is written, and
+        /// is claimed with <see cref="WorkspaceExclusiveLock"/> for the whole step.
+        /// </remarks>
+        /// <returns>
+        /// True when the file was migrated; false when it was already at the current version and
+        /// nothing was written.
+        /// </returns>
+        /// <exception cref="ArgumentException">The file name is not <see cref="FileName"/>.</exception>
+        /// <exception cref="FileNotFoundException">There is no file at the path. Nothing is created.</exception>
+        /// <exception cref="InvalidOperationException">
+        /// The file is claimed by another operation, is not an older-exports file, is a version this
+        /// step does not take, or does not have the exact version-5 shape. Nothing has been written.
+        /// </exception>
+        public static bool MigrateToCurrent(string databasePath)
+        {
+            RequireFixedFileName(databasePath);
+
+            if (!File.Exists(databasePath))
+            {
+                throw new FileNotFoundException(
+                    "There is no older-exports file at the supplied path. Migrating never creates " +
+                    "one. No file has been created.");
+            }
+
+            using var claim = WorkspaceExclusiveLock.Acquire(databasePath);
+            using var connection = WorkspaceDatabase.OpenConnection(databasePath);
+
+            var version = WorkspaceDatabase.ReadSchemaVersion(connection);
+
+            if (version == WorkspaceDatabase.SchemaVersion)
+            {
+                RequireOlderExportsTablesAndMarker(connection);
+
+                return false;
+            }
+
+            if (version != WorkspaceDatabase.VersionFiveSchemaVersion)
+            {
+                throw new InvalidOperationException(
+                    $"The older-exports file reports workspace schema version {version}. Only a " +
+                    $"version {WorkspaceDatabase.VersionFiveSchemaVersion} file is migrated to version " +
+                    $"{WorkspaceDatabase.SchemaVersion}; import the exports again into a new file " +
+                    $"instead. Nothing has been written.");
+            }
+
+            RequireOlderExportsTablesAndMarker(connection);
+
+            WorkspaceDatabase.MigrateVersionFiveToVersionSix(connection, AddedTableNames);
+
+            return true;
+        }
+
+        /// <summary>
+        /// What <see cref="MigrateToCurrent"/> would do, read-only: the same identity check (the
+        /// older-exports tables and marker) and the same version-5 shape gate, without writing.
+        /// </summary>
+        /// <exception cref="ArgumentException">The file name is not <see cref="FileName"/>.</exception>
+        /// <exception cref="FileNotFoundException">There is no file at the path. Nothing is created.</exception>
+        public static OlderExportsMigrationCheck CheckMigration(string databasePath)
+        {
+            RequireFixedFileName(databasePath);
+
+            if (!File.Exists(databasePath))
+            {
+                throw new FileNotFoundException(
+                    "There is no older-exports file at the supplied path. No file has been created.");
+            }
+
+            using var connection = WorkspaceDatabase.OpenReadOnlyConnection(databasePath);
+
+            var version = WorkspaceDatabase.ReadSchemaVersion(connection);
+
+            try
+            {
+                if (version == WorkspaceDatabase.SchemaVersion)
+                {
+                    RequireOlderExportsTablesAndMarker(connection);
+
+                    return new OlderExportsMigrationCheck(version, OlderExportsMigrationOutcome.AlreadyCurrent, null);
+                }
+
+                if (version != WorkspaceDatabase.VersionFiveSchemaVersion)
+                {
+                    return new OlderExportsMigrationCheck(
+                        version,
+                        OlderExportsMigrationOutcome.WouldRefuse,
+                        $"Only a version {WorkspaceDatabase.VersionFiveSchemaVersion} file is migrated; " +
+                        "import the exports again into a new file instead.");
+                }
+
+                RequireOlderExportsTablesAndMarker(connection);
+                WorkspaceDatabase.RequireVersionFiveShape(connection, AddedTableNames);
+
+                return new OlderExportsMigrationCheck(version, OlderExportsMigrationOutcome.WouldMigrate, null);
+            }
+            catch (InvalidOperationException exception)
+            {
+                return new OlderExportsMigrationCheck(version, OlderExportsMigrationOutcome.WouldRefuse, exception.Message);
+            }
+        }
+
+        /// <summary>The older-exports tables and exactly one valid marker row, at any version.</summary>
+        private static void RequireOlderExportsTablesAndMarker(SqliteConnection connection)
+        {
             var tables = WorkspaceDatabase.ReadApplicationTableNames(connection);
 
             if (!AddedTableNames.All(tables.Contains))

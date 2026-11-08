@@ -7,14 +7,15 @@ namespace Chatcheology.Data.Tests.Workspace
 {
     /// <summary>
     /// Tests the version-3 migration (CH-8, CH-10): additive, one transaction, and refused for
-    /// anything that is not exactly a version-3 workspace. Since version 5 (CH-22) a version-3
-    /// workspace reaches version 5 in the same single transaction, so the version-5 table and index
-    /// are among the added objects; version 4 to 5 has its own tests in
-    /// <see cref="WorkspaceVersionFiveMigrationTests"/>.
+    /// anything that is not exactly a version-3 workspace. Since version 5 (CH-22) and version 6
+    /// (CH-71) a version-3 workspace reaches the current version in the same single transaction, so
+    /// the version-5 and version-6 tables and indexes are among the added objects; versions 4 and 5
+    /// have their own tests in <see cref="WorkspaceVersionFiveMigrationTests"/> and
+    /// <see cref="WorkspaceVersionSixMigrationTests"/>.
     /// </summary>
     /// <remarks>
     /// The version-3 starting point is the synthetic version-2 fixture migrated to the current
-    /// schema with the version-4 and version-5 objects then dropped and <c>user_version</c> set back
+    /// schema with the version-4, version-5 and version-6 objects then dropped and <c>user_version</c> set back
     /// to 3. The
     /// remaining objects are the ones the unchanged version-3 statements created, which is exactly
     /// what a version-3 build left behind. A Phase 7 run row is added so the Phase 7 tables are not
@@ -25,6 +26,10 @@ namespace Chatcheology.Data.Tests.Workspace
         private const string FactTable = "AttachmentMsgstoreFact";
 
         private const string MessageFactTable = "MessageMsgstoreFact";
+
+        private const string CaptionTable = "AttachmentCaptionFact";
+
+        private const string CaptionIndex = "IX_AttachmentCaptionFact_SourceBatch";
 
         private static readonly string[] FactIndexes =
         [
@@ -40,7 +45,7 @@ namespace Chatcheology.Data.Tests.Workspace
                 .ToArray();
 
         [Fact]
-        public void Migrate_VersionThreeDatabase_BecomesVersionFiveWithEmptyFactTables()
+        public void Migrate_VersionThreeDatabase_BecomesVersionSixWithEmptyFactTables()
         {
             using var workspace = new TemporaryWorkspaceDatabase();
 
@@ -50,9 +55,9 @@ namespace Chatcheology.Data.Tests.Workspace
 
             using var connection = WorkspaceDatabase.OpenConnection(workspace.DatabasePath);
 
-            Assert.Equal(5, WorkspaceDatabase.ReadSchemaVersion(connection));
+            Assert.Equal(6, WorkspaceDatabase.ReadSchemaVersion(connection));
 
-            foreach (var table in new[] { FactTable, MessageFactTable })
+            foreach (var table in new[] { FactTable, MessageFactTable, CaptionTable })
             {
                 Assert.True(TableExists(connection, table), table);
                 Assert.Equal(0, CountRows(connection, table));
@@ -60,7 +65,7 @@ namespace Chatcheology.Data.Tests.Workspace
 
             var indexes = WorkspaceDatabase.ReadNamedIndexNames(connection);
 
-            foreach (var index in FactIndexes.Append(MessageFactIndex))
+            foreach (var index in FactIndexes.Append(MessageFactIndex).Append(CaptionIndex))
             {
                 Assert.Contains(index, indexes);
             }
@@ -101,7 +106,8 @@ namespace Chatcheology.Data.Tests.Workspace
             var added = after.Except(before).Select(entry => entry.Split('|')[1]).Order().ToList();
 
             Assert.Equal(
-                FactIndexes.Append(MessageFactIndex).Append(FactTable).Append(MessageFactTable)
+                FactIndexes.Append(MessageFactIndex).Append(CaptionIndex)
+                    .Append(FactTable).Append(MessageFactTable).Append(CaptionTable)
                     .Order().ToList(),
                 added);
 
@@ -128,7 +134,7 @@ namespace Chatcheology.Data.Tests.Workspace
         }
 
         [Fact]
-        public void Migrate_VersionOneAndVersionTwo_StillReachVersionFive()
+        public void Migrate_VersionOneAndVersionTwo_StillReachVersionSix()
         {
             using var fromVersionOne = new TemporaryWorkspaceDatabase();
             using var fromVersionTwo = new TemporaryWorkspaceDatabase();
@@ -143,9 +149,9 @@ namespace Chatcheology.Data.Tests.Workspace
             {
                 using var connection = WorkspaceDatabase.OpenConnection(path);
 
-                Assert.Equal(5, WorkspaceDatabase.ReadSchemaVersion(connection));
+                Assert.Equal(6, WorkspaceDatabase.ReadSchemaVersion(connection));
 
-                foreach (var table in new[] { FactTable, MessageFactTable })
+                foreach (var table in new[] { FactTable, MessageFactTable, CaptionTable })
                 {
                     Assert.True(TableExists(connection, table), table);
                     Assert.Equal(0, CountRows(connection, table));
@@ -222,6 +228,7 @@ namespace Chatcheology.Data.Tests.Workspace
             Assert.Equal(3, WorkspaceDatabase.ReadSchemaVersion(connection));
             Assert.False(TableExists(connection, FactTable));
             Assert.False(TableExists(connection, MessageFactTable));
+            Assert.False(TableExists(connection, CaptionTable));
             Assert.DoesNotContain(FactIndexes[0], WorkspaceDatabase.ReadNamedIndexNames(connection));
 
             WorkspaceCheckpoint.RequireIdenticalTables(connection, checkpointPath, VersionThreeTables);
@@ -259,7 +266,7 @@ namespace Chatcheology.Data.Tests.Workspace
 
         /// <summary>
         /// Builds a version-3 workspace: the synthetic version-2 fixture through the unchanged
-        /// version-3 statements, without the version-4 and version-5 objects, plus one Phase 7 run
+        /// version-3 statements, without the version-4, version-5 and version-6 objects, plus one Phase 7 run
         /// row.
         /// </summary>
         internal static void CreateVersionThree(string databasePath)
@@ -268,6 +275,9 @@ namespace Chatcheology.Data.Tests.Workspace
             WorkspaceDatabase.Initialise(databasePath);
 
             using var connection = SyntheticVersionTwoWorkspace.OpenPlainConnection(databasePath);
+
+            Execute(connection, "DROP INDEX IX_AttachmentCaptionFact_SourceBatch;");
+            Execute(connection, "DROP TABLE AttachmentCaptionFact;");
 
             Execute(connection, "DROP INDEX IX_MessageMsgstoreFact_SourceBatch;");
             Execute(connection, "DROP TABLE MessageMsgstoreFact;");
