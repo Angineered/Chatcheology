@@ -368,7 +368,7 @@ namespace Chatcheology.Data.Tests.ArchiveExport
 
             using (var reader = ArchiveReader.Open(output))
             {
-                Assert.Equal(3, reader.Info.FormatVersion);
+                Assert.Equal(ArchiveFormat.FormatVersion, reader.Info.FormatVersion);
                 Assert.Equal([1, 2, 3], Messages(reader).Select(m => m.SequenceNumber));
                 Assert.Empty(reader.ReadCollections());
             }
@@ -850,7 +850,7 @@ namespace Chatcheology.Data.Tests.ArchiveExport
 
             using (var reader = ArchiveReader.Open(output))
             {
-                Assert.Equal(3, reader.Info.FormatVersion);
+                Assert.Equal(ArchiveFormat.FormatVersion, reader.Info.FormatVersion);
                 Assert.False(reader.HasNotedDates);
 
                 // The two dates with a year are yearly memories in the new collection "Noted dates".
@@ -949,7 +949,7 @@ namespace Chatcheology.Data.Tests.ArchiveExport
 
             using (var reader = ArchiveReader.Open(output))
             {
-                Assert.Equal(3, reader.Info.FormatVersion);
+                Assert.Equal(ArchiveFormat.FormatVersion, reader.Info.FormatVersion);
                 Assert.All(reader.ReadAllEntries(), e => Assert.False(e.EveryYear));
                 Assert.Empty(reader.ReadYearlyEntries());
             }

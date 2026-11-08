@@ -18,7 +18,8 @@ namespace Chatcheology.Data.ArchiveExport
     /// <para><strong>What is compared.</strong> The archive's title, source export hash, time zone and
     /// local participant; each participant's name and local flag; each message's sequence number,
     /// time, kind, sender, text and forwarded status; each attachment's message and ordinal, state,
-    /// media hash, forwarded status, low-quality link and basis line; and each payload's recorded
+    /// media hash, forwarded status, low-quality link, basis line and caption (CH-71); the archive id against the
+    /// archive id file beside the workspace (read, never created); and each payload's recorded
     /// description. An attachment's original file name is not compared: it names whichever copy the
     /// export took the bytes from, which the workspace does not decide. The media hash is.</para>
     /// <para>This compares content, not files: whether the archive's files are whole is
@@ -49,6 +50,7 @@ namespace Chatcheology.Data.ArchiveExport
             }
 
             ArchiveCombinedSource source;
+            string? archiveId;
 
             try
             {
@@ -59,6 +61,9 @@ namespace Chatcheology.Data.ArchiveExport
                     PageSize,
                     progress: null,
                     CancellationToken.None);
+
+                // CH-71: read only; a comparison never creates the id file.
+                archiveId = ArchiveIdFile.ReadForComparison(request.WorkspacePath, request.ConversationID);
             }
             catch (ArchiveExportRefusedException exception)
             {
@@ -81,7 +86,7 @@ namespace Chatcheology.Data.ArchiveExport
             {
                 using var reader = ArchiveReader.Open(request.ArchivePath);
 
-                return Compare(source, request.LocalParticipantID, reader);
+                return Compare(source, request.LocalParticipantID, archiveId, reader);
             }
             catch (ArchiveFormatException exception)
             {
@@ -106,12 +111,20 @@ namespace Chatcheology.Data.ArchiveExport
         private static string WithoutExportClosing(string message) =>
             message.EndsWith(ExportClosing, StringComparison.Ordinal) ? message[..^ExportClosing.Length] : message;
 
-        private static ArchiveComparisonResult Compare(ArchiveCombinedSource combined, long localParticipantID, ArchiveReader reader)
+        private static ArchiveComparisonResult Compare(
+            ArchiveCombinedSource combined, long localParticipantID, string? archiveId, ArchiveReader reader)
         {
             var record = new Recorder();
             var source = combined.Workspace;
 
             CompareInfo(combined, localParticipantID, reader.Info, record);
+
+            // CH-71: the archive's id must be the one beside the workspace (none on either side: an archive before
+            // version 4 of a workspace never exported as version 4).
+            if (!string.Equals(reader.Info.ArchiveId, archiveId, StringComparison.Ordinal))
+            {
+                record.Add(ArchiveMismatchKind.ArchiveIdDiffers, null);
+            }
             CompareParticipants(source.ToArchiveParticipants(localParticipantID).ToList(), reader.ReadParticipants(), record);
 
             // The expected rows, built exactly as the exporter builds them. No workspace original file
@@ -125,7 +138,7 @@ namespace Chatcheology.Data.ArchiveExport
 
             var seenMessages = new HashSet<long>();
             var seenAttachments = new HashSet<long>();
-            int workspaceMessages = 0, exportMessages = 0;
+            int workspaceMessages = 0, exportMessages = 0, msgstoreMessages = 0;
 
             // Refuses (ArchiveFormatException) an archive whose messages cannot all be read in order.
             foreach (var page in reader.ReadAllPages())
@@ -138,9 +151,14 @@ namespace Chatcheology.Data.ArchiveExport
                     {
                         exportMessages++;
                     }
-                    else
+                    else if (actual.Source == ArchiveMessageSource.Workspace)
                     {
                         workspaceMessages++;
+                    }
+                    else
+                    {
+                        // CH-71: no source file of this build produces message-store messages yet.
+                        msgstoreMessages++;
                     }
 
                     if (expectedMessages.TryGetValue(actual.MessageID, out var expected))
@@ -198,6 +216,11 @@ namespace Chatcheology.Data.ArchiveExport
                 record.Add(ArchiveMismatchKind.SourceCountDiffers, null);
             }
 
+            if (msgstoreMessages != 0)
+            {
+                record.Add(ArchiveMismatchKind.SourceCountDiffers, null);
+            }
+
             var actualEntries = reader.ReadAllEntries();
 
             var actualDefinitions = reader.ReadAllItemDefinitions();
@@ -238,7 +261,8 @@ namespace Chatcheology.Data.ArchiveExport
                 collections: expectedCollections,
                 definitions: combined.Memories?.Definitions.Count ?? 0,
                 notedDates: combined.ToArchiveNotedDates().Count,
-                externalLinks: combined.ToArchiveExternalLinks().Count);
+                externalLinks: combined.ToArchiveExternalLinks().Count,
+                captions: attachments.Count(a => a.Caption is not null));
         }
 
         // -------------------------------------------------------------------------------------
@@ -552,6 +576,12 @@ namespace Chatcheology.Data.ArchiveExport
             {
                 record.Add(ArchiveMismatchKind.AttachmentBasisDiffers, sequence, id);
             }
+
+            // CH-71: exactly as stored, ordinal; an archive before version 4 holds none.
+            if (!string.Equals(expected.Caption, actual.Caption, StringComparison.Ordinal))
+            {
+                record.Add(ArchiveMismatchKind.AttachmentCaptionDiffers, sequence, id);
+            }
         }
 
         /// <summary>Equal as stored: the confirmation time to the second, in UTC.</summary>
@@ -629,7 +659,8 @@ namespace Chatcheology.Data.ArchiveExport
                 IReadOnlyList<ArchiveCollectionCounts> collections,
                 int definitions,
                 int notedDates,
-                int externalLinks) => new()
+                int externalLinks,
+                int captions) => new()
             {
                 ParticipantsCompared = participants,
                 MessagesCompared = messages,
@@ -646,6 +677,7 @@ namespace Chatcheology.Data.ArchiveExport
                 ItemDefinitions = definitions,
                 NotedDates = notedDates,
                 ExternalLinks = externalLinks,
+                Captions = captions,
             };
         }
     }
@@ -755,6 +787,15 @@ namespace Chatcheology.Data.ArchiveExport
 
         /// <summary>Version 2 (CH-48): an external link is on one side only (missing from the archive, or extra in it), or a field differs.</summary>
         ExternalLinkDiffers,
+
+        /// <summary>Version 4 (CH-71): an attachment's caption differs from the workspace's caption fact, or is on one side only.</summary>
+        AttachmentCaptionDiffers,
+
+        /// <summary>
+        /// Version 4 (CH-71): the archive's id is not the one in the archive id file beside the workspace (or one side
+        /// has none).
+        /// </summary>
+        ArchiveIdDiffers,
     }
 
     /// <summary>One older export's messages as the older-exports file holds them. Counts only.</summary>
@@ -825,6 +866,9 @@ namespace Chatcheology.Data.ArchiveExport
 
         /// <summary>Version 2 (CH-48): external links in the memories file. 0 with no memories file or one before format 5.</summary>
         public int ExternalLinks { get; init; }
+
+        /// <summary>Version 4 (CH-71): workspace attachments with a caption fact.</summary>
+        public int Captions { get; init; }
 
         /// <summary>The archive says exactly what the workspace says.</summary>
         public bool Passed => MismatchCounts.Values.All(count => count == 0);

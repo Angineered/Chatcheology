@@ -549,7 +549,9 @@ namespace Chatcheology.Mobile.Conversation
                 var token = _closing.Token;
                 var folder = Reader.FolderPath;
 
-                return _search ??= Task.Run(() => ConversationSearch.Build(folder, token), token);
+                var lowQuality = LowQuality;
+
+                return _search ??= Task.Run(() => ConversationSearch.Build(folder, lowQuality, token), token);
             }
         }
 

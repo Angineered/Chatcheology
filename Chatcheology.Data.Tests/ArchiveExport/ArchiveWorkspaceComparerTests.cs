@@ -324,6 +324,10 @@ namespace Chatcheology.Data.Tests.ArchiveExport
             Assert.Equal(8, result.MismatchCounts[ArchiveMismatchKind.MessageNotInWorkspace]);
             Assert.Equal(6, result.MismatchCounts[ArchiveMismatchKind.AttachmentNotInWorkspace]);
             Assert.Equal(0, result.MessagesCompared);
+
+            // CH-71: the archive id file beside the workspace is the exported conversation's, so the other
+            // conversation has no id recorded and the archive's id differs.
+            Assert.Equal(1, result.MismatchCounts[ArchiveMismatchKind.ArchiveIdDiffers]);
         }
 
         [Fact]

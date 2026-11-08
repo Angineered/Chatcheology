@@ -16,7 +16,9 @@ namespace Chatcheology.Mobile.Search
     /// <param name="SenderText">Its sender, or "System".</param>
     /// <param name="Snippet">The text around the first match, on one line, with "…" where it was cut.</param>
     /// <param name="Highlights">Every match inside the snippet, as offsets into <paramref name="Snippet"/>.</param>
-    /// <param name="Matches">Every match in the whole message text, as offsets into it.</param>
+    /// <param name="Matches">
+    /// Every match in the whole searched text (the message text, then its captions one per line), as offsets into it.
+    /// </param>
     public sealed record SearchHit(
         int SequenceNumber,
         string DateText,
@@ -56,6 +58,10 @@ namespace Chatcheology.Mobile.Search
     /// message with text is in it, system messages included; a message that is only the export's media
     /// placeholder is not, and an older export's <c>(file attached)</c> line is not either (only its caption
     /// lines, as the bubble shows them). File names, sender names alone and media are not searched.</para>
+    /// <para>Picture captions (CH-71, archive v4) are searched like message text: each shown card's caption is
+    /// indexed after the message's text, one per line (<see cref="MessageRow.SearchText"/>), so a message found by
+    /// its caption alone opens at its bubble. A hidden low-quality copy's caption is not searched, as its card is
+    /// not drawn.</para>
     /// <para>Matching is a plain substring with <see cref="CompareInfo.IndexOf(ReadOnlySpan{char}, ReadOnlySpan{char}, CompareOptions, out int)"/>
     /// and <see cref="CompareOptions.IgnoreCase"/> | <see cref="CompareOptions.IgnoreNonSpace"/>, which
     /// also gives each match's length in the text, so highlights stay right where folding changes
@@ -90,9 +96,18 @@ namespace Chatcheology.Mobile.Search
         public int Count => _entries.Count;
 
         /// <summary>Builds the index by reading the whole conversation through <paramref name="reader"/>.</summary>
-        public static ConversationSearch Build(ArchiveReader reader, CancellationToken cancellationToken = default)
+        /// <param name="reader">The archive.</param>
+        /// <param name="lowQuality">
+        /// Which cards are drawn, when the caller has it; otherwise it is built here first (one more read).
+        /// </param>
+        /// <param name="cancellationToken">Stops the build.</param>
+        public static ConversationSearch Build(
+            ArchiveReader reader, LowQualityIndex? lowQuality = null, CancellationToken cancellationToken = default)
         {
             ArgumentNullException.ThrowIfNull(reader);
+
+            // Only an archive with captions needs to know which cards are drawn.
+            lowQuality ??= reader.HasCaptions ? LowQualityIndex.Build(reader, cancellationToken) : LowQualityIndex.Empty;
 
             var names = reader.ReadParticipants().ToDictionary(p => p.ParticipantID, p => p.DisplayName);
             var entries = new List<Entry>();
@@ -103,8 +118,9 @@ namespace Chatcheology.Mobile.Search
 
                 foreach (var message in page.Messages)
                 {
-                    // The text the bubble shows: no placeholder, no older export's "(file attached)" line.
-                    var text = MessageRow.PresentedText(message);
+                    // The text the bubble shows: no placeholder, no older export's "(file attached)" line; then
+                    // the captions of the cards it draws (CH-71).
+                    var text = MessageRow.SearchText(message, lowQuality.IsShown);
 
                     if (text.Length > 0)
                     {
@@ -117,11 +133,12 @@ namespace Chatcheology.Mobile.Search
         }
 
         /// <summary>Builds the index with a reader of its own on <paramref name="archiveFolder"/>, so it can run beside the page reads.</summary>
-        public static ConversationSearch Build(string archiveFolder, CancellationToken cancellationToken = default)
+        public static ConversationSearch Build(
+            string archiveFolder, LowQualityIndex? lowQuality = null, CancellationToken cancellationToken = default)
         {
             using var reader = ArchiveReader.Open(archiveFolder);
 
-            return Build(reader, cancellationToken);
+            return Build(reader, lowQuality, cancellationToken);
         }
 
         /// <summary>

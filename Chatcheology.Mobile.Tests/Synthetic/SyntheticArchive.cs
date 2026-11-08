@@ -43,6 +43,11 @@ namespace Chatcheology.Mobile.Synthetic
     /// Whether to add three invented yearly memories (CH-53, version 3) in a personal collection of their own: an
     /// anniversary with a note and a gallery link, a leap day, and one dated in the future.
     /// </param>
+    /// <param name="Captions">
+    /// How many restored images carry an invented picture caption (CH-71, version 4): every fifth image from the
+    /// second on, in turn a short line, one with a web address, and one on two lines. A version 2 archive (noted
+    /// dates) has none.
+    /// </param>
     internal sealed record SyntheticArchiveOptions(
         int Messages = 3000,
         int Days = 120,
@@ -61,7 +66,8 @@ namespace Chatcheology.Mobile.Synthetic
         byte[]? VideoBytes = null,
         bool Memories = false,
         bool NotedDates = false,
-        bool YearlyMemories = false);
+        bool YearlyMemories = false,
+        int Captions = 0);
 
     /// <summary>
     /// Writes a whole portable archive (the current format, or version 2 with noted dates) of invented conversation through
@@ -83,6 +89,24 @@ namespace Chatcheology.Mobile.Synthetic
         internal static readonly DateTime Created = new(2026, 10, 21, 9, 0, 0, DateTimeKind.Utc);
 
         internal static readonly DateOnly FirstDay = new(2025, 1, 6);
+
+        /// <summary>The invented archive id every synthetic version 4 archive carries (CH-71).</summary>
+        internal const string ArchiveId = "7c0e5a92-1d4b-4f38-a6e7-b39d2c81f450";
+
+        /// <summary>The invented captions, used in turn (CH-71): a short line, one with an address, one on two lines.</summary>
+        internal static readonly string[] CaptionTexts =
+        [
+            "Synthetic caption under a picture",
+            "Synthetic caption with a link www.example.org/caption",
+            "Synthetic caption\non two lines",
+        ];
+
+        /// <summary>Whether image <paramref name="imageIndex"/> (zero-based) carries a caption, given the options.</summary>
+        internal static bool HasCaption(SyntheticArchiveOptions options, int imageIndex) =>
+            !options.NotedDates && imageIndex % 5 == 1 && imageIndex / 5 < options.Captions;
+
+        /// <summary>The caption of image <paramref name="imageIndex"/> when <see cref="HasCaption"/> says it has one.</summary>
+        internal static string CaptionOf(int imageIndex) => CaptionTexts[imageIndex / 5 % CaptionTexts.Length];
 
         /// <summary>The personal collection of the yearly memories (CH-53).</summary>
         internal const long YearlyCollection = 3;
@@ -150,6 +174,7 @@ namespace Chatcheology.Mobile.Synthetic
                 SourceExportSha256 = string.Empty,
                 TimeZoneID = string.Empty,
                 LocalParticipantID = Local,
+                ArchiveId = version >= ArchiveFormat.FirstVersionWithCaptionsAndArchiveId ? ArchiveId : null,
             });
 
             writer.WriteParticipant(new ArchiveParticipant { ParticipantID = Local, DisplayName = "Alex", IsLocal = true });
@@ -286,7 +311,13 @@ namespace Chatcheology.Mobile.Synthetic
                     var firstMissing = options.Images + restoredOthers;
 
                     attachments.Add(slot < options.Images
-                        ? Attachment(attachmentID, messageID, ArchiveAttachmentState.Restored, images[slot].Sha, images[slot].Name)
+                        ? Attachment(
+                            attachmentID,
+                            messageID,
+                            ArchiveAttachmentState.Restored,
+                            images[slot].Sha,
+                            images[slot].Name,
+                            caption: HasCaption(options, slot) ? CaptionOf(slot) : null)
                         : slot < firstMissing
                             ? Attachment(attachmentID, messageID, ArchiveAttachmentState.Restored, others[slot - options.Images].Sha, others[slot - options.Images].Name)
                             : Attachment(
@@ -420,8 +451,16 @@ namespace Chatcheology.Mobile.Synthetic
         };
 
         private static ArchiveAttachment Attachment(
-            long id, long messageID, ArchiveAttachmentState state, string? sha, string? name, int ordinal = 1, long? copyOf = null) => new()
+            long id,
+            long messageID,
+            ArchiveAttachmentState state,
+            string? sha,
+            string? name,
+            int ordinal = 1,
+            long? copyOf = null,
+            string? caption = null) => new()
         {
+            Caption = caption,
             AttachmentID = id,
             MessageID = messageID,
             Ordinal = ordinal,

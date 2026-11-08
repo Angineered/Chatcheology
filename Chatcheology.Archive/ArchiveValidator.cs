@@ -18,6 +18,9 @@ namespace Chatcheology.Archive
     /// points at a row that exists, and exactly the Restored attachments have a basis line; sequence
     /// numbers run 1..n without a gap, every sender is a participant, and exactly the recorded local
     /// participant is local.</para>
+    /// <para>Version 4 (CH-71): a missing or malformed archive id, an empty caption or a <c>Msgstore</c> source below
+    /// version 4 makes the reader refuse the database (<see cref="ArchiveProblemKind.DatabaseUnreadable"/>); the
+    /// manifest's <c>msgstoreMessages</c> and <c>captions</c> counts are checked with the others.</para>
     /// <para>A database that cannot be opened or read, or a value in it of the wrong kind, stops the
     /// checks that need it; those are reported as not run, and the archive fails. A file that cannot
     /// be read is reported the same way, by a fixed phrase, never by its path.</para>
@@ -233,6 +236,19 @@ namespace Chatcheology.Archive
 
                 differ += v2.Count(c => c.Manifest != c.Actual) + collectionsDiffer;
                 examined += v2.Length + Math.Max(actual.Count, listed.Count);
+            }
+
+            if (reader.HasCaptions)
+            {
+                // Version 4 (CH-71): messages from the message store, and attachments with a caption.
+                var v4 = new (int Manifest, long Actual)[]
+                {
+                    (counted.MsgstoreMessages, reader.ReadCount(ArchiveCountQueries.MsgstoreMessages)),
+                    (counted.Captions, reader.ReadCount(ArchiveCountQueries.Captions)),
+                };
+
+                differ += v4.Count(c => c.Manifest != c.Actual);
+                examined += v4.Length;
             }
 
             record.Examined(ArchiveCheck.Manifest, examined);

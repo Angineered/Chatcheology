@@ -57,7 +57,11 @@ namespace Chatcheology.Archive.Tests
             SourceExportSha256 = new string('a', 64),
             TimeZoneID = "Synthetic/Zone",
             LocalParticipantID = Local,
+            ArchiveId = formatVersion >= ArchiveFormat.FirstVersionWithCaptionsAndArchiveId ? ArchiveId : null,
         };
+
+        /// <summary>A synthetic archive id (CH-71), written into every version 4 sample.</summary>
+        internal const string ArchiveId = "5a1d0c3e-7b2f-4e6a-9c81-0d2f4b6a8e10";
 
         internal static IReadOnlyList<ArchiveParticipant> Participants =>
         [

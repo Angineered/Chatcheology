@@ -976,6 +976,7 @@ namespace Chatcheology.Archive.Tests
                 TimeZoneID = info.TimeZoneID,
                 LocalParticipantID = info.LocalParticipantID,
                 ExportPeriods = [new ArchiveExportPeriod(new DateTime(2015, 1, 1, 10, 0, 0), new DateTime(2015, 1, 1, 10, 0, 0))],
+                ArchiveId = formatVersion >= ArchiveFormat.FirstVersionWithCaptionsAndArchiveId ? ArchiveSample.ArchiveId : null,
             });
 
             foreach (var participant in ArchiveSample.Participants)

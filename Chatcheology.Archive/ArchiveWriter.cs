@@ -166,12 +166,17 @@ namespace Chatcheology.Archive
 
             if (!Enum.IsDefined(message.Source))
             {
-                throw new InvalidOperationException("A message's source must be Workspace or Export.");
+                throw new InvalidOperationException("A message's source must be Workspace, Export or Msgstore.");
             }
 
             if (_info.FormatVersion < 2 && message.Source != ArchiveMessageSource.Workspace)
             {
                 throw new InvalidOperationException("A version 1 archive holds workspace messages only.");
+            }
+
+            if (_info.FormatVersion < ArchiveFormat.FirstVersionWithCaptionsAndArchiveId && message.Source == ArchiveMessageSource.Msgstore)
+            {
+                throw new InvalidOperationException("Only a version 4 archive holds messages from the message store.");
             }
 
             if (message.Source == ArchiveMessageSource.Export
@@ -680,6 +685,15 @@ namespace Chatcheology.Archive
                 };
             }
 
+            if (_info.FormatVersion >= ArchiveFormat.FirstVersionWithCaptionsAndArchiveId)
+            {
+                counts = counts with
+                {
+                    MsgstoreMessages = (int)Count(transaction, ArchiveCountQueries.MsgstoreMessages),
+                    Captions = (int)Count(transaction, ArchiveCountQueries.Captions),
+                };
+            }
+
             Execute(
                 _connection,
                 transaction,
@@ -742,6 +756,12 @@ namespace Chatcheology.Archive
             };
 
             var keys = ArchiveInfo.Keys.All.ToList();
+
+            if (_info.FormatVersion >= ArchiveFormat.FirstVersionWithCaptionsAndArchiveId)
+            {
+                values[ArchiveInfo.Keys.ArchiveId] = _info.ArchiveId!;
+                keys.Add(ArchiveInfo.Keys.ArchiveId);
+            }
 
             for (var index = 0; index < _info.ExportPeriods.Count; index++)
             {
@@ -812,15 +832,37 @@ namespace Chatcheology.Archive
                 }
             }
 
+            var hasCaptions = _info.FormatVersion >= ArchiveFormat.FirstVersionWithCaptionsAndArchiveId;
+
+            if (attachment.Caption is { } caption && (!hasCaptions || caption.Length == 0))
+            {
+                throw new InvalidOperationException(
+                    hasCaptions
+                        ? "A caption must not be empty; an attachment with no known caption has none."
+                        : "Only a version 4 archive holds picture captions.");
+            }
+
             using (var command = Command(
                        transaction,
-                       """
-                       INSERT INTO Attachment (
-                           AttachmentID, MessageID, Ordinal, State, MediaSha256, OriginalFileName,
-                           IsForwarded, ForwardScore, LowQualityCopyOfAttachmentID)
-                       VALUES ($id, $message, $ordinal, $state, $sha, $name, $forwarded, $score, $copyOf);
-                       """))
+                       hasCaptions
+                           ? """
+                             INSERT INTO Attachment (
+                                 AttachmentID, MessageID, Ordinal, State, MediaSha256, OriginalFileName,
+                                 IsForwarded, ForwardScore, LowQualityCopyOfAttachmentID, Caption)
+                             VALUES ($id, $message, $ordinal, $state, $sha, $name, $forwarded, $score, $copyOf, $caption);
+                             """
+                           : """
+                             INSERT INTO Attachment (
+                                 AttachmentID, MessageID, Ordinal, State, MediaSha256, OriginalFileName,
+                                 IsForwarded, ForwardScore, LowQualityCopyOfAttachmentID)
+                             VALUES ($id, $message, $ordinal, $state, $sha, $name, $forwarded, $score, $copyOf);
+                             """))
             {
+                if (hasCaptions)
+                {
+                    command.Parameters.AddWithValue("$caption", (object?)attachment.Caption ?? DBNull.Value);
+                }
+
                 command.Parameters.AddWithValue("$id", attachment.AttachmentID);
                 command.Parameters.AddWithValue("$message", messageID);
                 command.Parameters.AddWithValue("$ordinal", attachment.Ordinal);
@@ -894,6 +936,7 @@ namespace Chatcheology.Archive
         {
             ArchiveMessageSource.Workspace => "Workspace",
             ArchiveMessageSource.Export => "Export",
+            ArchiveMessageSource.Msgstore => "Msgstore",
             _ => throw new ArgumentOutOfRangeException(nameof(source), source, "Not a message source of the format."),
         };
 
@@ -929,6 +972,16 @@ namespace Chatcheology.Archive
                     "This build writes format versions " +
                     ArchiveFormat.MinimumFormatVersion.ToString(CultureInfo.InvariantCulture) + " to " +
                     ArchiveFormat.FormatVersion.ToString(CultureInfo.InvariantCulture) + " only.");
+            }
+
+            if (info.FormatVersion >= ArchiveFormat.FirstVersionWithCaptionsAndArchiveId
+                    ? !ArchiveFormat.IsArchiveId(info.ArchiveId)
+                    : info.ArchiveId is not null)
+            {
+                throw new InvalidOperationException(
+                    info.FormatVersion >= ArchiveFormat.FirstVersionWithCaptionsAndArchiveId
+                        ? "A version 4 archive needs an archive id: a GUID in lower case with hyphens, not all zeros."
+                        : "Only a version 4 archive records an archive id.");
             }
 
             if (info.FormatVersion < 2 && info.ExportPeriods.Count > 0)
@@ -1044,6 +1097,17 @@ namespace Chatcheology.Archive
         /// <summary>Version 2: entries, periods and items of each collection, ordered by collection.</summary>
         public IReadOnlyList<ArchiveCollectionCounts> Collections { get; init; } = [];
 
+        /// <summary>
+        /// Version 4 (CH-71): messages read from the message store (<c>Source = 'Msgstore'</c>). A manifest before
+        /// version 4 has none and reads as 0.
+        /// </summary>
+        public int MsgstoreMessages { get; init; }
+
+        /// <summary>
+        /// Version 4 (CH-71): attachments with a caption. A manifest before version 4 has none and reads as 0.
+        /// </summary>
+        public int Captions { get; init; }
+
         /// <summary>Equal when every count is equal, the collections' counts included.</summary>
         public bool Equals(ArchiveCounts? other) =>
             other is not null
@@ -1062,6 +1126,8 @@ namespace Chatcheology.Archive
             && EntryImages == other.EntryImages
             && NotedDates == other.NotedDates
             && ExternalLinks == other.ExternalLinks
+            && MsgstoreMessages == other.MsgstoreMessages
+            && Captions == other.Captions
             && (Collections ?? []).SequenceEqual(other.Collections ?? []);
 
         /// <inheritdoc />
@@ -1072,7 +1138,16 @@ namespace Chatcheology.Archive
                 ExportMessages,
                 ExportPeriods,
                 EntryLinks,
-                HashCode.Combine(ItemDefinitions, EntryImages, NotedDates, ExternalLinks, (Collections ?? []).Count));
+                HashCode.Combine(ItemDefinitions, EntryImages, NotedDates, ExternalLinks, (Collections ?? []).Count),
+                HashCode.Combine(MsgstoreMessages, Captions));
+    }
+
+    /// <summary>The version 4 manifest counts (CH-71), one query each, shared by the writer and the validator.</summary>
+    internal static class ArchiveCountQueries
+    {
+        internal const string MsgstoreMessages = "SELECT COUNT(*) FROM Message WHERE Source = 'Msgstore';";
+
+        internal const string Captions = "SELECT COUNT(*) FROM Attachment WHERE Caption IS NOT NULL;";
     }
 
     /// <summary>Version 2: how many rows one collection holds.</summary>

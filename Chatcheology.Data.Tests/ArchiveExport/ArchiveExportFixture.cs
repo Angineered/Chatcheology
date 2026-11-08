@@ -186,6 +186,14 @@ namespace Chatcheology.Data.Tests.ArchiveExport
             MessageMsgstoreFactWriter.InsertBatch(
                 DatabasePath, "synthetic-message-batch", rows, new DateTime(2026, 10, 19, 8, 0, 0, DateTimeKind.Utc));
 
+        /// <summary>Records picture captions (CH-71) through the real writer, as batch <paramref name="batch"/>.</summary>
+        internal void Captions(string batch, params AttachmentCaptionFactRow[] rows) =>
+            AttachmentCaptionFactWriter.InsertBatch(
+                DatabasePath, batch, rows, new DateTime(2026, 11, 8, 8, 0, 0, DateTimeKind.Utc));
+
+        /// <summary>The archive id file beside the workspace (CH-71).</summary>
+        internal string ArchiveIdPath => ArchiveIdFile.PathBeside(DatabasePath);
+
         internal void Facts(params MsgstoreFactRow[] rows) =>
             MsgstoreFactWriter.InsertBatch(
                 DatabasePath, "synthetic-batch", rows, new DateTime(2026, 10, 16, 8, 0, 0, DateTimeKind.Utc));
@@ -219,7 +227,10 @@ namespace Chatcheology.Data.Tests.ArchiveExport
             _decisions.Evidence.CloseBuilding();
             SqliteConnection.ClearAllPools();
 
+            // The archive id file (CH-71) is the one file an export may add beside the workspace, once; its own
+            // tests check it. Everything else must be unchanged.
             return Directory.GetFiles(_decisions.DirectoryPath)
+                .Where(path => Path.GetFileName(path) != ArchiveIdFile.FileName)
                 .Order(StringComparer.Ordinal)
                 .Select(path => Path.GetFileName(path) + ":" + ArchiveHashing.Sha256OfFile(path))
                 .ToList();

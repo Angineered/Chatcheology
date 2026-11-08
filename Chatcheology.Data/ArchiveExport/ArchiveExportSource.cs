@@ -19,7 +19,8 @@ namespace Chatcheology.Data.ArchiveExport
     /// <see cref="Phase7ReconstructionReader"/>, each restored attachment's basis from
     /// <see cref="Phase7ResolutionHistoryReader"/>, attachments' forwarded facts and low-quality links
     /// from <see cref="MsgstoreFactReader"/>, messages' forwarded facts from
-    /// <see cref="MessageMsgstoreFactReader"/>, and the recorded copies of each payload from
+    /// <see cref="MessageMsgstoreFactReader"/>, attachments' captions from <see cref="AttachmentCaptionFactReader"/>
+    /// (CH-71), and the recorded copies of each payload from
     /// <see cref="MediaAssetLocationReader"/>. Nothing here forms a second opinion about any of
     /// them.</para>
     /// <para>Two small read-only queries of its own, because no reader exposes these on purpose:
@@ -60,6 +61,12 @@ namespace Chatcheology.Data.ArchiveExport
         /// with no row has no known forwarded status.
         /// </summary>
         internal required IReadOnlyDictionary<long, MessageMsgstoreFact> MessageFacts { get; init; }
+
+        /// <summary>
+        /// Each attachment's recorded caption (CH-71, workspace schema v6), for the attachments that have one. An
+        /// attachment with no row has no known caption.
+        /// </summary>
+        internal required IReadOnlyDictionary<long, AttachmentCaptionFact> Captions { get; init; }
 
         /// <summary>The recorded export hash, lower-case hex, or empty when none was recorded.</summary>
         internal required string SourceExportSha256 { get; init; }
@@ -187,6 +194,7 @@ namespace Chatcheology.Data.ArchiveExport
 
                 var messageFacts = new MessageMsgstoreFactReader()
                     .Read(connection, messages.Select(m => m.MessageID).ToList());
+                var captions = new AttachmentCaptionFactReader().Read(connection, attachmentIDs);
                 var (exportSha, timeZone) = ImportSource(connection, conversationID);
 
                 return new ArchiveExportSource
@@ -200,6 +208,7 @@ namespace Chatcheology.Data.ArchiveExport
                     Basis = basis,
                     Facts = facts,
                     MessageFacts = messageFacts,
+                    Captions = captions,
                     SourceExportSha256 = exportSha,
                     TimeZoneID = timeZone,
                     MediaRoots = MediaRootPaths(connection),
@@ -283,8 +292,11 @@ namespace Chatcheology.Data.ArchiveExport
                     linksOutside++;
                 }
 
+                // The caption as the workspace records it (CH-71); no row: none known.
+                var caption = Captions.TryGetValue(position.AttachmentID, out var captionFact) ? captionFact.CaptionText : null;
+
                 attachments.Add(state.Status == Phase7ResolutionStatus.Resolved
-                    ? Restored(message.MessageID, position, state, originalFileName, fact, lowQualityOf)
+                    ? Restored(message.MessageID, position, state, originalFileName, fact, lowQualityOf, caption)
                     : new ArchiveAttachment
                     {
                         AttachmentID = position.AttachmentID,
@@ -297,6 +309,7 @@ namespace Chatcheology.Data.ArchiveExport
                         ForwardScore = fact?.ForwardScore,
                         LowQualityCopyOfAttachmentID = lowQualityOf,
                         Basis = null,
+                        Caption = caption,
                     });
             }
 
@@ -326,7 +339,8 @@ namespace Chatcheology.Data.ArchiveExport
             Phase7ReconstructionState state,
             Func<long, string?> originalFileName,
             AttachmentMsgstoreFact? fact,
-            long? lowQualityOf)
+            long? lowQualityOf,
+            string? caption)
         {
             var assetID = state.ResolvedAsset!.MediaAssetID;
             var basis = Basis[position.AttachmentID];
@@ -349,6 +363,7 @@ namespace Chatcheology.Data.ArchiveExport
                     Actor = basis.ActorLabel,
                     ConfirmedUtc = basis.OccurredAtUtc,
                 },
+                Caption = caption,
             };
         }
 

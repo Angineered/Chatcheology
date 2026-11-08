@@ -41,8 +41,11 @@
         <DataTemplate x:Key="AttachmentTemplate" DataType="{x:Type vm:AttachmentViewModel}">
             <!-- A WhatsApp low-quality copy (CH-10) is collapsed unless the toolbar toggle shows
                  copies. Collapsing is presentation only; its Phase 7 state is untouched. -->
-            <Grid Margin="0,6,0,0"
-                  Visibility="{Binding IsShown, Converter={StaticResource BoolToVisibility}}">
+            <!-- CH-71: the picture's caption sits under the card, outside it, so a click on one of its
+                 links never opens the review panel. Shown whatever the state: it is the sender's text. -->
+            <StackPanel Margin="0,6,0,0"
+                        Visibility="{Binding IsShown, Converter={StaticResource BoolToVisibility}}">
+            <Grid>
             <Border Padding="8" CornerRadius="4" BorderThickness="1">
                 <Border.Style>
                     <Style TargetType="Border">
@@ -123,6 +126,12 @@
                        Visibility="{Binding IsReviewedMissing,
                            Converter={StaticResource BoolToVisibility}}" />
             </Grid>
+
+            <TextBlock Margin="2,4,0,0" MaxWidth="336" HorizontalAlignment="Left" TextWrapping="Wrap"
+                       controls:LinkedText.Spans="{Binding CaptionSpans}"
+                       Visibility="{Binding HasCaption,
+                           Converter={StaticResource BoolToVisibility}}" />
+            </StackPanel>
         </DataTemplate>
 
         <!-- One candidate. Every current candidate appears, including one already disproven and

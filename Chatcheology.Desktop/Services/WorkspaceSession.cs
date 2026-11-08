@@ -32,14 +32,16 @@ namespace Chatcheology.Desktop.Services
     /// Assembled from independent readers and one round of file-system probing, all of it away
     /// from the dispatcher, so what reaches the UI thread is finished. <see cref="Facts"/> is the
     /// page's attachment msgstore facts (CH-8, CH-10) and <see cref="MessageFacts"/> its text
-    /// messages' msgstore facts (CH-22): presentation only, never a Phase 7 state.
+    /// messages' msgstore facts (CH-22), and <see cref="Captions"/> its attachments' picture captions (CH-71):
+    /// presentation only, never a Phase 7 state.
     /// </remarks>
     public sealed record LoadedPage(
         ConversationPage Page,
         IReadOnlyDictionary<long, Phase7ReconstructionState> States,
         IReadOnlyDictionary<long, MediaAvailability> Media,
         MsgstoreFactSet Facts,
-        IReadOnlyDictionary<long, MessageMsgstoreFact> MessageFacts);
+        IReadOnlyDictionary<long, MessageMsgstoreFact> MessageFacts,
+        IReadOnlyDictionary<long, AttachmentCaptionFact> Captions);
 
     /// <summary>
     /// What the viewer found when it looked for an asset's recorded copies.
@@ -96,6 +98,7 @@ namespace Chatcheology.Desktop.Services
         private readonly AttachmentReviewReader _review = new();
         private readonly MsgstoreFactReader _facts = new();
         private readonly MessageMsgstoreFactReader _messageFacts = new();
+        private readonly AttachmentCaptionFactReader _captions = new();
 
         private WorkspaceSession(SqliteConnection connection, string databasePath)
         {
@@ -232,7 +235,11 @@ namespace Chatcheology.Desktop.Services
 
                     var messageFacts = _messageFacts.ReadForPage(connection, page);
 
-                    return new LoadedPage(page, states, media, facts, messageFacts);
+                    cancellationToken.ThrowIfCancellationRequested();
+
+                    var captions = _captions.Read(connection, attachmentIDs);
+
+                    return new LoadedPage(page, states, media, facts, messageFacts, captions);
                 },
                 cancellationToken);
 

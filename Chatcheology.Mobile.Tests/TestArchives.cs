@@ -48,6 +48,7 @@ namespace Chatcheology.Mobile.Tests
                 SourceExportSha256 = string.Empty,
                 TimeZoneID = string.Empty,
                 LocalParticipantID = Local,
+                ArchiveId = "3f8a2c61-0e4d-4b79-a5c3-9d1e7f20b854",
             });
 
             writer.WriteParticipant(new ArchiveParticipant { ParticipantID = Local, DisplayName = "Alex", IsLocal = true });

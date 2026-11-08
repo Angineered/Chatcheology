@@ -29,7 +29,14 @@ namespace Chatcheology.Archive
             /// <summary>Whose side of the conversation is "me".</summary>
             public const string LocalParticipantID = "LocalParticipantID";
 
-            /// <summary>Every key, in the order the writer stores them.</summary>
+            /// <summary>
+            /// Format version 4 (CH-71): the archive's fixed id, made once for a workspace and kept for every later
+            /// export of it, so a phone can tell a refreshed archive from a different one. Required from version 4;
+            /// not in <see cref="All"/>, which lists the keys every version has.
+            /// </summary>
+            public const string ArchiveId = "ArchiveId";
+
+            /// <summary>Every key every version has, in the order the writer stores them.</summary>
             public static IReadOnlyList<string> All { get; } =
             [
                 FormatVersion,
@@ -72,6 +79,13 @@ namespace Chatcheology.Archive
         /// Empty for a version 1 archive and for an archive without older exports.
         /// </summary>
         public IReadOnlyList<ArchiveExportPeriod> ExportPeriods { get; init; } = [];
+
+        /// <summary>
+        /// Format version 4 (CH-71): the archive's fixed id (<see cref="ArchiveFormat.IsArchiveId"/>), the same for
+        /// every export of one workspace. Required from version 4 (the writer refuses to write and the reader refuses
+        /// to open a version 4 archive without a valid one); <see langword="null"/> below version 4.
+        /// </summary>
+        public string? ArchiveId { get; init; }
 
         /// <summary>The info key of the <paramref name="position"/>th (1-based) export period.</summary>
         public static string ExportPeriodKey(int position) =>

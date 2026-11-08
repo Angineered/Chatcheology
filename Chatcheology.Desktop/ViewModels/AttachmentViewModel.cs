@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Windows.Media.Imaging;
+using Chatcheology.Core.Text;
 using Chatcheology.Data.Media;
 using Chatcheology.Data.MsgstoreFacts;
 using Chatcheology.Data.Phase7;
@@ -42,15 +43,24 @@ namespace Chatcheology.Desktop.ViewModels
         /// <param name="lowQualityCopyCount">
         /// How many attachments the workspace records as low-quality copies of this one.
         /// </param>
+        /// <param name="caption">
+        /// The picture's caption from the workspace's <c>AttachmentCaptionFact</c> (CH-71), or <see langword="null"/>
+        /// when none is recorded. Presentation only.
+        /// </param>
         internal AttachmentViewModel(
             ConversationAttachment attachment,
             Phase7ReconstructionState? state,
             MediaAvailability? media,
             AttachmentMsgstoreFact? fact = null,
-            int lowQualityCopyCount = 0)
+            int lowQualityCopyCount = 0,
+            string? caption = null)
         {
             AttachmentID = attachment.AttachmentID;
             Ordinal = attachment.Ordinal;
+
+            // Shown under the card exactly as stored; a caption of only spaces shows nothing (CH-71).
+            Caption = string.IsNullOrWhiteSpace(caption) ? string.Empty : caption;
+            CaptionSpans = MessageTextScanner.Scan(Caption);
 
             IsForwarded = fact?.IsForwarded == true;
             ForwardScore = fact?.ForwardScore;
@@ -139,6 +149,18 @@ namespace Chatcheology.Desktop.ViewModels
 
         /// <summary>The attachment's position within its message.</summary>
         public int Ordinal { get; }
+
+        /// <summary>
+        /// The picture's caption as WhatsApp's message store records it (CH-71), or empty when none is known. Shown
+        /// under the card whatever the attachment's state: it is the sender's text.
+        /// </summary>
+        public string Caption { get; }
+
+        /// <summary>The caption split into plain runs and followable addresses, as message text is.</summary>
+        public IReadOnlyList<MessageTextSpan> CaptionSpans { get; }
+
+        /// <summary>Whether there is a caption to show.</summary>
+        public bool HasCaption => Caption.Length > 0;
 
         /// <summary>The resolved asset, or <see langword="null"/> when there is none.</summary>
         public long? MediaAssetID { get; private init; }

@@ -4,7 +4,8 @@
      its final height before its image is decoded. Hidden low-quality copies are not drawn. Message
      text with addresses is drawn by MessageText, whose links open only on a tap. A message opened from
      search is highlighted through its own IsHighlighted flag, so the highlight follows the message, not
-     a recycled view. A long press on a bubble offers Share for text and Star / Unstar (MessageBubble,
+     a recycled view. A picture's caption (CH-71) sits under its card (CaptionText), drawn like message
+     text. A long press on a bubble offers Share for text and Star / Unstar (MessageBubble,
      MessageText, AttachmentCardView); a starred message, or one with a starred photo, shows a small
      star beside its time (CH-38). Colours come in light and dark pairs (CH-41). Memory rows (CH-42)
      are centred lavender cards (a PSN period, a personal memory) or a muted italic line ("different
@@ -45,7 +46,10 @@
                         <VerticalStackLayout Spacing="4" BindableLayout.ItemsSource="{Binding ShownAttachments}">
                             <BindableLayout.ItemTemplate>
                                 <DataTemplate x:DataType="conv:AttachmentCard">
-                                    <controls:AttachmentCardView />
+                                    <VerticalStackLayout Spacing="2">
+                                        <controls:AttachmentCardView />
+                                        <controls:CaptionText />
+                                    </VerticalStackLayout>
                                 </DataTemplate>
                             </BindableLayout.ItemTemplate>
                         </VerticalStackLayout>
@@ -76,7 +80,10 @@
                         <VerticalStackLayout Spacing="4" BindableLayout.ItemsSource="{Binding ShownAttachments}">
                             <BindableLayout.ItemTemplate>
                                 <DataTemplate x:DataType="conv:AttachmentCard">
-                                    <controls:AttachmentCardView />
+                                    <VerticalStackLayout Spacing="2">
+                                        <controls:AttachmentCardView />
+                                        <controls:CaptionText />
+                                    </VerticalStackLayout>
                                 </DataTemplate>
                             </BindableLayout.ItemTemplate>
                         </VerticalStackLayout>
