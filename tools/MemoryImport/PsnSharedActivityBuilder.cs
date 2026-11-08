@@ -63,6 +63,9 @@ namespace Chatcheology.Tools.MemoryImport
 
         /// <summary>Games written with no icon.</summary>
         public int IconsNone { get; internal set; }
+
+        /// <summary>Games written with at least one event and no icon (refused unless allowed).</summary>
+        public int GamesWithEventsAndNoIcon { get; internal set; }
     }
 
     /// <summary>The built file and its counts.</summary>
@@ -114,14 +117,20 @@ namespace Chatcheology.Tools.MemoryImport
         /// <param name="accountA">The account field name of side a (its set is first in every key); also its prefix in the output.</param>
         /// <param name="accountB">The other account's field name and prefix.</param>
         /// <param name="existingFile">Optional existing shared-activity file to carry game icons over from (by key) where the manifest has none.</param>
+        /// <param name="allowNoIcon">
+        /// False (the default) refuses a build in which a game with events has no icon: psn-import would clear
+        /// that game's stored images.
+        /// </param>
         /// <exception cref="ArgumentException">An account name is not plain letters or digits, or both are the same.</exception>
         /// <exception cref="FormatException">An input is not the accepted shape.</exception>
+        /// <exception cref="InvalidOperationException">A game with events has no icon and <paramref name="allowNoIcon"/> is false.</exception>
         public static PsnBuildResult Build(
             IReadOnlyList<ReadOnlyMemory<byte>> timestampFiles,
             ReadOnlyMemory<byte> manifest,
             string accountA,
             string accountB,
-            ReadOnlyMemory<byte>? existingFile = null)
+            ReadOnlyMemory<byte>? existingFile = null,
+            bool allowNoIcon = false)
         {
             ArgumentNullException.ThrowIfNull(timestampFiles);
             CheckAccount(accountA, "a");
@@ -234,7 +243,11 @@ namespace Chatcheology.Tools.MemoryImport
                         counts.GamesWithDistinctSets++;
                     }
 
-                    AddEvents(game, stamps, sameSet, accountA, accountB, counts, events);
+                    if (AddEvents(game, stamps, sameSet, accountA, accountB, counts, events) > 0 && icon is null)
+                    {
+                        counts.GamesWithEventsAndNoIcon++;
+                    }
+
                     gameIndex++;
                 }
 
@@ -251,10 +264,18 @@ namespace Chatcheology.Tools.MemoryImport
                 writer.WriteEndObject();
             }
 
+            if (counts.GamesWithEventsAndNoIcon > 0 && !allowNoIcon)
+            {
+                throw new InvalidOperationException(
+                    $"{counts.GamesWithEventsAndNoIcon} game(s) with events have no icon in the manifest or in --icons-from. " +
+                    "psn-import would clear the stored image of every entry of such a game. Add the icons to the manifest, " +
+                    "pass --icons-from with the current file, or add --allow-no-icon. Nothing has been written.");
+            }
+
             return new PsnBuildResult(stream.ToArray(), counts);
         }
 
-        private static void AddEvents(
+        private static int AddEvents(
             ManifestGame game,
             TimestampGame stamps,
             bool sameSet,
@@ -266,7 +287,7 @@ namespace Chatcheology.Tools.MemoryImport
             if (stamps.A.Trophies.Count == 0 && stamps.B.Trophies.Count == 0)
             {
                 counts.GamesWithNoTrophies++;
-                return;
+                return 0;
             }
 
             if (stamps.A.Trophies.Count == 0 || stamps.B.Trophies.Count == 0)
@@ -274,7 +295,7 @@ namespace Chatcheology.Tools.MemoryImport
                 counts.GamesOneAccountOnly++;
                 counts.OneAccountDates += stamps.A.Trophies.Concat(stamps.B.Trophies)
                     .Select(trophy => DateOnly.FromDateTime(trophy.Local)).Distinct().Count();
-                return;
+                return 0;
             }
 
             var byDateA = stamps.A.Trophies.ToLookup(trophy => DateOnly.FromDateTime(trophy.Local));
@@ -365,6 +386,8 @@ namespace Chatcheology.Tools.MemoryImport
             {
                 counts.GamesNoCommonDate++;
             }
+
+            return gameEvents;
         }
 
         private static void WriteTrophies(Utf8JsonWriter writer, string name, List<Trophy> trophies)

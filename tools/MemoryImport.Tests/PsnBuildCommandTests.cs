@@ -16,6 +16,8 @@ namespace Chatcheology.Tools.MemoryImport.Tests
         private const string SetOfB = "ZZSET00003_00";
         private const string OtherSame = "ZZSET00004_00";
 
+        private const string RacerIcon = "https://psnobj.prod.dl.playstation.net/zz/example2.png";
+
         private static readonly DateTime Now = new(2026, 11, 8, 9, 0, 0, DateTimeKind.Utc);
 
         private readonly string _root;
@@ -60,7 +62,8 @@ namespace Chatcheology.Tools.MemoryImport.Tests
 
         private static PsnBuildResult Build(SyntheticTrophyBatch batch) =>
             PsnSharedActivityBuilder.Build(
-                [Encoding.UTF8.GetBytes(batch.TimestampsJson())], Encoding.UTF8.GetBytes(batch.ManifestJson()), AccountA, AccountB);
+                [Encoding.UTF8.GetBytes(batch.TimestampsJson())], Encoding.UTF8.GetBytes(batch.ManifestJson()), AccountA, AccountB,
+                allowNoIcon: true);
 
         private static PsnActivity Read(byte[] json) => PsnSharedActivityReader.Parse(json, AccountA, AccountB, AccountA);
 
@@ -101,6 +104,7 @@ namespace Chatcheology.Tools.MemoryImport.Tests
                 SetA = SetOfA,
                 SetB = SetOfB,
                 Title = "Invented Racer",
+                Icon = RacerIcon,
                 A = [new BatchTrophy(5, Utc(2016, 7, 4, 10, 0, 0))],
                 B = [new BatchTrophy(5, Utc(2016, 7, 4, 10, 0, 0))],
             });
@@ -278,8 +282,9 @@ namespace Chatcheology.Tools.MemoryImport.Tests
             Assert.Contains("  manifest games with no timestamps: 1", output, StringComparison.Ordinal);
             Assert.Contains("  timestamp games not in the manifest: 1", output, StringComparison.Ordinal);
             Assert.Contains("  games with trophies for one account only: 1", output, StringComparison.Ordinal);
-            Assert.Contains("  from the manifest: 1", output, StringComparison.Ordinal);
-            Assert.Contains("  none: 2", output, StringComparison.Ordinal);
+            Assert.Contains("  from the manifest: 2", output, StringComparison.Ordinal);
+            Assert.Contains("  none: 1", output, StringComparison.Ordinal);
+            Assert.Contains("  games with events and no icon (allowed by --allow-no-icon): 0", output, StringComparison.Ordinal);
             Assert.Equal(2, Directory.GetFiles(_root).Length);
         }
 
@@ -371,13 +376,13 @@ namespace Chatcheology.Tools.MemoryImport.Tests
         [Fact]
         public void Build_IconsFrom_CarriesOverIconsTheManifestLacks()
         {
-            var (timestamps, manifest) = Standard().WriteTo(_root, "a");
+            var (timestamps, manifest) = WithoutRacerIcon().WriteTo(_root, "a");
             var old = Path.Combine(_root, "zzbuilt-old.json");
             var oldRoot = new JsonObject
             {
                 ["schema"] = PsnSharedActivityReader.Schema,
                 ["games"] = new JsonArray(
-                    new JsonObject { ["key"] = $"{SetOfA}|{SetOfB}", ["icon"] = "https://psnobj.prod.dl.playstation.net/zz/example2.png" },
+                    new JsonObject { ["key"] = $"{SetOfA}|{SetOfB}", ["icon"] = RacerIcon },
                     new JsonObject { ["key"] = $"{SameSet}|{SameSet}", ["icon"] = "https://image.api.playstation.com/zz/other.png" }),
             };
             File.WriteAllText(old, oldRoot.ToJsonString());
@@ -393,8 +398,47 @@ namespace Chatcheology.Tools.MemoryImport.Tests
             Assert.Contains("  none: 1", output, StringComparison.Ordinal);
 
             var records = PsnSharedActivityReader.Read(built, AccountA, AccountB, AccountA).Records;
-            Assert.Equal("https://psnobj.prod.dl.playstation.net/zz/example2.png", records.Single(r => r.SourceKey.StartsWith(SetOfA, StringComparison.Ordinal)).ImageSourceUrl);
+            Assert.Equal(RacerIcon, records.Single(r => r.SourceKey.StartsWith(SetOfA, StringComparison.Ordinal)).ImageSourceUrl);
             Assert.Equal("https://image.api.playstation.com/zz/example.png", records.First(r => r.SourceKey.StartsWith(SameSet, StringComparison.Ordinal)).ImageSourceUrl);
+        }
+
+        private static SyntheticTrophyBatch WithoutRacerIcon()
+        {
+            var batch = Standard();
+            var racer = batch.Games[1];
+            batch.Games[1] = new BatchGame { SetA = racer.SetA, SetB = racer.SetB, Title = racer.Title, A = racer.A, B = racer.B };
+            return batch;
+        }
+
+        [Fact]
+        public void Build_GameWithEventsAndNoIcon_IsRefused_UnlessAllowed()
+        {
+            var (timestamps, manifest) = WithoutRacerIcon().WriteTo(_root, "a");
+            var built = Path.Combine(_root, "zzbuilt.json");
+
+            var (code, output, error) = Run(
+                "psn-build", "--timestamps", timestamps, "--manifest", manifest, "--account-a", AccountA, "--account-b", AccountB, "--out", built);
+
+            Assert.Equal(MemoryImportCommand.Failed, code);
+            Assert.Equal(string.Empty, output);
+            Assert.Contains("1 game(s) with events have no icon", error, StringComparison.Ordinal);
+            Assert.Contains("--allow-no-icon", error, StringComparison.Ordinal);
+            Assert.Contains("Nothing has been written.", error, StringComparison.Ordinal);
+            Assert.False(File.Exists(built));
+
+            (code, _, error) = Run(
+                "psn-build", "--timestamps", timestamps, "--manifest", manifest, "--account-a", AccountA, "--account-b", AccountB, "--dry-run");
+
+            Assert.Equal(MemoryImportCommand.Failed, code);
+            Assert.Contains("1 game(s) with events have no icon", error, StringComparison.Ordinal);
+
+            (code, output, _) = Run(
+                "psn-build", "--timestamps", timestamps, "--manifest", manifest, "--account-a", AccountA, "--account-b", AccountB, "--out", built,
+                "--allow-no-icon");
+
+            Assert.Equal(0, code);
+            Assert.Contains("  games with events and no icon (allowed by --allow-no-icon): 1", output, StringComparison.Ordinal);
+            Assert.True(File.Exists(built));
         }
 
         [Fact]
@@ -562,7 +606,11 @@ namespace Chatcheology.Tools.MemoryImport.Tests
             Assert.Equal(0, code);
             Assert.Equal(string.Empty, error);
             Assert.Contains("Old file: games 3, events 4", output, StringComparison.Ordinal);
+            Assert.Contains("Games only in old: 0", output, StringComparison.Ordinal);
+            Assert.Contains("Games in both, different icon: 0", output, StringComparison.Ordinal);
             Assert.Contains("In both, same level: 4", output, StringComparison.Ordinal);
+            Assert.Contains("In both, same level, different pairs: 0", output, StringComparison.Ordinal);
+            Assert.Contains("In both, same level, different periods: 0", output, StringComparison.Ordinal);
             Assert.Contains("In both, different level: 0", output, StringComparison.Ordinal);
             Assert.Contains("Only in old: 0", output, StringComparison.Ordinal);
             Assert.Contains("Only in new: 0", output, StringComparison.Ordinal);
@@ -599,7 +647,8 @@ namespace Chatcheology.Tools.MemoryImport.Tests
             Assert.Contains("  supporting -> strong: 0", output, StringComparison.Ordinal);
             Assert.Contains("Only in old: 1\n  strong: 0\n  supporting: 0\n  same-day: 1", Normalise(output), StringComparison.Ordinal);
             Assert.Contains("Only in new: 1\n  strong: 0\n  supporting: 0\n  same-day: 1", Normalise(output), StringComparison.Ordinal);
-            Assert.Contains("In both, same level, different trophies or pairs: 0", output, StringComparison.Ordinal);
+            Assert.Contains("In both, same level, different trophies: 0", output, StringComparison.Ordinal);
+            Assert.Contains("Games only in old: 0", output, StringComparison.Ordinal);
             Assert.Contains("Result: different.", output, StringComparison.Ordinal);
         }
 
@@ -616,15 +665,44 @@ namespace Chatcheology.Tools.MemoryImport.Tests
             changed.Games[0] = new BatchGame { SetA = SameSet, SetB = SameSet, Title = "Invented Quest", A = changed.Games[0].A, B = changed.Games[0].B };
             var (t2, m2) = changed.WriteTo(_root, "b");
             var newFile = Path.Combine(_root, "zzbuilt-new.json");
+            Run("psn-build", "--timestamps", t2, "--manifest", m2, "--account-a", AccountA, "--account-b", AccountB, "--out", newFile, "--allow-no-icon");
+
+            var (code, output, _) = Run("psn-compare", oldFile, newFile, "--local", AccountA, "--other", AccountB, "--pair-a", AccountA);
+
+            // The pair's b time moves too, and the gap becomes 60 min 1 s, so 2 March splits into two periods.
+            Assert.Equal(MemoryImportCommand.Different, code);
+            Assert.Contains("In both, same level: 4", output, StringComparison.Ordinal);
+            Assert.Contains("In both, same level, different trophies: 1", output, StringComparison.Ordinal);
+            Assert.Contains("In both, same level, different pairs: 1", output, StringComparison.Ordinal);
+            Assert.Contains("In both, same level, different periods: 1", output, StringComparison.Ordinal);
+            Assert.Contains("Games in both, different icon: 1", output, StringComparison.Ordinal);
+            Assert.Contains("Games in both, different title: 0", output, StringComparison.Ordinal);
+        }
+
+        [Fact]
+        public void Compare_GamesWithoutEvents_AreCompared()
+        {
+            var (t1, m1) = Standard().WriteTo(_root, "a");
+            var oldFile = Path.Combine(_root, "zzbuilt-old.json");
+            Run("psn-build", "--timestamps", t1, "--manifest", m1, "--account-a", AccountA, "--account-b", AccountB, "--out", oldFile);
+
+            // Only games without events change: the solo game's title, and one more game with no trophies.
+            var changed = Standard();
+            var solo = changed.Games[2];
+            changed.Games[2] = new BatchGame { SetA = solo.SetA, SetB = solo.SetB, Title = "Invented Solo Renamed", A = solo.A };
+            changed.Games.Add(new BatchGame { SetA = "ZZSET00007_00", SetB = "ZZSET00007_00" });
+            var (t2, m2) = changed.WriteTo(_root, "b");
+            var newFile = Path.Combine(_root, "zzbuilt-new.json");
             Run("psn-build", "--timestamps", t2, "--manifest", m2, "--account-a", AccountA, "--account-b", AccountB, "--out", newFile);
 
             var (code, output, _) = Run("psn-compare", oldFile, newFile, "--local", AccountA, "--other", AccountB, "--pair-a", AccountA);
 
             Assert.Equal(MemoryImportCommand.Different, code);
+            Assert.Contains("New file: games 4, events 4", output, StringComparison.Ordinal);
+            Assert.Contains("Games only in new: 1", output, StringComparison.Ordinal);
+            Assert.Contains("Games in both, different title: 1", output, StringComparison.Ordinal);
             Assert.Contains("In both, same level: 4", output, StringComparison.Ordinal);
-            Assert.Contains("In both, same level, different trophies or pairs: 1", output, StringComparison.Ordinal);
-            Assert.Contains("In both, different game icon: 3", output, StringComparison.Ordinal);
-            Assert.Contains("In both, different game title: 0", output, StringComparison.Ordinal);
+            Assert.Contains("Result: different.", output, StringComparison.Ordinal);
         }
 
         [Fact]

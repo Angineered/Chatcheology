@@ -167,7 +167,8 @@ namespace Chatcheology.Tools.MemoryImport
                 existing = ReadInput(parsed.IconsFrom, "--icons-from file");
             }
 
-            var result = PsnSharedActivityBuilder.Build(timestamps, manifest, parsed.AccountA!, parsed.AccountB!, existing);
+            var result = PsnSharedActivityBuilder.Build(
+                timestamps, manifest, parsed.AccountA!, parsed.AccountB!, existing, parsed.AllowNoIcon);
 
             // The built file must pass the same reader psn-import uses before anything is written.
             PsnSharedActivityReader.Parse(result.Json, parsed.AccountA!, parsed.AccountB!, parsed.AccountA!);
@@ -200,6 +201,7 @@ namespace Chatcheology.Tools.MemoryImport
             output.WriteLine($"  from the manifest: {c.IconsFromManifest}");
             output.WriteLine($"  from the existing file: {c.IconsFromExistingFile}");
             output.WriteLine($"  none: {c.IconsNone}");
+            output.WriteLine($"  games with events and no icon (allowed by --allow-no-icon): {c.GamesWithEventsAndNoIcon}");
             return Success;
         }
 
@@ -212,20 +214,14 @@ namespace Chatcheology.Tools.MemoryImport
 
             try
             {
-                if (!overwrite)
-                {
-                    using var stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None);
-                    stream.Write(json);
-                    return;
-                }
-
-                // Write beside the target first so a failed write never leaves half a file.
+                // Write beside the target first so a failed write never leaves half a file. Without
+                // --overwrite the move itself refuses a file that appeared in the meantime.
                 var temp = path + ".tmp-" + Guid.NewGuid().ToString("N");
 
                 try
                 {
                     File.WriteAllBytes(temp, json);
-                    File.Move(temp, path, overwrite: true);
+                    File.Move(temp, path, overwrite);
                 }
                 finally
                 {
@@ -243,12 +239,23 @@ namespace Chatcheology.Tools.MemoryImport
 
         private static int RunCompare(ParsedArguments parsed, TextWriter output)
         {
-            var oldActivity = ReadPsn(parsed, parsed.PsnFile);
-            var newActivity = ReadPsn(parsed, parsed.SecondFile);
-            var result = PsnSharedActivityComparer.Compare(oldActivity, newActivity);
+            if (parsed.Local is null || parsed.Other is null || parsed.PairA is null)
+            {
+                throw new UsageException("--local, --other and --pair-a are all needed.");
+            }
+
+            var oldJson = ReadInput(parsed.PsnFile!, "old file");
+            var newJson = ReadInput(parsed.SecondFile!, "new file");
+            var oldActivity = PsnSharedActivityReader.Parse(oldJson, parsed.Local, parsed.Other, parsed.PairA, parsed.GapMinutes);
+            var newActivity = PsnSharedActivityReader.Parse(newJson, parsed.Local, parsed.Other, parsed.PairA, parsed.GapMinutes);
+            var result = PsnSharedActivityComparer.Compare(oldActivity, oldJson, newActivity, newJson);
 
             output.WriteLine($"Old file: games {result.OldGames}, events {result.OldEvents}");
             output.WriteLine($"New file: games {result.NewGames}, events {result.NewEvents}");
+            output.WriteLine($"Games only in old: {result.GamesOnlyOld}");
+            output.WriteLine($"Games only in new: {result.GamesOnlyNew}");
+            output.WriteLine($"Games in both, different title: {result.GamesDifferentTitle}");
+            output.WriteLine($"Games in both, different icon: {result.GamesDifferentIcon}");
             output.WriteLine($"In both, same level: {result.SameLevelTotal}");
             WriteLevels(output, result.SameLevel);
             output.WriteLine($"In both, different level: {result.DifferentLevelTotal}");
@@ -265,9 +272,9 @@ namespace Chatcheology.Tools.MemoryImport
             WriteLevels(output, result.OnlyOld);
             output.WriteLine($"Only in new: {result.OnlyNewTotal}");
             WriteLevels(output, result.OnlyNew);
-            output.WriteLine($"In both, same level, different trophies or pairs: {result.SameLevelDifferentTrophies}");
-            output.WriteLine($"In both, different game title: {result.DifferentTitle}");
-            output.WriteLine($"In both, different game icon: {result.DifferentIcon}");
+            output.WriteLine($"In both, same level, different trophies: {result.SameLevelDifferentTrophies}");
+            output.WriteLine($"In both, same level, different pairs: {result.SameLevelDifferentPairs}");
+            output.WriteLine($"In both, same level, different periods: {result.SameLevelDifferentPeriods}");
             output.WriteLine(result.Same ? "Result: same." : "Result: different.");
             return result.Same ? Success : Different;
         }
@@ -472,7 +479,7 @@ namespace Chatcheology.Tools.MemoryImport
             output.WriteLine("  psn-enrich --workspace-folder <folder> <definitions-file>");
             output.WriteLine("  fetch-images --workspace-folder <folder> [--max-bytes <n>]");
             output.WriteLine("  psn-build --timestamps <file> [--timestamps <file> ...] --manifest <file> --account-a <name> --account-b <name>");
-            output.WriteLine("            (--out <file> [--overwrite] | --dry-run) [--icons-from <shared-activity-file>]");
+            output.WriteLine("            (--out <file> [--overwrite] | --dry-run) [--icons-from <shared-activity-file>] [--allow-no-icon]");
             output.WriteLine("  psn-compare <old-file> <new-file> --local <prefix> --other <prefix> --pair-a <prefix>");
             output.WriteLine();
             output.WriteLine("psn-build: --account-a is the account whose trophy set is first in every game key; the account names");
@@ -529,9 +536,11 @@ namespace Chatcheology.Tools.MemoryImport
 
             internal bool DryRun { get; private set; }
 
+            internal bool AllowNoIcon { get; private set; }
+
             private bool BuildOptionGiven =>
                 Timestamps.Count > 0 || Manifest is not null || AccountA is not null || AccountB is not null
-                || Out is not null || IconsFrom is not null || Overwrite || DryRun;
+                || Out is not null || IconsFrom is not null || Overwrite || DryRun || AllowNoIcon;
 
             internal static ParsedArguments Parse(string[] args)
             {
@@ -652,6 +661,10 @@ namespace Chatcheology.Tools.MemoryImport
                             parsed.DryRun = true;
                             break;
 
+                        case "--allow-no-icon":
+                            parsed.AllowNoIcon = true;
+                            break;
+
                         default:
                             if (argument.StartsWith("--", StringComparison.Ordinal))
                             {
@@ -687,7 +700,7 @@ namespace Chatcheology.Tools.MemoryImport
                         || parsed.Create || maxBytesGiven)
                     {
                         throw new UsageException(
-                            "psn-build takes --timestamps, --manifest, --account-a, --account-b, --out, --overwrite, --dry-run and --icons-from only.");
+                            "psn-build takes --timestamps, --manifest, --account-a, --account-b, --out, --overwrite, --dry-run, --icons-from and --allow-no-icon only.");
                     }
 
                     if (parsed.Timestamps.Count == 0 || parsed.Manifest is null || parsed.AccountA is null || parsed.AccountB is null)
@@ -711,7 +724,7 @@ namespace Chatcheology.Tools.MemoryImport
                 if (parsed.BuildOptionGiven)
                 {
                     throw new UsageException(
-                        "--timestamps, --manifest, --account-a, --account-b, --out, --overwrite, --dry-run and --icons-from belong to psn-build only.");
+                        "--timestamps, --manifest, --account-a, --account-b, --out, --overwrite, --dry-run, --icons-from and --allow-no-icon belong to psn-build only.");
                 }
 
                 if (parsed.Command == "psn-compare")

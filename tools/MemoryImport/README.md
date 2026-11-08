@@ -139,7 +139,7 @@ code 1 if any failed.
 ```
 psn-build --timestamps <file> [--timestamps <file> ...] --manifest <file>
           --account-a <name> --account-b <name>
-          (--out <file> [--overwrite] | --dry-run) [--icons-from <shared-activity-file>]
+          (--out <file> [--overwrite] | --dry-run) [--icons-from <shared-activity-file>] [--allow-no-icon]
 ```
 
 - `--timestamps`: the fetch script's output (`.temp\psn\Fetch-Shared-PSN-Trophies.ps1`), format
@@ -159,9 +159,13 @@ psn-build --timestamps <file> [--timestamps <file> ...] --manifest <file>
   names are also the account prefixes in the built file, so `psn-import` and `psn-compare` take
   `--pair-a <account-a>`.
 - `--icons-from`: an earlier shared-activity file; a game's `icon` is copied from it by `key` where
-  the manifest gives none (the timestamps carry no icons, and `psn-import` clears the stored image
-  of an entry whose icon becomes null).
+  the manifest gives none (the timestamps carry no icons).
+- A game with at least one event and an icon in neither the manifest nor `--icons-from` stops the
+  run (with the number of such games), because `psn-import` clears the stored image of every entry
+  whose icon becomes null and that cannot be undone. `--allow-no-icon` builds anyway.
 - `--out` is written only when it does not exist, unless `--overwrite`; it may not name an input.
+  The file is written beside the target first and then moved into place, so a failed write never
+  leaves part of a file.
   `--dry-run` writes nothing. Field names match case-insensitively; a field given twice with
   different case stops the run. Any other shape stops the run with the file, game and trophy index.
 
@@ -184,7 +188,8 @@ Rules (the same as the earlier file's):
 Prints: manifest games, timestamp games, games written (and with different sets), events per
 level, matching pairs, trophies in events, skipped (manifest games with no timestamps, timestamp
 games not in the manifest, games with no trophies, with one account only, with no common date; game
-dates with one account only), game icons (from the manifest, from `--icons-from`, none).
+dates with one account only), game icons (from the manifest, from `--icons-from`, none, games with
+events and no icon).
 
 `psn-compare` (the acceptance check before a built file replaces the current one):
 
@@ -192,11 +197,14 @@ dates with one account only), game icons (from the manifest, from `--icons-from`
 psn-compare <old-file> <new-file> --local <prefix> --other <prefix> --pair-a <prefix>
 ```
 
-Both files are read with the import reader and the same prefixes; events are matched by `id`.
-Prints games and events in each, events in both with the same level (per level), with a different
-level (per old -> new level pair), only in old and only in new (per level), events in both with the
-same level whose trophies or pair count differ, and events whose game title or icon differs. Exit
-code 0 when everything matches, 3 when anything differs, 1 when a file is refused.
+Both files are read with the import reader and the same prefixes; games are matched by `key`
+(with or without events), events by `id`. Prints games and events in each; games only in old, only
+in new, and in both with a different title or icon; events in both with the same level (per level),
+with a different level (per old -> new level pair), only in old and only in new (per level); and
+events in both with the same level whose trophies (role, set, id, type, UTC time), matching pairs
+(id, `aTime`, `bTime`, pairs not located or split) or periods (label, start, end, trophies per
+account) differ. Exit code 0 only when every one of these matches, 3 when anything differs, 1 when
+a file is refused.
 
 ### Monthly PSN refresh (Angie)
 
@@ -205,8 +213,11 @@ From the repository folder. `<A>` and `<B>` are the two account field names in t
 `psn-import` command.
 
 1. Fetch as today (needs her token): `.temp\psn\Fetch-Shared-PSN-Trophies.ps1`, giving
-   `PSN-Shared-Trophy-Timestamps.json`. A game the script does not fetch needs its own timestamp file
-   in the same format, passed as a second `--timestamps`.
+   `PSN-Shared-Trophy-Timestamps.json`. A game the script does not fetch (such as the 68th game,
+   merged from older responses) needs both its own timestamp file in the same format, passed as a
+   second `--timestamps`, and its own entry in the manifest. Without the timestamp file it is counted
+   as "manifest games with no timestamps"; without the manifest entry, as "timestamp games not in the
+   manifest". Either way it is not built, and `psn-compare` lists it as a difference.
 2. Build a new file, never over the current one:
    `dotnet run --project tools\MemoryImport\MemoryImport.csproj -- psn-build --timestamps <timestamps.json>
    --manifest <manifest.json> --account-a <A> --account-b <B> --icons-from <current-file.json> --out <new-file.json>`
