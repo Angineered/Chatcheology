@@ -9,13 +9,13 @@ using Microsoft.Data.Sqlite;
 namespace Chatcheology.Mobile.Notifications
 {
     /// <summary>One installed archive's noted dates and yearly memories, as the notification schedule sees them.</summary>
-    /// <param name="ArchiveId">The archive's folder name under <c>archives/</c> (what a tap opens).</param>
+    /// <param name="InstallId">The archive's folder name under <c>archives/</c> (what a tap opens).</param>
     /// <param name="ContentsSha256">The archive's identity.</param>
     /// <param name="OnThisDayEnabled">Whether On this day is on for the archive; off, it never notifies.</param>
     /// <param name="Dates">Its gifted noted dates, each with whether it notifies (a muted one does not).</param>
     /// <param name="PostedThrough">The last day this archive's notification was posted, if any: it is not posted twice that day.</param>
     public sealed record ArchiveNotedDates(
-        string ArchiveId, string ContentsSha256, bool OnThisDayEnabled, IReadOnlyList<NotedDateListing> Dates, DateOnly? PostedThrough = null)
+        string InstallId, string ContentsSha256, bool OnThisDayEnabled, IReadOnlyList<NotedDateListing> Dates, DateOnly? PostedThrough = null)
     {
         /// <summary>Its yearly memories (CH-53, version 3), each with whether it notifies (a muted one does not).</summary>
         public IReadOnlyList<YearlyMemoryListing> Yearly { get; init; } = [];
@@ -45,9 +45,9 @@ namespace Chatcheology.Mobile.Notifications
     /// <param name="RemindersOn">The My memories reminders switch (per phone); off, they never notify.</param>
     /// <param name="Yearly">The own yearly memories, each with whether it notifies (a muted one does not).</param>
     /// <param name="PostedThrough">The last day the own notification was posted, if any: it is not posted twice that day.</param>
-    /// <param name="TapArchiveId">What a tap opens: the last-opened installed archive's folder name, or none (the start screen).</param>
+    /// <param name="TapInstallId">What a tap opens: the last-opened installed archive's folder name, or none (the start screen).</param>
     public sealed record OwnMemoryReminders(
-        bool RemindersOn, IReadOnlyList<OwnYearlyMemoryListing> Yearly, DateOnly? PostedThrough = null, string? TapArchiveId = null)
+        bool RemindersOn, IReadOnlyList<OwnYearlyMemoryListing> Yearly, DateOnly? PostedThrough = null, string? TapInstallId = null)
     {
         /// <summary>The own yearly memories that can notify: none with reminders off, otherwise every one not muted.</summary>
         public IEnumerable<OwnYearlyMemoryListing> NotifyingYearly => RemindersOn ? Yearly.Where(memory => memory.Notify) : [];
@@ -62,15 +62,15 @@ namespace Chatcheology.Mobile.Notifications
     /// <summary>The one own memories notification of a day (CH-54).</summary>
     /// <param name="Count">How many own yearly memories fall on the day.</param>
     /// <param name="Text">What it says: see <see cref="NotedDateSchedule.TextForOwn"/>; never a title.</param>
-    /// <param name="TapArchiveId">The archive a tap opens at today's On this day card, or none: the start screen.</param>
-    public sealed record DueOwnNotification(int Count, string Text, string? TapArchiveId);
+    /// <param name="TapInstallId">The archive a tap opens at today's On this day card, or none: the start screen.</param>
+    public sealed record DueOwnNotification(int Count, string Text, string? TapInstallId);
 
     /// <summary>The one notification an archive gets on a day.</summary>
-    /// <param name="ArchiveId">The archive's folder name.</param>
+    /// <param name="InstallId">The archive's folder name.</param>
     /// <param name="ContentsSha256">The archive's identity.</param>
     /// <param name="Count">How many of its noted dates fall on the day.</param>
     /// <param name="Text">What the notification says: see <see cref="NotedDateSchedule.TextFor"/>.</param>
-    public sealed record DueNotification(string ArchiveId, string ContentsSha256, int Count, string Text);
+    public sealed record DueNotification(string InstallId, string ContentsSha256, int Count, string Text);
 
     /// <summary>The next moment a noted date notifies, and what is posted then.</summary>
     /// <param name="Day">The day.</param>
@@ -160,7 +160,7 @@ namespace Chatcheology.Mobile.Notifications
 
                 if (count > 0)
                 {
-                    due.Add(new DueNotification(archive.ArchiveId, archive.ContentsSha256, count, TextFor(count)));
+                    due.Add(new DueNotification(archive.InstallId, archive.ContentsSha256, count, TextFor(count)));
                 }
             }
 
@@ -267,7 +267,7 @@ namespace Chatcheology.Mobile.Notifications
 
             var count = own.CountOn(day);
 
-            return count > 0 ? new DueOwnNotification(count, TextForOwn(count), own.TapArchiveId) : null;
+            return count > 0 ? new DueOwnNotification(count, TextForOwn(count), own.TapInstallId) : null;
         }
 
         /// <summary>
@@ -275,15 +275,15 @@ namespace Chatcheology.Mobile.Notifications
         /// start screen) when no archive is installed or none was ever opened. A tie goes to the first folder name.
         /// </summary>
         /// <param name="archives">Each installed archive's folder name and when it was last opened, if ever.</param>
-        public static string? OwnTapTarget(IEnumerable<(string ArchiveId, DateTime? LastOpenedUtc)> archives)
+        public static string? OwnTapTarget(IEnumerable<(string InstallId, DateTime? LastOpenedUtc)> archives)
         {
             ArgumentNullException.ThrowIfNull(archives);
 
             return archives
                 .Where(archive => archive.LastOpenedUtc is not null)
                 .OrderByDescending(archive => archive.LastOpenedUtc)
-                .ThenBy(archive => archive.ArchiveId, StringComparer.Ordinal)
-                .Select(archive => archive.ArchiveId)
+                .ThenBy(archive => archive.InstallId, StringComparer.Ordinal)
+                .Select(archive => archive.InstallId)
                 .FirstOrDefault();
         }
 
@@ -364,7 +364,7 @@ namespace Chatcheology.Mobile.Notifications
             ArgumentNullException.ThrowIfNull(archives);
             ArgumentNullException.ThrowIfNull(settings);
 
-            var tap = OwnTapTarget(archives.Select(archive => (archive.ArchiveId, settings.GetLastOpenedUtc(archive.ContentsSha256))));
+            var tap = OwnTapTarget(archives.Select(archive => (archive.InstallId, settings.GetLastOpenedUtc(archive.ContentsSha256))));
 
             try
             {

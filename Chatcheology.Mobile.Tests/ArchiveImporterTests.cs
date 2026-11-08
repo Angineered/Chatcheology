@@ -52,7 +52,7 @@ namespace Chatcheology.Mobile.Tests
             Assert.Equal(ImportRefusal.None, result.Refusal);
 
             var installed = Assert.Single(_library.ListInstalled());
-            Assert.Equal(result.ArchiveId, Path.GetFileName(installed));
+            Assert.Equal(result.InstallId, Path.GetFileName(installed));
             Assert.Equal(ArchiveLibrary.ContentsSha256Of(_source), result.ContentsSha256);
             Assert.Equal(result.ContentsSha256, ArchiveLibrary.ContentsSha256Of(installed));
             Assert.True(ArchiveValidator.Validate(installed).Passed);
@@ -116,7 +116,7 @@ namespace Chatcheology.Mobile.Tests
             var second = Import(again);
 
             Assert.Equal(ImportOutcome.AlreadyInstalled, second.Outcome);
-            Assert.Equal(first.ArchiveId, second.ArchiveId);
+            Assert.Equal(first.InstallId, second.InstallId);
             Assert.Equal([ArchiveContents.FileName], again.Opened);
             Assert.Single(_library.ListInstalled());
             Assert.Empty(StagingLeft());

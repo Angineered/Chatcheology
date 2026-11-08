@@ -48,6 +48,11 @@ namespace Chatcheology.Mobile.Synthetic
     /// second on, in turn a short line, one with a web address, and one on two lines. A version 2 archive (noted
     /// dates) has none.
     /// </param>
+    /// <param name="ArchiveId">
+    /// The invented archive id a version 4 archive carries (CH-71), or <see langword="null"/> for
+    /// <see cref="SyntheticArchive.ArchiveId"/>. The phone treats an import with an installed archive's id as a refresh
+    /// of it (CH-71 step 2), so archives meant to be installed side by side need ids of their own.
+    /// </param>
     internal sealed record SyntheticArchiveOptions(
         int Messages = 3000,
         int Days = 120,
@@ -67,7 +72,8 @@ namespace Chatcheology.Mobile.Synthetic
         bool Memories = false,
         bool NotedDates = false,
         bool YearlyMemories = false,
-        int Captions = 0);
+        int Captions = 0,
+        string? ArchiveId = null);
 
     /// <summary>
     /// Writes a whole portable archive (the current format, or version 2 with noted dates) of invented conversation through
@@ -90,7 +96,7 @@ namespace Chatcheology.Mobile.Synthetic
 
         internal static readonly DateOnly FirstDay = new(2025, 1, 6);
 
-        /// <summary>The invented archive id every synthetic version 4 archive carries (CH-71).</summary>
+        /// <summary>The invented archive id a synthetic version 4 archive carries unless its options name another (CH-71).</summary>
         internal const string ArchiveId = "7c0e5a92-1d4b-4f38-a6e7-b39d2c81f450";
 
         /// <summary>The invented captions, used in turn (CH-71): a short line, one with an address, one on two lines.</summary>
@@ -174,7 +180,7 @@ namespace Chatcheology.Mobile.Synthetic
                 SourceExportSha256 = string.Empty,
                 TimeZoneID = string.Empty,
                 LocalParticipantID = Local,
-                ArchiveId = version >= ArchiveFormat.FirstVersionWithCaptionsAndArchiveId ? ArchiveId : null,
+                ArchiveId = version >= ArchiveFormat.FirstVersionWithCaptionsAndArchiveId ? options.ArchiveId ?? ArchiveId : null,
             });
 
             writer.WriteParticipant(new ArchiveParticipant { ParticipantID = Local, DisplayName = "Alex", IsLocal = true });

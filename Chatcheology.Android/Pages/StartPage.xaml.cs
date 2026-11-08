@@ -337,6 +337,26 @@ namespace Chatcheology.Android.Pages
         {
             Status.Text = "Writing the synthetic archive…";
 
+            // CH-71 step 2: each option has its own archive id; a second install of the same option would put two
+            // archives with one id side by side, which makes a later refresh ambiguous. Remove the first one instead.
+            var archiveId = options.ArchiveId ?? SyntheticArchive.ArchiveId;
+            bool present;
+
+            try
+            {
+                present = await Task.Run(() => _state.Library.ReadIdentities().Any(identity => identity.ArchiveId == archiveId));
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                present = false;
+            }
+
+            if (present)
+            {
+                Status.Text = "This synthetic archive is already installed. Remove it first to install it again.";
+                return;
+            }
+
             var (outcome, seconds) = await Task.Run(() =>
             {
                 var watch = Stopwatch.StartNew();

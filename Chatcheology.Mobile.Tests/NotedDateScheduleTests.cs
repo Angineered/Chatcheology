@@ -59,7 +59,7 @@ namespace Chatcheology.Mobile.Tests
                 var late = NotedDateSchedule.Next([archive], Nine, now)!;
                 Assert.Equal(today, late.Day);
                 Assert.Equal(now + NotedDateSchedule.CatchUpDelay, late.LocalMoment);
-                Assert.Equal("a", late.Due.Single().ArchiveId);
+                Assert.Equal("a", late.Due.Single().InstallId);
             }
 
             // Posted on an earlier day only: still today.
@@ -72,7 +72,7 @@ namespace Chatcheology.Mobile.Tests
             var other = Archive("b", Date("2", "Other", 6, 1));
             var mixed = NotedDateSchedule.Next([Posted(archive, today), other], Nine, At(2026, 6, 1, 10, 0))!;
             Assert.Equal(At(2026, 6, 1, 10, 1), mixed.LocalMoment);
-            Assert.Equal(["b"], mixed.Due.Select(d => d.ArchiveId).ToList());
+            Assert.Equal(["b"], mixed.Due.Select(d => d.InstallId).ToList());
 
             // Nothing due today: the next day with one, at the time.
             Assert.Equal(At(2027, 6, 1, 9, 0), NotedDateSchedule.Next([Posted(archive, today), Posted(other, today)], Nine, At(2026, 6, 1, 10, 0))!.LocalMoment);
@@ -159,8 +159,8 @@ namespace Chatcheology.Mobile.Tests
                 Archive("one", Date("1", "First", 6, 1)) with { PostedThrough = settings.GetNotedDatesPostedThrough("one") },
                 Archive("two", Date("2", "Second", 6, 1)) with { PostedThrough = settings.GetNotedDatesPostedThrough("two") },
             ];
-            Assert.Equal(["two"], NotedDateSchedule.DueOn(archives, new DateOnly(2026, 6, 1)).Select(d => d.ArchiveId).ToList());
-            Assert.Equal(["one", "two"], NotedDateSchedule.DueOn(archives, new DateOnly(2027, 6, 1)).Select(d => d.ArchiveId).ToList());
+            Assert.Equal(["two"], NotedDateSchedule.DueOn(archives, new DateOnly(2026, 6, 1)).Select(d => d.InstallId).ToList());
+            Assert.Equal(["one", "two"], NotedDateSchedule.DueOn(archives, new DateOnly(2027, 6, 1)).Select(d => d.InstallId).ToList());
 
             store.Values["archive.one.notedDatesPosted"] = "not a day";
             Assert.Null(settings.GetNotedDatesPostedThrough("one"));
@@ -184,7 +184,7 @@ namespace Chatcheology.Mobile.Tests
 
             var next = NotedDateSchedule.Next(archives, Nine, At(2026, 5, 1))!;
             Assert.Equal(new DateOnly(2026, 5, 6), next.Day);
-            Assert.Equal("a", next.Due.Single().ArchiveId);
+            Assert.Equal("a", next.Due.Single().InstallId);
 
             // Late on 5 May: nothing due today, so no catch-up; 6 May at the time.
             Assert.Equal(At(2026, 5, 6, 9, 0), NotedDateSchedule.Next(archives, Nine, At(2026, 5, 5, 12, 0))!.LocalMoment);
@@ -207,7 +207,7 @@ namespace Chatcheology.Mobile.Tests
 
             var due = NotedDateSchedule.Next(archives, Nine, At(2026, 8, 1))!.Due;
 
-            Assert.Equal(["one", "two"], due.Select(d => d.ArchiveId).ToList());
+            Assert.Equal(["one", "two"], due.Select(d => d.InstallId).ToList());
             Assert.Equal([2, 1], due.Select(d => d.Count).ToList());
             Assert.Equal(["2 noted dates today", "A noted date today"], due.Select(d => d.Text).ToList());
             Assert.Equal("hash-two", due[1].ContentsSha256);
@@ -320,7 +320,7 @@ namespace Chatcheology.Mobile.Tests
 
             Assert.Equal(2, archives.Count);
             var read = archives.Single(a => a.ContentsSha256 == firstHash);
-            Assert.Equal(Path.GetFileName(first), read.ArchiveId);
+            Assert.Equal(Path.GetFileName(first), read.InstallId);
             Assert.Equal(2, read.Dates.Count);
             Assert.Equal(["Gifted one"], read.Notifying.Select(d => d.Title).Order().ToList());
 
