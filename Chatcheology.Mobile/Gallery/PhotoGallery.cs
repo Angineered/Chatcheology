@@ -60,7 +60,9 @@ namespace Chatcheology.Mobile.Gallery
     /// message the last attachment first. Chat order decides, never the stored times, so a month whose
     /// photos are interrupted by another month's in chat order gets a second heading rather than being
     /// re-sorted.</para>
-    /// <para>Built once, in the background, from the whole conversation; kept in memory for the session.</para>
+    /// <para>Built once, in the background, newest months first (<see cref="PhotoGalleryLoad"/>, CH-66), and kept
+    /// in memory for the session. <see cref="Build(IEnumerable{ArchivePage}, ConversationTimeline, CultureInfo?, CancellationToken)"/>
+    /// builds it in one go: the result the batched load must equal.</para>
     /// </remarks>
     public sealed class PhotoGallery
     {
@@ -83,7 +85,33 @@ namespace Chatcheology.Mobile.Gallery
         public bool IsEmpty => Photos.Count == 0;
 
         /// <summary>
-        /// Builds the gallery from every page of the conversation, with <paramref name="timeline"/>'s rules
+        /// The whole gallery from its batches (<see cref="PhotoGalleryLoad"/>), in order. Each batch ends on the
+        /// last photo under a month heading, so the gallery's months are the batches' months, one after another.
+        /// </summary>
+        /// <exception cref="ArgumentException">A batch does not start where the one before it ended.</exception>
+        public static PhotoGallery FromBatches(IEnumerable<GalleryBatch> batches)
+        {
+            ArgumentNullException.ThrowIfNull(batches);
+
+            var photos = new List<AttachmentCard>();
+            var months = new List<GalleryMonth>();
+
+            foreach (var batch in batches)
+            {
+                if (batch.FirstIndex != photos.Count)
+                {
+                    throw new ArgumentException("The batches are not consecutive.", nameof(batches));
+                }
+
+                photos.AddRange(batch.Photos);
+                months.AddRange(batch.Months);
+            }
+
+            return new PhotoGallery(photos, months);
+        }
+
+        /// <summary>
+        /// Builds the gallery from every page of the conversation at once, with <paramref name="timeline"/>'s rules
         /// for the cards (its reader is used for the media paths only; nothing is loaded into it).
         /// </summary>
         public static PhotoGallery Build(
@@ -146,10 +174,19 @@ namespace Chatcheology.Mobile.Gallery
         {
             ArgumentOutOfRangeException.ThrowIfNegativeOrZero(columns);
 
-            var rows = new List<GalleryRow>();
-            var index = 0;
+            return RowsOf(Months, 0, columns);
+        }
 
-            foreach (var month in Months)
+        /// <summary>
+        /// The rows of <paramref name="months"/>, whose first photo is photo <paramref name="firstIndex"/> of the
+        /// whole gallery.
+        /// </summary>
+        internal static List<GalleryRow> RowsOf(IEnumerable<GalleryMonth> months, int firstIndex, int columns)
+        {
+            var rows = new List<GalleryRow>();
+            var index = firstIndex;
+
+            foreach (var month in months)
             {
                 rows.Add(new GalleryHeaderRow(month.Title));
 
@@ -175,7 +212,7 @@ namespace Chatcheology.Mobile.Gallery
             }
         }
 
-        private static List<GalleryMonth> Group(IReadOnlyList<AttachmentCard> photos, CultureInfo culture)
+        internal static List<GalleryMonth> Group(IReadOnlyList<AttachmentCard> photos, CultureInfo culture)
         {
             var months = new List<GalleryMonth>();
             var run = new List<AttachmentCard>();

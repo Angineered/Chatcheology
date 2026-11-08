@@ -26,7 +26,14 @@ namespace Chatcheology.Mobile.Tests
             using var reader = ArchiveReader.Open(_folder.Path);
             var timeline = new ConversationTimeline(reader, ArchiveBuilder.Local);
 
-            return PhotoGallery.Build(reader.ReadAllPages(), timeline, English);
+            var gallery = PhotoGallery.Build(reader.ReadAllPages(), timeline, English);
+
+            // CH-66: the batched load, newest first in batches of one photo or more, gives the same gallery.
+            var batched = PhotoGallery.FromBatches(
+                PhotoGalleryLoad.Batches(PhotoGalleryLoad.ReadPagesNewestFirst(reader), timeline, English, 1, 1));
+            GalleryLoadTests.AssertSameGallery(gallery, batched);
+
+            return gallery;
         }
 
         private static List<long> Ids(PhotoGallery gallery) => gallery.Photos.Select(photo => photo.AttachmentID).ToList();
