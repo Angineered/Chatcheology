@@ -4,7 +4,7 @@ namespace Chatcheology.Android.Controls
 {
     /// <summary>
     /// One attachment in the conversation: a picture at its final size, or a card with a heading, plus
-    /// the low-quality label or note when one applies. Tapping a picture shows it full screen; tapping a
+    /// the low-quality label when one applies. Tapping a picture shows it full screen; tapping a
     /// restored file (or a picture that would not decode) opens it in another app.
     /// </summary>
     /// <remarks>
