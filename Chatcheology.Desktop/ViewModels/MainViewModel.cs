@@ -1425,8 +1425,10 @@ namespace Chatcheology.Desktop.ViewModels
                         ? copyIDs.Count
                         : 0;
 
+                    loaded.Captions.TryGetValue(attachment.AttachmentID, out var caption);
+
                     attachments.Add(
-                        new AttachmentViewModel(attachment, state, media, fact, copies)
+                        new AttachmentViewModel(attachment, state, media, fact, copies, caption?.CaptionText)
                         {
                             ShowLowQualityCopies = showLowQualityCopies,
                         });

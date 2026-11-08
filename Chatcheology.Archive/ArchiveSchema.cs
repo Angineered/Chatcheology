@@ -18,7 +18,9 @@ namespace Chatcheology.Archive
     /// <para>Version 2 differs from version 1 in two ways only: <c>Message</c> gains <c>Source</c>,
     /// and the six memory tables are added. Every version 1 table and meaning is otherwise the
     /// same. Version 3 (CH-53) differs from version 2 in two ways only: <c>Entry</c> gains
-    /// <c>EveryYear</c>, and there is no <c>NotedDate</c> table.</para>
+    /// <c>EveryYear</c>, and there is no <c>NotedDate</c> table. Version 4 (CH-71) differs from version 3 in three
+    /// ways only: <c>Attachment</c> gains <c>Caption</c>, <c>Message.Source</c> also allows <c>Msgstore</c>, and the
+    /// <c>ArchiveId</c> info row is required (an info row, so no table changes for it).</para>
     /// </remarks>
     internal static class ArchiveSchema
     {
@@ -26,9 +28,10 @@ namespace Chatcheology.Archive
         /// <exception cref="ArgumentOutOfRangeException">Not a version this build knows.</exception>
         internal static IReadOnlyList<string> StatementsOf(int formatVersion) => formatVersion switch
         {
-            1 => Statements(MessageV1),
-            2 => [.. Statements(MessageV2), .. MemoryStatements(2)],
-            3 => [.. Statements(MessageV2), .. MemoryStatements(3)],
+            1 => Statements(MessageV1, AttachmentV1),
+            2 => [.. Statements(MessageV2, AttachmentV1), .. MemoryStatements(2)],
+            3 => [.. Statements(MessageV2, AttachmentV1), .. MemoryStatements(3)],
+            4 => [.. Statements(MessageV4, AttachmentV4), .. MemoryStatements(4)],
             _ => throw new ArgumentOutOfRangeException(
                 nameof(formatVersion), formatVersion, "Not a format version this build knows."),
         };
@@ -98,13 +101,128 @@ namespace Chatcheology.Archive
             );
             """;
 
+        /// <summary>
+        /// Version 4's <c>Message</c> table (CH-71): version 2's, with the source <c>Msgstore</c> allowed too (a
+        /// message read straight from WhatsApp's own message store; produced from CH-71 step 3). A <c>Msgstore</c>
+        /// message follows the same rules as a <c>Workspace</c> one: it may carry a forwarded fact, and null means
+        /// "not known". Only an older export's message never has one.
+        /// </summary>
+        private const string MessageV4 =
+            """
+            CREATE TABLE Message (
+                MessageID           INTEGER PRIMARY KEY,
+                SequenceNumber      INTEGER NOT NULL,
+                DateTimeLocal       TEXT NOT NULL,
+                Kind                TEXT NOT NULL,
+                SenderParticipantID INTEGER NULL,
+                Text                TEXT NOT NULL,
+                IsForwarded         INTEGER NULL,
+                ForwardScore        INTEGER NULL,
+                Source              TEXT NOT NULL,
+
+                UNIQUE (SequenceNumber),
+
+                CHECK (SequenceNumber > 0),
+                CHECK (length(DateTimeLocal) = 19),
+                CHECK (Kind IN ('User', 'System')),
+                CHECK (
+                    (Kind = 'User' AND SenderParticipantID IS NOT NULL)
+                    OR (Kind = 'System' AND SenderParticipantID IS NULL)
+                ),
+                CHECK (IsForwarded IS NULL OR IsForwarded IN (0, 1)),
+                CHECK (Source IN ('Workspace', 'Export', 'Msgstore')),
+                CHECK (Source <> 'Export' OR (IsForwarded IS NULL AND ForwardScore IS NULL)),
+
+                FOREIGN KEY (SenderParticipantID) REFERENCES Participant (ParticipantID)
+                    DEFERRABLE INITIALLY DEFERRED
+            );
+            """;
+
+        /// <summary>The <c>Attachment</c> table of versions 1 to 3.</summary>
+        private const string AttachmentV1 =
+            """
+            CREATE TABLE Attachment (
+                AttachmentID                 INTEGER PRIMARY KEY,
+                MessageID                    INTEGER NOT NULL,
+                Ordinal                      INTEGER NOT NULL,
+                State                        TEXT NOT NULL,
+                MediaSha256                  TEXT NULL,
+                OriginalFileName             TEXT NULL,
+                IsForwarded                  INTEGER NULL,
+                ForwardScore                 INTEGER NULL,
+                LowQualityCopyOfAttachmentID INTEGER NULL,
+
+                UNIQUE (MessageID, Ordinal),
+
+                CHECK (Ordinal > 0),
+                CHECK (State IN ('Restored', 'Missing', 'Unmatched')),
+                CHECK (
+                    (State = 'Restored' AND MediaSha256 IS NOT NULL AND OriginalFileName IS NOT NULL)
+                    OR (State <> 'Restored' AND MediaSha256 IS NULL AND OriginalFileName IS NULL)
+                ),
+                CHECK (IsForwarded IS NULL OR IsForwarded IN (0, 1)),
+                CHECK (LowQualityCopyOfAttachmentID IS NULL
+                    OR LowQualityCopyOfAttachmentID <> AttachmentID),
+
+                FOREIGN KEY (MessageID) REFERENCES Message (MessageID)
+                    DEFERRABLE INITIALLY DEFERRED,
+                FOREIGN KEY (MediaSha256) REFERENCES Media (Sha256)
+                    DEFERRABLE INITIALLY DEFERRED,
+                FOREIGN KEY (LowQualityCopyOfAttachmentID) REFERENCES Attachment (AttachmentID)
+                    DEFERRABLE INITIALLY DEFERRED
+            );
+            """;
+
+        /// <summary>
+        /// Version 4's <c>Attachment</c> table (CH-71): version 1's, plus <c>Caption</c>, the picture's caption exactly
+        /// as WhatsApp's message store holds it (the workspace's <c>AttachmentCaptionFact</c>), or null when none is
+        /// known. Null means "no caption known", never "no caption". A column, not a table of its own: one attachment
+        /// has at most one caption, it is read with the attachment on every page, and a column needs no join and no
+        /// cross-row check. Any state may carry one: the caption is the sender's text, whether or not the picture was found.
+        /// </summary>
+        private const string AttachmentV4 =
+            """
+            CREATE TABLE Attachment (
+                AttachmentID                 INTEGER PRIMARY KEY,
+                MessageID                    INTEGER NOT NULL,
+                Ordinal                      INTEGER NOT NULL,
+                State                        TEXT NOT NULL,
+                MediaSha256                  TEXT NULL,
+                OriginalFileName             TEXT NULL,
+                IsForwarded                  INTEGER NULL,
+                ForwardScore                 INTEGER NULL,
+                LowQualityCopyOfAttachmentID INTEGER NULL,
+                Caption                      TEXT NULL,
+
+                UNIQUE (MessageID, Ordinal),
+
+                CHECK (Ordinal > 0),
+                CHECK (State IN ('Restored', 'Missing', 'Unmatched')),
+                CHECK (
+                    (State = 'Restored' AND MediaSha256 IS NOT NULL AND OriginalFileName IS NOT NULL)
+                    OR (State <> 'Restored' AND MediaSha256 IS NULL AND OriginalFileName IS NULL)
+                ),
+                CHECK (IsForwarded IS NULL OR IsForwarded IN (0, 1)),
+                CHECK (LowQualityCopyOfAttachmentID IS NULL
+                    OR LowQualityCopyOfAttachmentID <> AttachmentID),
+                CHECK (Caption IS NULL OR length(Caption) > 0),
+
+                FOREIGN KEY (MessageID) REFERENCES Message (MessageID)
+                    DEFERRABLE INITIALLY DEFERRED,
+                FOREIGN KEY (MediaSha256) REFERENCES Media (Sha256)
+                    DEFERRABLE INITIALLY DEFERRED,
+                FOREIGN KEY (LowQualityCopyOfAttachmentID) REFERENCES Attachment (AttachmentID)
+                    DEFERRABLE INITIALLY DEFERRED
+            );
+            """;
+
         private const string LocalGlob =
             "'[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]'";
 
         private const string UtcGlob =
             "'[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z'";
 
-        private static string[] Statements(string message) =>
+        private static string[] Statements(string message, string attachment) =>
         [
             """
             CREATE TABLE ArchiveInfo (
@@ -146,38 +264,7 @@ namespace Chatcheology.Archive
             );
             """,
 
-            """
-            CREATE TABLE Attachment (
-                AttachmentID                 INTEGER PRIMARY KEY,
-                MessageID                    INTEGER NOT NULL,
-                Ordinal                      INTEGER NOT NULL,
-                State                        TEXT NOT NULL,
-                MediaSha256                  TEXT NULL,
-                OriginalFileName             TEXT NULL,
-                IsForwarded                  INTEGER NULL,
-                ForwardScore                 INTEGER NULL,
-                LowQualityCopyOfAttachmentID INTEGER NULL,
-
-                UNIQUE (MessageID, Ordinal),
-
-                CHECK (Ordinal > 0),
-                CHECK (State IN ('Restored', 'Missing', 'Unmatched')),
-                CHECK (
-                    (State = 'Restored' AND MediaSha256 IS NOT NULL AND OriginalFileName IS NOT NULL)
-                    OR (State <> 'Restored' AND MediaSha256 IS NULL AND OriginalFileName IS NULL)
-                ),
-                CHECK (IsForwarded IS NULL OR IsForwarded IN (0, 1)),
-                CHECK (LowQualityCopyOfAttachmentID IS NULL
-                    OR LowQualityCopyOfAttachmentID <> AttachmentID),
-
-                FOREIGN KEY (MessageID) REFERENCES Message (MessageID)
-                    DEFERRABLE INITIALLY DEFERRED,
-                FOREIGN KEY (MediaSha256) REFERENCES Media (Sha256)
-                    DEFERRABLE INITIALLY DEFERRED,
-                FOREIGN KEY (LowQualityCopyOfAttachmentID) REFERENCES Attachment (AttachmentID)
-                    DEFERRABLE INITIALLY DEFERRED
-            );
-            """,
+            attachment,
 
             """
             CREATE TABLE AttachmentBasis (

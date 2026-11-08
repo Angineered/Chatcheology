@@ -140,6 +140,11 @@ keeps the stars, so the same archive imported again has them back (a re-export s
 (CH-40) are kept in the app's cache folder (`video-frames/`, named by media hash; Android may clear it
 and they are read again). Nothing is ever written inside an installed archive.
 
+Archive format 4 (CH-71) adds picture captions and a fixed archive id; the app still reads formats 1 to 3.
+A caption shows under its picture in the chat (addresses tappable, as in message text) and at the bottom of
+the full-screen viewer, where a tap hides it. Search finds a message by the caption of any picture its bubble
+draws. The archive id is read and validated only; settings are still keyed by the contents hash.
+
 The app logs timings only (tag `Chatcheology`: milliseconds and counts), never message text,
 names, file names or paths.
 
@@ -147,7 +152,7 @@ names, file names or paths.
 
 A Debug build compiles in the synthetic archive generator from
 `Chatcheology.Mobile.Tests\Synthetic` and shows development tools on the start page (install a
-synthetic archive, validate) and in the conversation page's overflow menu ("Top", "Load earlier",
+synthetic archive in format 4 with a few picture captions, validate) and in the conversation page's overflow menu ("Top", "Load earlier",
 with the scroll log in `adb logcat -s ChatcheologyTrial`). The synthetic memory "Invented seaside
 weekend" has a sunset photo that is a JPEG with an invented camera location and a ferry photo that is
 two JPEGs in one file with the location only in the second, for checking that Share removes it (CH-59). A Release build contains none of it. A

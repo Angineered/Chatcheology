@@ -584,7 +584,8 @@ namespace Chatcheology.Desktop.ViewModels
                     $"{Count(counts.Messages, "message")} · {Count(counts.Participants, "participant")} · " +
                     $"{Count(counts.Attachments, "attachment")}: {Text(counts.Restored)} Restored, " +
                     $"{Text(counts.Missing)} Missing, {Text(counts.Unmatched)} Unmatched · " +
-                    $"{Count(counts.MediaFiles, "media file")}");
+                    $"{Count(counts.MediaFiles, "media file")}" +
+                    (counts.Captions > 0 ? $" · {Count(counts.Captions, "caption")}" : string.Empty));
             }
             else if (report.Validation is not null)
             {

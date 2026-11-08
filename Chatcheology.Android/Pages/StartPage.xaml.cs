@@ -298,7 +298,7 @@ namespace Chatcheology.Android.Pages
         {
             DevelopmentTools.Children.Add(new Label { Text = "Development (Debug build only)", FontAttributes = FontAttributes.Bold });
 
-            // Every button writes the current archive format with the three invented noted dates (CH-47); the
+            // Every button writes the current archive format (version 4, with a few picture captions, CH-71); the
             // options are SyntheticDebugInstalls, which the tests check.
             var install = new Button { Text = "Install synthetic archive" };
             install.Clicked += async (_, _) => await InstallSyntheticAsync(SyntheticDebugInstalls.Standard);

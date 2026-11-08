@@ -64,5 +64,12 @@ namespace Chatcheology.Archive
 
         /// <summary>An older chat export, shown before the workspace's conversation.</summary>
         Export,
+
+        /// <summary>
+        /// Format version 4 (CH-71): a message read straight from WhatsApp's own message store, shown after the
+        /// workspace's conversation (written from CH-71 step 3). Same rules as <see cref="Workspace"/>: it may carry
+        /// a forwarded fact, and null means "not known".
+        /// </summary>
+        Msgstore,
     }
 }

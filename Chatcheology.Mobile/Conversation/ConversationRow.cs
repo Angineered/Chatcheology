@@ -209,6 +209,37 @@ namespace Chatcheology.Mobile.Conversation
         public const string FileAttachedSuffix = " (file attached)";
 
         /// <summary>
+        /// What search finds in a message (CH-71): <see cref="PresentedText"/>, then the caption of each attachment a
+        /// bubble draws (hidden low-quality copies left out, as the bubble leaves them out), one per line. Empty when
+        /// none of them has anything.
+        /// </summary>
+        /// <param name="message">The message.</param>
+        /// <param name="isShown">Whether an attachment's card is drawn (<see cref="LowQualityIndex.IsShown"/>).</param>
+        public static string SearchText(ArchiveMessage message, Func<ArchiveAttachment, bool> isShown)
+        {
+            ArgumentNullException.ThrowIfNull(message);
+            ArgumentNullException.ThrowIfNull(isShown);
+
+            var parts = new List<string>(1 + message.Attachments.Count);
+            var text = PresentedText(message);
+
+            if (text.Length > 0)
+            {
+                parts.Add(text);
+            }
+
+            foreach (var attachment in message.Attachments)
+            {
+                if (AttachmentCard.CaptionOf(attachment) is { Length: > 0 } caption && isShown(attachment))
+                {
+                    parts.Add(caption);
+                }
+            }
+
+            return string.Join('\n', parts);
+        }
+
+        /// <summary>
         /// The text a bubble shows (and search finds): empty for the media placeholder; for a user message
         /// with attachments whose first line is an older export's <c>NAME (file attached)</c> line naming one
         /// of them, the lines after it (the caption), or empty when there are none (CH-33). Otherwise the
@@ -386,6 +417,33 @@ namespace Chatcheology.Mobile.Conversation
             IsLowQualityCopy = attachment.LowQualityCopyOfAttachmentID is not null;
             IsShown = lowQuality.IsShown(attachment);
             HiddenCopies = lowQuality.HiddenCopiesOf(attachment.AttachmentID);
+
+            Caption = CaptionOf(attachment);
+            CaptionSpans = LinkScanner.Scan(Caption);
+        }
+
+        /// <summary>
+        /// The caption under the card and at the bottom of the full-screen viewer (CH-71): the archive's caption
+        /// exactly as stored, or empty when there is none or it is only spaces. Shown whatever the card's state: it
+        /// is the sender's text, whether or not the picture was found.
+        /// </summary>
+        public string Caption { get; }
+
+        /// <summary>The caption split into plain runs and tappable addresses, as message text is; joined, it is <see cref="Caption"/>.</summary>
+        public IReadOnlyList<TextSpan> CaptionSpans { get; }
+
+        /// <summary>Whether there is a caption to show.</summary>
+        public bool HasCaption => Caption.Length > 0;
+
+        /// <summary>Whether the caption holds an address to tap.</summary>
+        public bool CaptionHasLinks => CaptionSpans.Any(span => span.Kind != TextSpanKind.Text);
+
+        /// <summary>The caption a card shows for <paramref name="attachment"/>: as stored, or empty for none or only spaces.</summary>
+        public static string CaptionOf(ArchiveAttachment attachment)
+        {
+            ArgumentNullException.ThrowIfNull(attachment);
+
+            return string.IsNullOrWhiteSpace(attachment.Caption) ? string.Empty : attachment.Caption;
         }
 
         /// <summary>The attachment.</summary>

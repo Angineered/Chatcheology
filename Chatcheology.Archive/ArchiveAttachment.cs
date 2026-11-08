@@ -62,6 +62,12 @@ namespace Chatcheology.Archive
         public required ArchiveAttachmentBasis? Basis { get; init; }
 
         /// <summary>
+        /// Format version 4 (CH-71): the picture's caption exactly as WhatsApp's message store holds it, never empty,
+        /// or <see langword="null"/> when none is known (always below version 4). Null means "no caption known".
+        /// </summary>
+        public string? Caption { get; init; }
+
+        /// <summary>
         /// The media file's path inside the archive folder (<c>/</c> separated), or
         /// <see langword="null"/> when not restored.
         /// </summary>

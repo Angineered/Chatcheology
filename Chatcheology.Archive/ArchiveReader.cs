@@ -26,6 +26,9 @@ namespace Chatcheology.Archive
     /// <para><strong>Versions 1 and 2.</strong> A version 1 archive reads as version 2 with every
     /// message's source <see cref="ArchiveMessageSource.Workspace"/>, no export periods and no
     /// memories.</para>
+    /// <para><strong>Version 4</strong> (CH-71): every attachment's caption (null below version 4), the archive id
+    /// (<see cref="ArchiveInfo.ArchiveId"/>, required and checked when the archive is opened), and the message source
+    /// <c>Msgstore</c>, refused as damage below version 4.</para>
     /// <para>This reader opens archive files only; it does not check them against
     /// <see cref="ArchiveFormat.ContentsFileName"/>. <see cref="ArchiveContents.Check"/> does that.</para>
     /// </remarks>
@@ -50,11 +53,22 @@ namespace Chatcheology.Archive
             // A version 1 archive has no Source column: every message in it is a workspace message.
             _messageColumns = info.FormatVersion >= 2 ? MessageColumnsV2 : MessageColumnsV1;
 
+            // Before version 4 no attachment has a caption (CH-71).
+            _captionColumn = HasCaptions ? "a.Caption" : "NULL";
+
             // Before version 3 no entry is yearly (CH-53).
             _entryColumns = EntryColumnsWith(HasEveryYear ? "EveryYear" : "0");
         }
 
         private readonly string _entryColumns;
+
+        private readonly string _captionColumn;
+
+        /// <summary>
+        /// Whether attachments carry a caption and the archive an id (CH-71: format version 4 and later). Below
+        /// version 4 every caption and the archive id read as <see langword="null"/>.
+        /// </summary>
+        public bool HasCaptions => Info.FormatVersion >= ArchiveFormat.FirstVersionWithCaptionsAndArchiveId;
 
         /// <summary>Whether entries carry <c>EveryYear</c> (CH-53: format version 3 and later).</summary>
         public bool HasEveryYear => Info.FormatVersion >= ArchiveFormat.FirstVersionWithEveryYear;
@@ -1145,7 +1159,7 @@ namespace Chatcheology.Archive
             int? ForwardScore,
             ArchiveMessageSource Source);
 
-        private static List<MessageRow> ReadMessageRows(SqliteCommand command)
+        private List<MessageRow> ReadMessageRows(SqliteCommand command)
         {
             var rows = new List<MessageRow>();
 
@@ -1162,7 +1176,7 @@ namespace Chatcheology.Archive
                     Text(reader, 5),
                     NullableInteger(reader, 6) is { } forwarded ? forwarded == 1 : null,
                     NullableInt32(reader, 7),
-                    ParseSource(Text(reader, 8))));
+                    ParseSource(Text(reader, 8), HasMsgstoreSource)));
             }
 
             return rows;
@@ -1227,10 +1241,10 @@ namespace Chatcheology.Archive
         {
             using var command = _connection.CreateCommand();
             command.CommandText =
-                """
+                $"""
                 SELECT a.AttachmentID, a.MessageID, a.Ordinal, a.State, a.MediaSha256, a.OriginalFileName,
                        a.IsForwarded, a.ForwardScore, a.LowQualityCopyOfAttachmentID,
-                       b.BasisType, b.BasisText, b.Actor, b.ConfirmedUtc
+                       b.BasisType, b.BasisText, b.Actor, b.ConfirmedUtc, {_captionColumn}
                 FROM Attachment AS a
                 LEFT JOIN AttachmentBasis AS b ON b.AttachmentID = a.AttachmentID
                 WHERE a.MessageID IN (SELECT value FROM json_each($ids))
@@ -1264,7 +1278,14 @@ namespace Chatcheology.Archive
                             Actor = NullableText(reader, 11),
                             ConfirmedUtc = ArchiveFormat.ParseUtc(Text(reader, 12)),
                         },
+                    Caption = NullableText(reader, 13),
                 };
+
+                // The schema forbids an empty caption; a damaged one is refused, never shown as a blank line.
+                if (attachment.Caption is { Length: 0 })
+                {
+                    throw new ArchiveFormatException("An attachment in the archive has an empty caption.");
+                }
 
                 // A hash the format cannot name a file by is damage, not an attachment to show.
                 if (attachment.MediaSha256 is { } sha && !ArchiveFormat.IsSha256(sha))
@@ -1362,7 +1383,26 @@ namespace Chatcheology.Archive
                     ? local
                     : throw new ArchiveFormatException("The archive's local participant is not a number."),
                 ExportPeriods = ReadExportPeriods(values),
+                ArchiveId = ReadArchiveId(values),
             };
+        }
+
+        /// <summary>
+        /// The archive id (CH-71): required from version 4, and then it must be in the format's spelling; below
+        /// version 4 it is not read, whatever the info table holds.
+        /// </summary>
+        private static string? ReadArchiveId(Dictionary<string, string> values)
+        {
+            if (!values.TryGetValue(ArchiveInfo.Keys.FormatVersion, out var text)
+                || !int.TryParse(text, NumberStyles.None, CultureInfo.InvariantCulture, out var version)
+                || version < ArchiveFormat.FirstVersionWithCaptionsAndArchiveId)
+            {
+                return null;
+            }
+
+            return values.TryGetValue(ArchiveInfo.Keys.ArchiveId, out var id) && ArchiveFormat.IsArchiveId(id)
+                ? id
+                : throw new ArchiveFormatException("The archive has no valid archive id, which its format version requires.");
         }
 
         /// <summary>
@@ -1416,6 +1456,16 @@ namespace Chatcheology.Archive
                 }
             }
 
+            if (version >= ArchiveFormat.FirstVersionWithCaptionsAndArchiveId)
+            {
+                command.CommandText = "SELECT COUNT(*) FROM pragma_table_info('Attachment') WHERE name = 'Caption';";
+
+                if (Convert.ToInt64(command.ExecuteScalar(), CultureInfo.InvariantCulture) != 1)
+                {
+                    throw new ArchiveFormatException("The archive database is missing one of the format's columns.");
+                }
+            }
+
             return tables;
         }
 
@@ -1458,10 +1508,14 @@ namespace Chatcheology.Archive
             _ => throw new ArchiveFormatException("A message in the archive has a kind the format does not define."),
         };
 
-        private static ArchiveMessageSource ParseSource(string text) => text switch
+        /// <summary>Whether <c>Msgstore</c> is a source of this archive's version (CH-71: version 4 and later).</summary>
+        private bool HasMsgstoreSource => HasCaptions;
+
+        private static ArchiveMessageSource ParseSource(string text, bool msgstoreAllowed) => text switch
         {
             "Workspace" => ArchiveMessageSource.Workspace,
             "Export" => ArchiveMessageSource.Export,
+            "Msgstore" when msgstoreAllowed => ArchiveMessageSource.Msgstore,
             _ => throw new ArchiveFormatException("A message in the archive has a source the format does not define."),
         };
 

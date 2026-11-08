@@ -15,6 +15,7 @@ namespace Chatcheology.Mobile.Tests.Support
     /// <param name="LowQualityOf">The full copy this is the low-quality copy of, or none.</param>
     /// <param name="IsForwarded">The attachment's forwarded fact.</param>
     /// <param name="ForwardScore">The attachment's forward score.</param>
+    /// <param name="Caption">The picture's caption (CH-71, version 4), or none.</param>
     internal sealed record AttachmentSpec(
         long Id,
         ArchiveAttachmentState State = ArchiveAttachmentState.Restored,
@@ -25,7 +26,8 @@ namespace Chatcheology.Mobile.Tests.Support
         int? Height = null,
         long? LowQualityOf = null,
         bool? IsForwarded = null,
-        int? ForwardScore = null);
+        int? ForwardScore = null,
+        string? Caption = null);
 
     /// <summary>
     /// Writes a complete, valid v1 archive message by message, with exactly the attachments, links and
@@ -88,6 +90,9 @@ namespace Chatcheology.Mobile.Tests.Support
         internal int Media(params AttachmentSpec[] attachments) =>
             Add("<Media omitted>", Other, null, null, null, attachments);
 
+        /// <summary>The synthetic archive id a version 4 archive carries (CH-71).</summary>
+        internal string ArchiveId { get; set; } = "2c6b8e14-3a5f-4d07-b9e2-71a0c4d58f36";
+
         /// <summary>Version 2 when there are gifted noted dates (only version 2 carries them, CH-53), otherwise the current one.</summary>
         private int Version => _notedDates.Count > 0 ? ArchiveFormat.NotedDatesFormatVersion : ArchiveFormat.FormatVersion;
 
@@ -108,6 +113,7 @@ namespace Chatcheology.Mobile.Tests.Support
                 SourceExportSha256 = string.Empty,
                 TimeZoneID = string.Empty,
                 LocalParticipantID = Local,
+                ArchiveId = Version >= ArchiveFormat.FirstVersionWithCaptionsAndArchiveId ? ArchiveId : null,
             });
 
             writer.WriteParticipant(new ArchiveParticipant { ParticipantID = Local, DisplayName = "Alex", IsLocal = true });
@@ -175,6 +181,7 @@ namespace Chatcheology.Mobile.Tests.Support
                 IsForwarded = spec.IsForwarded,
                 ForwardScore = spec.ForwardScore,
                 LowQualityCopyOfAttachmentID = spec.LowQualityOf,
+                Caption = spec.Caption,
                 Basis = restored
                     ? new ArchiveAttachmentBasis
                     {

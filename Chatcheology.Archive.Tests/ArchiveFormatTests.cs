@@ -162,7 +162,7 @@ namespace Chatcheology.Archive.Tests
         {
             ArchiveSample.WriteDatabase(_folder.Path);
 
-            Assert.Equal(["3"], ArchiveSample.Rows(Database, "PRAGMA user_version;"));
+            Assert.Equal(["4"], ArchiveSample.Rows(Database, "PRAGMA user_version;"));
             Assert.Equal(["delete"], ArchiveSample.Rows(Database, "PRAGMA journal_mode;"));
             Assert.Equal([Database], Directory.GetFiles(_folder.Path));
         }
@@ -269,7 +269,7 @@ namespace Chatcheology.Archive.Tests
 
             var refusal = Assert.Throws<ArchiveFormatException>(() => ArchiveReader.Open(_folder.Path));
 
-            Assert.Contains("format version 4", refusal.Message, StringComparison.Ordinal);
+            Assert.Contains("format version 5", refusal.Message, StringComparison.Ordinal);
         }
 
         [Fact]
@@ -322,7 +322,7 @@ namespace Chatcheology.Archive.Tests
         [Fact]
         public void Writer_RefusesAnotherFormatVersion()
         {
-            Assert.Throws<InvalidOperationException>(() => ArchiveWriter.Create(Database, ArchiveSample.Info(4)));
+            Assert.Throws<InvalidOperationException>(() => ArchiveWriter.Create(Database, ArchiveSample.Info(5)));
             Assert.Throws<InvalidOperationException>(() => ArchiveWriter.Create(Database, ArchiveSample.Info(0)));
             Assert.False(File.Exists(Database));
         }

@@ -28,15 +28,23 @@ namespace Chatcheology.Archive
         /// <c>ArchiveInfo</c> period per shown older export, and the memory tables; every version 1
         /// meaning is unchanged. Version 3 (CH-53) adds <c>Entry.EveryYear</c> (yearly memories) and drops the
         /// <c>NotedDate</c> table: noted dates became yearly memories. An older viewer refuses a version 3 archive
-        /// instead of reading it as one without anniversaries.
+        /// instead of reading it as one without anniversaries. Version 4 (CH-71) adds <c>Attachment.Caption</c>, the
+        /// required <c>ArchiveId</c> info row, and the message source <c>Msgstore</c>; every version 3 meaning is
+        /// unchanged.
         /// </remarks>
-        public const int FormatVersion = 3;
+        public const int FormatVersion = 4;
 
         /// <summary>The version with noted dates (CH-47), still read and written for tests (CH-53).</summary>
         public const int NotedDatesFormatVersion = 2;
 
         /// <summary>The first version with <c>Entry.EveryYear</c> and without <c>NotedDate</c> (CH-53).</summary>
         public const int FirstVersionWithEveryYear = 3;
+
+        /// <summary>
+        /// The first version with picture captions (<c>Attachment.Caption</c>), a fixed archive id (the
+        /// <c>ArchiveId</c> info row, required) and the message source <c>Msgstore</c> (CH-71).
+        /// </summary>
+        public const int FirstVersionWithCaptionsAndArchiveId = 4;
 
         /// <summary>The lowest format version this build reads (and can still write, for tests).</summary>
         public const int MinimumFormatVersion = 1;
@@ -107,7 +115,7 @@ namespace Chatcheology.Archive
         public static IReadOnlyList<string> TableNamesOf(int formatVersion) => formatVersion switch
         {
             1 => TableNames,
-            2 or 3 => [.. TableNames, .. MemoryTableNames],
+            2 or 3 or 4 => [.. TableNames, .. MemoryTableNames],
             _ => throw new ArgumentOutOfRangeException(nameof(formatVersion), formatVersion, "Not a format version this build knows."),
         };
 
@@ -121,6 +129,19 @@ namespace Chatcheology.Archive
 
         [GeneratedRegex("^[0-9a-f]{64}\\z", RegexOptions.CultureInvariant)]
         private static partial Regex Sha256Pattern();
+
+        [GeneratedRegex("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\z", RegexOptions.CultureInvariant)]
+        private static partial Regex ArchiveIdPattern();
+
+        /// <summary>
+        /// Whether the text is an archive id in the format's spelling (CH-71): a GUID as 36 lower-case characters
+        /// (<c>xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx</c>, hex digits and hyphens), and not the all-zero GUID.
+        /// </summary>
+        public static bool IsArchiveId(string? text) =>
+            text is not null && ArchiveIdPattern().IsMatch(text) && text != Guid.Empty.ToString("D");
+
+        /// <summary>A new archive id in the format's spelling: a random GUID, lower-case, with hyphens.</summary>
+        public static string NewArchiveId() => Guid.NewGuid().ToString("D");
 
         /// <summary>
         /// The name a media payload is stored under: its SHA-256, then the lower-cased extension of

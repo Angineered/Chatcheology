@@ -71,7 +71,8 @@ namespace Chatcheology.Mobile.Tests
         [InlineData(true)]
         public void A_version_three_archive_with_yearly_memories_and_a_version_two_one_with_noted_dates_both_install(bool notedDates)
         {
-            // CH-53: the importer accepts version 3, and a version 2 archive (gifted noted dates) still installs.
+            // CH-53: the importer accepts the current version (4 since CH-71, with yearly memories), and a version 2
+            // archive (gifted noted dates) still installs.
             SyntheticArchive.Write(_source, Small with { YearlyMemories = !notedDates, NotedDates = notedDates });
 
             var result = Import(new FolderSource(_source));
@@ -79,7 +80,7 @@ namespace Chatcheology.Mobile.Tests
             Assert.Equal(ImportOutcome.Installed, result.Outcome);
 
             using var reader = ArchiveReader.Open(Assert.Single(_library.ListInstalled()));
-            Assert.Equal(notedDates ? 2 : 3, reader.Info.FormatVersion);
+            Assert.Equal(notedDates ? 2 : ArchiveFormat.FormatVersion, reader.Info.FormatVersion);
             Assert.Equal(notedDates ? 3 : 0, reader.ReadNotedDates().Count);
             Assert.Equal(notedDates ? 0 : 3, reader.ReadYearlyEntries().Count);
         }
@@ -231,7 +232,7 @@ namespace Chatcheology.Mobile.Tests
         {
             SyntheticArchive.Write(_source, Small);
             var manifest = Path.Combine(_source, ArchiveFormat.ManifestFileName);
-            File.WriteAllText(manifest, File.ReadAllText(manifest).Replace("\"formatVersion\": 3", "\"formatVersion\": 4", StringComparison.Ordinal));
+            File.WriteAllText(manifest, File.ReadAllText(manifest).Replace("\"formatVersion\": 4", "\"formatVersion\": 5", StringComparison.Ordinal));
             Rebuild(_source);
 
             var source = new FolderSource(_source);
@@ -253,7 +254,7 @@ namespace Chatcheology.Mobile.Tests
             {
                 connection.Open();
                 using var command = connection.CreateCommand();
-                command.CommandText = "PRAGMA user_version = 4;";
+                command.CommandText = "PRAGMA user_version = 5;";
                 command.ExecuteNonQuery();
             }
 

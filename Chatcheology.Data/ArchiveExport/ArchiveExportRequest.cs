@@ -77,6 +77,11 @@ namespace Chatcheology.Data.ArchiveExport
         /// <summary>The SHA-256 of the archive's <c>CONTENTS.sha256</c>, lower-case hex.</summary>
         public required string ContentsSha256 { get; init; }
 
+        /// <summary>
+        /// The archive's fixed id (CH-71), the same for every export of the workspace (<see cref="ArchiveIdFile"/>).
+        /// </summary>
+        public string ArchiveId { get; init; } = string.Empty;
+
         /// <summary>Recorded copies skipped because their bytes differ from the recorded hash.</summary>
         public required int DifferentCopies { get; init; }
 

@@ -18,7 +18,11 @@ namespace Chatcheology.Data.ArchiveExport
     /// must be exactly what the caller expects. Only then is anything written.</para>
     /// <para><strong>Read-only on every input.</strong> The workspace is read through
     /// <see cref="ArchiveExportSource"/> on a read-only connection, closed before the first write; the
-    /// media copies are only opened for reading. Nothing is written outside the output folder.</para>
+    /// media copies are only opened for reading. Nothing is written outside the output folder, except the archive id
+    /// file beside the workspace (<see cref="ArchiveIdFile"/>), which the first export that passes every guard
+    /// creates once and every later export only reads.</para>
+    /// <para><strong>Format version 4</strong> (CH-71): each workspace attachment's caption from
+    /// <c>AttachmentCaptionFact</c> (older-export attachments have none), and the workspace's fixed archive id.</para>
     /// <para><strong>A folder at the output path is always complete.</strong> Everything is written
     /// into <c>&lt;output&gt;.partial</c>, which this run proves it owns with a marker file, and which
     /// is renamed only after <c>manifest.json</c> and <c>CONTENTS.sha256</c> are written. On any stop
@@ -182,6 +186,10 @@ namespace Chatcheology.Data.ArchiveExport
 
             cancellationToken.ThrowIfCancellationRequested();
 
+            // CH-71: the workspace's fixed archive id, made on the first export and then kept. A damaged file is
+            // refused here, before the archive folder is begun.
+            var archiveId = ArchiveIdFile.ReadOrCreate(request.WorkspacePath, request.ConversationID);
+
             BeforePartialCreatedForTests?.Invoke(partial);
 
             try
@@ -199,7 +207,7 @@ namespace Chatcheology.Data.ArchiveExport
 
             try
             {
-                return Write(combined, request, partial, output, progress, cancellationToken);
+                return Write(combined, request, archiveId, partial, output, progress, cancellationToken);
             }
             catch (ArchiveExportStoppedException)
             {
@@ -252,6 +260,7 @@ namespace Chatcheology.Data.ArchiveExport
         private ArchiveExportResult Write(
             ArchiveCombinedSource combined,
             ArchiveExportRequest request,
+            string archiveId,
             string partial,
             string output,
             IProgress<ArchiveExportProgress>? progress,
@@ -292,7 +301,7 @@ namespace Chatcheology.Data.ArchiveExport
             var created = new DateTime(now.Ticks - now.Ticks % TimeSpan.TicksPerSecond, DateTimeKind.Utc);
 
             var (counts, linksOutside) = WriteDatabase(
-                combined, request, media.Stored, imageExtensions, created, partial, progress, cancellationToken);
+                combined, request, archiveId, media.Stored, imageExtensions, created, partial, progress, cancellationToken);
 
             // The ownership marker is not part of the archive. From here on a stop still removes the
             // folder: ownership was established when it was created.
@@ -322,6 +331,7 @@ namespace Chatcheology.Data.ArchiveExport
             {
                 Counts = counts,
                 ContentsSha256 = ArchiveHashing.Hex(SHA256.HashData(contents)),
+                ArchiveId = archiveId,
                 DifferentCopies = media.Different,
                 UnreadableCopies = media.Unreadable,
                 FromLaterCopy = media.FromLater,
@@ -336,6 +346,7 @@ namespace Chatcheology.Data.ArchiveExport
         private static (ArchiveCounts Counts, int LinksOutside) WriteDatabase(
             ArchiveCombinedSource combined,
             ArchiveExportRequest request,
+            string archiveId,
             IReadOnlyDictionary<long, string> originalFileNames,
             IReadOnlyDictionary<string, string> imageExtensions,
             DateTime created,
@@ -355,6 +366,7 @@ namespace Chatcheology.Data.ArchiveExport
                 TimeZoneID = source.TimeZoneID,
                 LocalParticipantID = request.LocalParticipantID,
                 ExportPeriods = combined.ExportPeriods,
+                ArchiveId = archiveId,
             };
 
             using var writer = ArchiveWriter.Create(Path.Combine(partial, ArchiveFormat.DatabaseFileName), info);

@@ -20,6 +20,9 @@ namespace Chatcheology.Android.Pages
     /// each one's caption. A memory photo is not an attachment: it has no Star, Info, Show in chat or Open in
     /// another app, and it is not in the Photos gallery. Its Share (CH-59) hands out a copy with the location
     /// removed, never the archive file, and refuses a photo whose location cannot be removed.</para>
+    /// <para>A chat photo with a caption (CH-71) shows it at the bottom, as a memory photo does; a tap hides it for a
+    /// clear view, and moving to another photo shows that one's caption. Opening Info hides the caption, so the two
+    /// panels never cover each other. The caption is never shared.</para>
     /// </remarks>
     internal sealed class ImageViewerPage : ContentPage
     {
@@ -33,6 +36,8 @@ namespace Chatcheology.Android.Pages
         private readonly Border _info;
         private readonly CornerIcon? _star;
         private readonly Label? _caption;
+        private readonly Label? _photoCaption;
+        private readonly Border? _photoCaptionPanel;
         private readonly IReadOnlyList<string>? _shareRoots;
         private bool _leaving;
         private bool _sharing;
@@ -148,6 +153,23 @@ namespace Chatcheology.Android.Pages
             close.Tapped += (_, _) => _info.IsVisible = false;
             _info.GestureRecognizers.Add(close);
 
+            // CH-71: the photo's caption at the bottom, like a memory photo's; a tap hides it.
+            _photoCaption = new Label { FontSize = 14, TextColor = Colors.White, LineBreakMode = LineBreakMode.WordWrap };
+
+            _photoCaptionPanel = new Border
+            {
+                IsVisible = false,
+                BackgroundColor = Color.FromRgba(0, 0, 0, 0.7),
+                StrokeThickness = 0,
+                Padding = new Thickness(16, 12),
+                VerticalOptions = LayoutOptions.End,
+                Content = _photoCaption,
+            };
+
+            var hideCaption = new TapGestureRecognizer();
+            hideCaption.Tapped += (_, _) => _photoCaptionPanel.IsVisible = false;
+            _photoCaptionPanel.GestureRecognizers.Add(hideCaption);
+
             var share = new CornerIcon(CornerGlyph.Share, "Share");
             share.Tapped += async (_, _) => await ShareCurrentAsync();
 
@@ -155,7 +177,16 @@ namespace Chatcheology.Android.Pages
             _star.Tapped += (_, _) => ToggleStar();
 
             var info = new CornerIcon(CornerGlyph.Info, "Info");
-            info.Tapped += (_, _) => _info.IsVisible = !_info.IsVisible;
+            info.Tapped += (_, _) =>
+            {
+                _info.IsVisible = !_info.IsVisible;
+
+                // The two bottom panels never cover each other: Info open hides the caption.
+                if (_info.IsVisible)
+                {
+                    _photoCaptionPanel.IsVisible = false;
+                }
+            };
 
             var corner = new HorizontalStackLayout
             {
@@ -166,7 +197,7 @@ namespace Chatcheology.Android.Pages
                 Children = { share, _star, info },
             };
 
-            Content = new Grid { Children = { _image, _failed, corner, _info } };
+            Content = new Grid { Children = { _image, _failed, corner, _photoCaptionPanel, _info } };
 
             ShowCurrent();
         }
@@ -225,6 +256,10 @@ namespace Chatcheology.Android.Pages
                 : "Photo";
 
             _info.Content = InfoGrid(card.Details);
+
+            // CH-71: each photo's own caption; none while Info is open.
+            _photoCaption!.Text = card.Caption;
+            _photoCaptionPanel!.IsVisible = card.HasCaption && !_info.IsVisible;
             _star!.IsOn = card.IsStarred;
             SemanticProperties.SetDescription(_star, card.IsStarred ? "Unstar" : "Star");
 

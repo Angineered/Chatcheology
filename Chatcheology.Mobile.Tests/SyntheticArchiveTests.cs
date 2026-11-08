@@ -25,7 +25,7 @@ namespace Chatcheology.Mobile.Tests
         }
 
         [Fact]
-        public void Every_Debug_install_writes_version_three_with_its_yearly_memories_and_validates()
+        public void Every_Debug_install_writes_version_four_with_its_yearly_memories_and_captions_and_validates()
         {
             foreach (var options in new[] { SyntheticDebugInstalls.Standard, SyntheticDebugInstalls.MidDay, SyntheticDebugInstalls.WithMemories })
             {
@@ -38,8 +38,24 @@ namespace Chatcheology.Mobile.Tests
 
                 using var reader = ArchiveReader.Open(folder.Path);
                 Assert.Equal(ArchiveFormat.FormatVersion, reader.Info.FormatVersion);
-                Assert.Equal(3, reader.Info.FormatVersion);
+                Assert.Equal(4, reader.Info.FormatVersion);
                 Assert.False(reader.HasNotedDates);
+
+                // CH-71: the invented archive id, and a few captioned pictures (at least one with a link).
+                Assert.Equal(SyntheticArchive.ArchiveId, reader.Info.ArchiveId);
+                Assert.Equal(options.Captions, counts.Captions);
+                Assert.InRange(counts.Captions, 3, 10);
+
+                var captions = reader.ReadAllPages()
+                    .SelectMany(p => p.Messages)
+                    .SelectMany(m => m.Attachments)
+                    .Select(a => a.Caption)
+                    .OfType<string>()
+                    .ToList();
+
+                Assert.Equal(options.Captions, captions.Count);
+                Assert.Contains(captions, c => c.Contains("www.example.org", StringComparison.Ordinal));
+                Assert.Contains(captions, c => c.Contains('\n'));
 
                 // CH-53: at least two yearly memories, one dated in the future and one with a gallery link.
                 var yearly = reader.ReadYearlyEntries();
