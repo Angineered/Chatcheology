@@ -74,6 +74,30 @@ namespace Chatcheology.Android
         }
 
         /// <summary>
+        /// The picture's size the right way up (its EXIF orientation applied), read from its header only, never
+        /// decoded; (0, 0) when it cannot be read. Call it off the UI thread.
+        /// </summary>
+        internal static (int Width, int Height) ReadUprightSize(string path)
+        {
+            try
+            {
+                var bounds = new BitmapFactory.Options { InJustDecodeBounds = true };
+                BitmapFactory.DecodeFile(path, bounds);
+
+                if (bounds.OutWidth <= 0 || bounds.OutHeight <= 0)
+                {
+                    return (0, 0);
+                }
+
+                return ReadOrientation(path).UprightSize(bounds.OutWidth, bounds.OutHeight);
+            }
+            catch (Java.Lang.Throwable)
+            {
+                return (0, 0);
+            }
+        }
+
+        /// <summary>
         /// Reads the picture's size and EXIF orientation, decodes it at the sample size
         /// <paramref name="sample"/> gives for its upright size, then turns it the right way up (CH-57).
         /// </summary>

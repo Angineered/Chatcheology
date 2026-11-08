@@ -4,21 +4,39 @@ using Chatcheology.Mobile.Memories;
 namespace Chatcheology.Android.Pages
 {
     /// <summary>
-    /// The details of a memory row (CH-42): what <see cref="MemoryDetails"/> says, laid out. For a PSN
-    /// period: its trophies with exact local times, names and icons (or "Bronze trophy #12"), then the day
-    /// evidence and the day's other periods. For a personal memory: its photos (a strip with captions when
-    /// there is more than one, CH-46; a tap opens the full-screen viewer over them), description, links and external
-    /// links (CH-48, shown as "Links" since CH-59; each opens in another app only after a confirmation). Only a
-    /// photo can be shared, from the viewer (CH-59); everything was read when the archive opened.
+    /// The details of a memory row (CH-42): what <see cref="MemoryDetails"/> says, laid out. Since CH-68 the heading
+    /// and date come first, then the photos, then the buttons, then the rest. For a PSN period: its trophies with
+    /// exact local times, names and icons (or "Bronze trophy #12"), then the day evidence and the day's other periods.
+    /// For a personal memory: its photos (CH-46; laid out by <see cref="MemoryPhotoLayout"/> since CH-68: one photo at
+    /// its own shape, two or more as a grid of square tiles, three across, at most nine, the ninth with "+N"; a tap
+    /// opens the full-screen viewer over all of them, captions shown there), description, links and external links
+    /// (CH-48, shown as "Links" since CH-59; each opens in another app only after a confirmation). Only a photo can be
+    /// shared, from the viewer (CH-59); everything was read when the archive opened.
     /// <para>One of the phone owner's own memories (CH-54) also has Edit and Delete (Delete asks first); an archive's
     /// memory stays read-only.</para>
     /// </summary>
     internal sealed class MemoryDetailsPage : ContentPage
     {
+        /// <summary>The page's side padding, in device-independent units.</summary>
+        private const double SidePadding = 16;
+
         private readonly Func<int, Task> _showMessage;
         private readonly Func<long, Task> _showEntry;
         private readonly MemoryDetails _details;
         private readonly IReadOnlyList<string> _shareRoots;
+        private readonly MemoryPhotoLayout _photoLayout;
+
+        /// <summary>Holds the photos once the page's size is known; not in the page at all when there is none.</summary>
+        private readonly ContentView _photoSection = new();
+
+        private double _pageWidth;
+        private double _pageHeight;
+
+        /// <summary>The single photo's upright size once read (0, 0 when it cannot be); null until then.</summary>
+        private (int Width, int Height)? _singleImageSize;
+
+        /// <summary>The sizes the photos were last drawn at, so a size change that changes nothing redraws nothing.</summary>
+        private (double Width, double Height) _drawnAt;
 
         /// <param name="details">What to show.</param>
         /// <param name="shareRoots">
@@ -50,34 +68,31 @@ namespace Chatcheology.Android.Pages
 
             _details = details;
 
-            var body = new VerticalStackLayout { Padding = 16, Spacing = 6 };
+            // Only photos whose file is there (CH-46), the cover first; a PSN game's picture is the one photo.
+            _photoLayout = MemoryPhotoLayout.For(details.Photos);
 
-            if (details.HasPhotoStrip)
-            {
-                // Every photo, the cover first, with its caption (CH-46). A tap opens the full-screen
-                // viewer over this memory's photos only.
-                var strip = new HorizontalStackLayout { Spacing = 8 };
+            var body = new VerticalStackLayout { Padding = SidePadding, Spacing = 6 };
 
-                for (var index = 0; index < details.Photos.Count; index++)
-                {
-                    strip.Add(StripPhoto(details.Photos[index], index));
-                }
-
-                body.Add(new ScrollView { Orientation = ScrollOrientation.Horizontal, Content = strip });
-            }
-            else if (details.ImagePath is { } image)
-            {
-                var single = new DecodedImage { WidthRequest = 320, HeightRequest = 180, FailedText = string.Empty, HorizontalOptions = LayoutOptions.Start, Path = image };
-                OpenOnTap(single, 0);
-                body.Add(single);
-            }
-
-            body.Add(new Label { Text = details.Title, FontSize = 20, FontAttributes = FontAttributes.Bold });
+            body.Add(new Label { Text = details.Title, FontSize = 22, FontAttributes = FontAttributes.Bold });
             body.Add(Muted(details.DateText, 14));
+
+            if (_photoLayout.Arrangement != MemoryPhotoArrangement.None)
+            {
+                // Drawn once the page's width is known (OnSizeAllocated); no photo, no section and no gap.
+                _photoSection.Margin = new Thickness(0, 6, 0, 0);
+                body.Add(_photoSection);
+
+                if (_photoLayout.Arrangement == MemoryPhotoArrangement.Single)
+                {
+                    ReadSingleSize(details.Photos[0].Path!);
+                }
+            }
+
+            var buttons = new FlexLayout { Wrap = Microsoft.Maui.Layouts.FlexWrap.Wrap, AlignItems = Microsoft.Maui.Layouts.FlexAlignItems.Center };
 
             if (showInChat is not null)
             {
-                var show = new Button { Text = "Show in chat", HorizontalOptions = LayoutOptions.Start };
+                var show = new Button { Text = "Show in chat", Margin = new Thickness(0, 4, 8, 4) };
                 show.Clicked += async (_, _) =>
                 {
                     try
@@ -93,12 +108,20 @@ namespace Chatcheology.Android.Pages
                     }
                 };
 
-                body.Add(show);
+                buttons.Add(show);
             }
 
             if (details.Key.IsOwn && own is not null)
             {
-                body.Add(OwnActions(own));
+                foreach (var button in OwnActions(own))
+                {
+                    buttons.Add(button);
+                }
+            }
+
+            if (buttons.Count > 0)
+            {
+                body.Add(buttons);
             }
 
             if (details.Summary.Length > 0)
@@ -166,19 +189,192 @@ namespace Chatcheology.Android.Pages
             Content = new ScrollView { Content = body };
         }
 
-        private View StripPhoto(MemoryPhoto photo, int index)
+        /// <inheritdoc />
+        /// <remarks>The tiles and the single photo are sized from the page, as the Photos gallery sizes its cells.</remarks>
+        protected override void OnSizeAllocated(double width, double height)
         {
-            var image = new DecodedImage { WidthRequest = 140, HeightRequest = 105, FailedText = string.Empty, Path = photo.Path };
-            var column = new VerticalStackLayout { Spacing = 2, WidthRequest = 140, Children = { image } };
+            base.OnSizeAllocated(width, height);
 
-            if (photo.HasCaption)
+            try
             {
-                column.Add(new Label { Text = photo.CaptionText, FontSize = 12, MaxLines = 3, LineBreakMode = LineBreakMode.TailTruncation });
+                if (width > 0 && height > 0)
+                {
+                    _pageWidth = width;
+                    _pageHeight = height;
+                    DrawPhotos();
+                }
+            }
+            catch (Exception)
+            {
+                // A layout callback: nothing here may end the app; the photos are then not drawn.
+            }
+        }
+
+        /// <summary>
+        /// Reads the single photo's size from its header on a worker thread, then draws it at that shape. A size
+        /// that cannot be read draws a 4:3 box (the photo, or an empty box when it will not decode either).
+        /// </summary>
+        private void ReadSingleSize(string path)
+        {
+            Task.Run(() => ImageDecoding.ReadUprightSize(path)).ContinueWith(
+                read =>
+                {
+                    var size = read.IsCompletedSuccessfully ? read.Result : (0, 0);
+
+                    try
+                    {
+                        Dispatcher.Dispatch(() =>
+                        {
+                            try
+                            {
+                                _singleImageSize = size;
+
+                                // A page already closed draws nothing.
+                                if (Handler is not null)
+                                {
+                                    DrawPhotos();
+                                }
+                            }
+                            catch (Exception)
+                            {
+                                // A posted callback: nothing here may end the app.
+                            }
+                        });
+                    }
+                    catch (Exception)
+                    {
+                        // The page's dispatcher is gone: nothing to draw.
+                    }
+                },
+                TaskScheduler.Default);
+        }
+
+        /// <summary>
+        /// Draws the photo section for the page's size: the single photo once its own size is read, or the grid.
+        /// Each picture is decoded at the size it is shown (its requested size is set before its path), through
+        /// <see cref="DecodedImage"/> and its cache. Redraws only when that size changes.
+        /// </summary>
+        private void DrawPhotos()
+        {
+            var available = _pageWidth - 2 * SidePadding;
+
+            if (_photoLayout.Arrangement == MemoryPhotoArrangement.Single)
+            {
+                if (_singleImageSize is not { } image)
+                {
+                    return;
+                }
+
+                var (width, height) = MemoryPhotoLayout.SingleSize(image.Width, image.Height, available, _pageHeight);
+
+                if (width <= 0 || (width, height) == _drawnAt)
+                {
+                    return;
+                }
+
+                _drawnAt = (width, height);
+                _photoSection.Content = SinglePhoto(width, height);
+            }
+            else if (_photoLayout.Arrangement == MemoryPhotoArrangement.Grid)
+            {
+                var tile = MemoryPhotoLayout.TileSize(available);
+
+                if (tile <= 0 || (tile, tile) == _drawnAt)
+                {
+                    return;
+                }
+
+                _drawnAt = (tile, tile);
+                _photoSection.Content = PhotoGrid(tile);
+            }
+        }
+
+        /// <summary>
+        /// The one photo at its own shape: the box has the photo's shape, so the image view's centre-crop crops
+        /// nothing (at most a rounding pixel). Centred when the height limit makes it narrower than the page.
+        /// </summary>
+        private View SinglePhoto(double width, double height)
+        {
+            var image = new DecodedImage { WidthRequest = width, HeightRequest = height, FailedText = string.Empty, HorizontalOptions = LayoutOptions.Center };
+            image.Path = _details.Photos[0].Path;
+
+            var holder = new Grid { WidthRequest = width, HeightRequest = height, HorizontalOptions = LayoutOptions.Center };
+            holder.Add(image);
+
+            if (_details.Photos[0].HasCaption)
+            {
+                holder.Add(new CaptionMark());
             }
 
-            OpenOnTap(column, index);
+            SemanticProperties.SetDescription(holder, _photoLayout.SingleDescription);
+            OpenOnTap(holder, 0);
 
-            return column;
+            return holder;
+        }
+
+        /// <summary>The grid: three square tiles across, only as many rows as needed, cover first.</summary>
+        private View PhotoGrid(double tile)
+        {
+            var grid = new Grid
+            {
+                ColumnSpacing = MemoryPhotoLayout.Gap,
+                RowSpacing = MemoryPhotoLayout.Gap,
+                HorizontalOptions = LayoutOptions.Center,
+            };
+
+            for (var column = 0; column < MemoryPhotoLayout.Columns; column++)
+            {
+                grid.ColumnDefinitions.Add(new ColumnDefinition(new GridLength(tile)));
+            }
+
+            for (var row = 0; row < _photoLayout.Rows; row++)
+            {
+                grid.RowDefinitions.Add(new RowDefinition(new GridLength(tile)));
+            }
+
+            foreach (var tileInfo in _photoLayout.Tiles)
+            {
+                grid.Add(Tile(tileInfo, tile), tileInfo.Column, tileInfo.Row);
+            }
+
+            return grid;
+        }
+
+        private View Tile(MemoryPhotoTile tile, double size)
+        {
+            var image = new DecodedImage { WidthRequest = size, HeightRequest = size, FailedText = string.Empty };
+            image.Path = _details.Photos[tile.PhotoIndex].Path;
+
+            var cell = new Grid { WidthRequest = size, HeightRequest = size };
+            cell.Add(image);
+
+            if (tile.MoreCount > 0)
+            {
+                // "+N" over the photo, on a dark veil so it reads on any picture, light or dark.
+                var more = new Label
+                {
+                    Text = tile.MoreText,
+                    FontSize = 22,
+                    FontAttributes = FontAttributes.Bold,
+                    TextColor = Colors.White,
+                    BackgroundColor = Color.FromRgba(0, 0, 0, 0.5),
+                    HorizontalTextAlignment = TextAlignment.Center,
+                    VerticalTextAlignment = TextAlignment.Center,
+                    InputTransparent = true,
+                };
+                AutomationProperties.SetIsInAccessibleTree(more, false);
+                cell.Add(more);
+            }
+
+            if (tile.HasCaption)
+            {
+                cell.Add(new CaptionMark());
+            }
+
+            SemanticProperties.SetDescription(cell, tile.Description);
+            OpenOnTap(cell, tile.PhotoIndex);
+
+            return cell;
         }
 
         /// <summary>A tap on <paramref name="view"/> opens the viewer at the memory's photo <paramref name="index"/>.</summary>
@@ -204,10 +400,10 @@ namespace Chatcheology.Android.Pages
         }
 
         /// <summary>Edit, and Delete after a confirmation that says it cannot be undone (CH-54).</summary>
-        private View OwnActions(OwnMemoryActions own)
+        private IEnumerable<View> OwnActions(OwnMemoryActions own)
         {
-            var edit = new Button { Text = "Edit", HorizontalOptions = LayoutOptions.Start };
-            var delete = new Button { Text = "Delete", HorizontalOptions = LayoutOptions.Start };
+            var edit = new Button { Text = "Edit", Margin = new Thickness(0, 4, 8, 4) };
+            var delete = new Button { Text = "Delete", Margin = new Thickness(0, 4, 8, 4) };
             SemanticProperties.SetDescription(edit, "Edit this memory");
             SemanticProperties.SetDescription(delete, "Delete this memory");
 
@@ -242,7 +438,7 @@ namespace Chatcheology.Android.Pages
                 }
             };
 
-            return new HorizontalStackLayout { Spacing = 8, Children = { edit, delete } };
+            return [edit, delete];
         }
 
         private static View ItemView(MemoryItemLine item)
@@ -344,6 +540,53 @@ namespace Chatcheology.Android.Pages
             new() { Text = text, FontSize = 17, FontAttributes = FontAttributes.Bold, Margin = new Thickness(0, 10, 0, 0) };
 
         private static Label Muted(string text, double size) => new Label { Text = text, FontSize = size }.TextIn("MutedText");
+    }
+
+    /// <summary>
+    /// The small mark on a memory photo that has a caption (CH-68): a white speech bubble on a dark round backing in
+    /// the tile's bottom-right corner, so it reads on any photo in light and dark mode. Fixed colours, so no theme
+    /// subscription. Drawn only: taps pass through to the tile and screen readers hear the tile's description.
+    /// </summary>
+    internal sealed class CaptionMark : GraphicsView
+    {
+        private const double Size = 22;
+
+        internal CaptionMark()
+        {
+            Drawable = new BubbleDrawable();
+            WidthRequest = Size;
+            HeightRequest = Size;
+            Margin = new Thickness(4);
+            HorizontalOptions = LayoutOptions.End;
+            VerticalOptions = LayoutOptions.End;
+            BackgroundColor = Colors.Transparent;
+            InputTransparent = true;
+            AutomationProperties.SetIsInAccessibleTree(this, false);
+        }
+
+        private sealed class BubbleDrawable : IDrawable
+        {
+            public void Draw(ICanvas canvas, RectF dirtyRect)
+            {
+                var cx = dirtyRect.Center.X;
+                var cy = dirtyRect.Center.Y;
+                var radius = Math.Min(dirtyRect.Width, dirtyRect.Height) / 2f;
+
+                canvas.FillColor = Color.FromRgba(0, 0, 0, 0.5);
+                canvas.FillCircle(cx, cy, radius);
+
+                // A rounded bubble with a short tail at its lower left.
+                canvas.FillColor = Colors.White.WithAlpha(0.9f);
+                canvas.FillRoundedRectangle(cx - 6.5f, cy - 5.5f, 13f, 9f, 2.5f);
+
+                var tail = new PathF();
+                tail.MoveTo(cx - 4f, cy + 3f);
+                tail.LineTo(cx - 4.5f, cy + 6.5f);
+                tail.LineTo(cx - 0.5f, cy + 3f);
+                tail.Close();
+                canvas.FillPath(tail);
+            }
+        }
     }
 
     /// <summary>What Edit and Delete do on an own memory's details (CH-54): given by the conversation page.</summary>
