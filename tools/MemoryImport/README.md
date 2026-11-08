@@ -1,6 +1,7 @@
 # MemoryImport
 
-Dry run and import of the PSN shared-activity file (CH-42) into the memories file
+Building the PSN shared-activity file from the two accounts' earned-trophy timestamps and comparing
+it with an earlier one (CH-71), dry run and import of that file (CH-42) into the memories file
 (`memories.db`, beside the main workspace), enrichment with trophy names and icons from a trophy
 definitions file (CH-43), and download of the game images and trophy icons into
 `memories-media\` beside it. The main workspace is never opened. Input files are only read.
@@ -132,6 +133,99 @@ bytes). Saved as `memories-media\<sha256>.<ext>`; identical images are stored on
 is kept only when its own hash matches. Prints fetched / already present / failed separately for
 game images and trophy icons (0 trophy icons on a format 1 file, which is not upgraded here). Exit
 code 1 if any failed.
+
+`psn-build` (CH-71 D8; replaces the hand-made step that produced the shared-activity file):
+
+```
+psn-build --timestamps <file> [--timestamps <file> ...] --manifest <file>
+          --account-a <name> --account-b <name>
+          (--out <file> [--overwrite] | --dry-run) [--icons-from <shared-activity-file>] [--allow-no-icon]
+```
+
+- `--timestamps`: the fetch script's output (`.temp\psn\Fetch-Shared-PSN-Trophies.ps1`), format
+  `chatcheology-psn-trophy-batch-v1` only. Repeat it to combine several files; a game key in two
+  files stops the run. Root: `format`, `timestampsAreUTC` (true if present), `games`. Game: `key`,
+  then one object per account named by the account name, with `npCommunicationId`, `trophies` and
+  (if present) `earnedCount`, which must equal the trophies listed. Trophy: `trophyId` (whole number),
+  `trophyType` (text), `earnedDateTimeUTC` (`yyyy-MM-ddTHH:mm:ssZ` exactly). Other fields (the
+  game's title here, `npServiceName`, `totalTrophies`, `sourceAccounts`, `note`) are not used.
+- `--manifest`: the hand-kept game list, the same shape the fetch script reads
+  (`PSN-Shared-Trophy-Batch-*.json`). Root: `games`. Game: `key`, `game` (the title written to the
+  file), one object per account with `npCommunicationId`, optional `sameTrophySet` (must agree with
+  the two sets), optional `icon` (URL or null). Only manifest games are built; a manifest game with
+  no timestamps, and a timestamp game not in the manifest, are skipped and counted.
+- `--account-a` / `--account-b`: the account field names in both inputs (letters and digits). Account
+  a is side a: its set must be first in every `key` (`<setA>|<setB>`), otherwise the run stops. The
+  names are also the account prefixes in the built file, so `psn-import` and `psn-compare` take
+  `--pair-a <account-a>`.
+- `--icons-from`: an earlier shared-activity file; a game's `icon` is copied from it by `key` where
+  the manifest gives none (the timestamps carry no icons).
+- A game with at least one event and an icon in neither the manifest nor `--icons-from` stops the
+  run (with the number of such games), because `psn-import` clears the stored image of every entry
+  whose icon becomes null and that cannot be undone. `--allow-no-icon` builds anyway.
+- `--out` is written only when it does not exist, unless `--overwrite`; it may not name an input.
+  The file is written beside the target first and then moved into place, so a failed write never
+  leaves part of a file.
+  `--dry-run` writes nothing. Field names match case-insensitively; a field given twice with
+  different case stops the run. Any other shape stops the run with the file, game and trophy index.
+
+Rules (the same as the earlier file's):
+
+- Dates are Africa/Johannesburg calendar dates of the UTC earned times.
+- One event per (game, date) on which both accounts earned at least one trophy in that game. Its
+  trophy lists hold every trophy each account earned in that game on that date.
+- Trophy IDs are compared only where both accounts use the same trophy set (`npCommunicationId`);
+  games with different sets never have matching pairs, so their events are always same-day.
+- Every trophy ID both earned on that date is a matching pair (`id`, `aTime`, `bTime`; `type` and
+  `seconds` are written for reading by eye, the reader does not use them).
+- Level: **strong** when at least one pair is at most 60 seconds apart (exactly 60 s is strong,
+  61 s is not); **supporting** when there are pairs, none within 60 s; **same-day** when there are
+  none. A pair split by midnight (Johannesburg) is not a pair on either date.
+- Event `id` is `<setA>|<setB>|yyyy-MM-dd`. Games are written in manifest order, events by date then
+  key. The same inputs always give the same bytes. The built file is read back with the import
+  reader before it is written.
+
+Prints: manifest games, timestamp games, games written (and with different sets), events per
+level, matching pairs, trophies in events, skipped (manifest games with no timestamps, timestamp
+games not in the manifest, games with no trophies, with one account only, with no common date; game
+dates with one account only), game icons (from the manifest, from `--icons-from`, none, games with
+events and no icon).
+
+`psn-compare` (the acceptance check before a built file replaces the current one):
+
+```
+psn-compare <old-file> <new-file> --local <prefix> --other <prefix> --pair-a <prefix>
+```
+
+Both files are read with the import reader and the same prefixes; games are matched by `key`
+(with or without events), events by `id`. Prints games and events in each; games only in old, only
+in new, and in both with a different title or icon; events in both with the same level (per level),
+with a different level (per old -> new level pair), only in old and only in new (per level); and
+events in both with the same level whose trophies (role, set, id, type, UTC time), matching pairs
+(id, `aTime`, `bTime`, pairs not located or split) or periods (label, start, end, trophies per
+account) differ. Exit code 0 only when every one of these matches, 3 when anything differs, 1 when
+a file is refused.
+
+### Monthly PSN refresh (Angie)
+
+From the repository folder. `<A>` and `<B>` are the two account field names in the fetch output
+(account a's set first in every key); `<local>`/`<other>`/`<A>` are the prefixes of the current
+`psn-import` command.
+
+1. Fetch as today (needs her token): `.temp\psn\Fetch-Shared-PSN-Trophies.ps1`, giving
+   `PSN-Shared-Trophy-Timestamps.json`. A game the script does not fetch (such as the 68th game,
+   merged from older responses) needs both its own timestamp file in the same format, passed as a
+   second `--timestamps`, and its own entry in the manifest. Without the timestamp file it is counted
+   as "manifest games with no timestamps"; without the manifest entry, as "timestamp games not in the
+   manifest". Either way it is not built, and `psn-compare` lists it as a difference.
+2. Build a new file, never over the current one:
+   `dotnet run --project tools\MemoryImport\MemoryImport.csproj -- psn-build --timestamps <timestamps.json>
+   --manifest <manifest.json> --account-a <A> --account-b <B> --icons-from <current-file.json> --out <new-file.json>`
+3. First time only (acceptance, D8): `... -- psn-compare <current-file.json> <new-file.json> --local <local>
+   --other <other> --pair-a <A>`. Exit 0 and "Result: same." means the build reproduces the current
+   file; anything else is listed by count for review before the new file is used.
+4. `psn-dry-run`, then `psn-import` with the new file as today; then `psn-enrich` and `fetch-images`
+   as today.
 
 ## Output
 
