@@ -421,7 +421,15 @@ namespace Chatcheology.Android.Pages
         {
             _recycler = List.Handler?.PlatformView as RecyclerView;
             _pager.List = _recycler;
-            AttachScrollState(_recycler);
+
+            try
+            {
+                AttachScrollState(_recycler);
+            }
+            catch (Exception)
+            {
+                // A handler: nothing here may end the app. Without the listener the floating date stays hidden.
+            }
         }
 
         private void OnListScrolled(object? sender, ItemsViewScrolledEventArgs e)
@@ -557,10 +565,11 @@ namespace Chatcheology.Android.Pages
                 OnThisDayCard.PropertyChanged -= OnThisDayCardPropertyChanged;
 
                 _scrollState.Detach();
-                _scrollStateList?.RemoveOnScrollListener(_scrollState);
-                _scrollStateList = null;
-
                 HideFloatingDateNow();
+
+                var list = _scrollStateList;
+                _scrollStateList = null;
+                list?.RemoveOnScrollListener(_scrollState);
             }
             catch (Exception)
             {
