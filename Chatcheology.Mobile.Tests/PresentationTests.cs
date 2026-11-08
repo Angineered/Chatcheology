@@ -266,7 +266,6 @@ namespace Chatcheology.Mobile.Tests
 
             Assert.True(full.IsShown);
             Assert.Equal(1, full.HiddenCopies);
-            Assert.Equal("WhatsApp also kept a smaller duplicate (hidden)", full.LowQualityNote);
             Assert.Equal(string.Empty, full.LowQualityLabel);
 
             // The copy's bubble had nothing else, so it is not shown at all.
@@ -274,13 +273,13 @@ namespace Chatcheology.Mobile.Tests
         }
 
         [Fact]
-        public void Two_hidden_copies_are_counted_in_the_note()
+        public void Two_hidden_copies_are_counted()
         {
             var builder = new ArchiveBuilder();
             builder.Media(new AttachmentSpec(1));
             builder.Media(new AttachmentSpec(2, LowQualityOf: 1), new AttachmentSpec(3, LowQualityOf: 1));
 
-            Assert.Equal("WhatsApp also kept 2 smaller duplicates (hidden)", Card(Messages(builder), 1).LowQualityNote);
+            Assert.Equal(2, Card(Messages(builder), 1).HiddenCopies);
         }
 
         [Theory]
@@ -300,7 +299,6 @@ namespace Chatcheology.Mobile.Tests
             Assert.Equal("Low-quality copy", copy.LowQualityLabel);
             Assert.Equal(AttachmentCardKind.Image, copy.Kind);
             Assert.Equal(0, Card(messages, 1).HiddenCopies);
-            Assert.Equal(string.Empty, Card(messages, 1).LowQualityNote);
         }
 
         [Fact]

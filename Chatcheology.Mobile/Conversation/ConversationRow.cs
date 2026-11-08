@@ -468,16 +468,8 @@ namespace Chatcheology.Mobile.Conversation
         /// <summary>"Low-quality copy" on a copy that is shown because its full copy is not restored; otherwise empty.</summary>
         public string LowQualityLabel => IsLowQualityCopy && IsShown ? LowQualityCopyLabel : string.Empty;
 
-        /// <summary>How many hidden low-quality copies this attachment has.</summary>
+        /// <summary>How many hidden low-quality copies this attachment has (not shown to the reader).</summary>
         public int HiddenCopies { get; }
-
-        /// <summary>The note on a card whose low-quality copies are hidden, or empty.</summary>
-        public string LowQualityNote => HiddenCopies switch
-        {
-            0 => string.Empty,
-            1 => "WhatsApp also kept a smaller duplicate (hidden)",
-            _ => $"WhatsApp also kept {HiddenCopies.ToString(CultureInfo.CurrentCulture)} smaller duplicates (hidden)",
-        };
 
         /// <summary>
         /// The height to show the image at for a given width, from the recorded size, so a row has its

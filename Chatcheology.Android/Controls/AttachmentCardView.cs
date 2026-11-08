@@ -179,7 +179,7 @@ namespace Chatcheology.Android.Controls
                 _stack.Children.Add(_card);
             }
 
-            var extra = card.LowQualityLabel.Length > 0 ? card.LowQualityLabel : card.LowQualityNote;
+            var extra = card.LowQualityLabel;
 
             if (extra.Length > 0)
             {
