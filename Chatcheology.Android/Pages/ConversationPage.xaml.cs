@@ -34,11 +34,17 @@ namespace Chatcheology.Android.Pages
     /// from their details. After every save or delete the own memories are read again
     /// (<see cref="ArchiveSession.RefreshOwnMemories"/>): On this day, the Saved icon and the alarm always follow, and the
     /// timeline and calendar are rebuilt at the same place when the visible own rows changed.</para>
+    /// <para>While the reader scrolls, a floating date (CH-65) shows the top row's day and fades out after the
+    /// list rests (<see cref="FloatingDate"/>).</para>
     /// </remarks>
     public partial class ConversationPage : ContentPage
     {
         /// <summary>How long a message opened from search stays highlighted.</summary>
         private const int HighlightMilliseconds = 1600;
+
+        /// <summary>The floating date's fade in and fade out (CH-65).</summary>
+        private const uint FloatingDateFadeInMilliseconds = 150;
+        private const uint FloatingDateFadeOutMilliseconds = 300;
 
         private readonly AppState _state;
         private readonly ArchiveSession _session;
@@ -59,6 +65,9 @@ namespace Chatcheology.Android.Pages
         private ToolbarItem? _savedIcon;
         private int _layersVersion;
         private readonly bool _showOnThisDay;
+        private readonly FloatingDate _floatingDate = new();
+        private readonly ScrollStateListener _scrollState;
+        private RecyclerView? _scrollStateList;
 
         /// <summary>Whether the page has begun closing its archive: nothing more is read.</summary>
         private bool _closed => _gate.IsClosed;
@@ -93,17 +102,13 @@ namespace Chatcheology.Android.Pages
             Title = _session.Title;
             List.ItemsUpdatingScrollMode = ItemsUpdatingScrollMode.KeepItemsInView;
 
-            List.HandlerChanged += (_, _) =>
-            {
-                _recycler = List.Handler?.PlatformView as RecyclerView;
-                _pager.List = _recycler;
-            };
+            _scrollState = new ScrollStateListener(OnScrollStateChanged);
+            List.HandlerChanged += OnListHandlerChanged;
+            List.Scrolled += OnListScrolled;
 
-            List.Scrolled += (_, e) =>
-            {
-                _pager.OnVisibleRange(e.FirstVisibleItemIndex, e.LastVisibleItemIndex);
-                SavePosition(e.FirstVisibleItemIndex);
-            };
+            // CH-65: the floating date sits just below the On this day card while the card is open.
+            OnThisDayCard.SizeChanged += OnThisDayCardChanged;
+            OnThisDayCard.PropertyChanged += OnThisDayCardPropertyChanged;
 
             if (!_session.IsEmpty)
             {
@@ -227,6 +232,7 @@ namespace Chatcheology.Android.Pages
             DaySeparator.Pressed -= OnDayLongPressed;
             _session.Stars.Changed -= OnStarsChanged;
             AudioPlayback.Stop();
+            StopFloatingDate();
 
             try
             {
@@ -248,6 +254,9 @@ namespace Chatcheology.Android.Pages
             _timeline = timeline;
             _pager = new ConversationPager(timeline) { List = _recycler };
             _savedPosition = null;
+
+            // New rows, placed by code: the floating date waits for the reader's next scroll (CH-65).
+            HideFloatingDateNow();
 
             List.ItemsSource = timeline.Rows;
 
@@ -304,6 +313,7 @@ namespace Chatcheology.Android.Pages
 
             _recycler = recycler;
             _pager.List = recycler;
+            AttachScrollState(recycler);
 
             await NextFrameAsync(recycler);
 
@@ -405,6 +415,188 @@ namespace Chatcheology.Android.Pages
             }
 
             return _session.Position;
+        }
+
+        private void OnListHandlerChanged(object? sender, EventArgs e)
+        {
+            _recycler = List.Handler?.PlatformView as RecyclerView;
+            _pager.List = _recycler;
+            AttachScrollState(_recycler);
+        }
+
+        private void OnListScrolled(object? sender, ItemsViewScrolledEventArgs e)
+        {
+            _pager.OnVisibleRange(e.FirstVisibleItemIndex, e.LastVisibleItemIndex);
+            SavePosition(e.FirstVisibleItemIndex);
+
+            try
+            {
+                // CH-65: only while shown, and only a new day rewrites the text.
+                if (!_closed && _floatingDate.IsShown && _floatingDate.TopRowChanged(_timeline.Rows, e.FirstVisibleItemIndex))
+                {
+                    FloatingDateText.Text = _floatingDate.Text;
+                }
+            }
+            catch (Exception)
+            {
+                // A scroll handler: nothing here may end the app.
+            }
+        }
+
+        // -----------------------------------------------------------------------------------------
+        // The floating date (CH-65).
+        // -----------------------------------------------------------------------------------------
+
+        /// <summary>Moves the scroll-state listener to <paramref name="recycler"/> (the list's Android view).</summary>
+        private void AttachScrollState(RecyclerView? recycler)
+        {
+            if (ReferenceEquals(recycler, _scrollStateList) || _closed)
+            {
+                return;
+            }
+
+            _scrollStateList?.RemoveOnScrollListener(_scrollState);
+            _scrollStateList = recycler;
+            _scrollStateList?.AddOnScrollListener(_scrollState);
+        }
+
+        /// <summary>
+        /// The list's scroll state changed. A drag (the reader's finger) shows the date; a fling that follows
+        /// keeps it; rest starts the hide. Code placing the list never drags, so an open, a date jump, a search
+        /// hit or a page added above shows nothing. Called inside the listener's try/catch.
+        /// </summary>
+        private void OnScrollStateChanged(int state)
+        {
+            if (_closed)
+            {
+                return;
+            }
+
+            if (state == RecyclerView.ScrollStateDragging)
+            {
+                _floatingDate.ScrollStarted();
+
+                if (_recycler?.GetLayoutManager() is LinearLayoutManager layout
+                    && _floatingDate.TopRowChanged(_timeline.Rows, layout.FindFirstVisibleItemPosition()))
+                {
+                    FloatingDateText.Text = _floatingDate.Text;
+                }
+
+                if (_floatingDate.Day is null)
+                {
+                    return;
+                }
+
+                PlaceFloatingDate();
+                FloatingDatePill.IsVisible = true;
+                _ = FadeFloatingDateAsync(1, FloatingDateFadeInMilliseconds);
+            }
+            else if (state == RecyclerView.ScrollStateIdle && _floatingDate.ScrollStopped() is { } ticket)
+            {
+                _ = HideFloatingDateLaterAsync(ticket);
+            }
+        }
+
+        /// <summary>Fades the date out <see cref="FloatingDate.HideDelay"/> after the list came to rest, unless scrolling began again.</summary>
+        private async Task HideFloatingDateLaterAsync(int ticket)
+        {
+            try
+            {
+                await Task.Delay(FloatingDate.HideDelay);
+
+                if (_closed || !_floatingDate.HideIfStill(ticket))
+                {
+                    return;
+                }
+
+                await FadeFloatingDateAsync(0, FloatingDateFadeOutMilliseconds);
+            }
+            catch (Exception)
+            {
+                // A timer after a scroll: nothing here may end the app.
+            }
+        }
+
+        /// <summary>Fades the date to <paramref name="opacity"/>; once faded out and still meant hidden, it leaves the screen.</summary>
+        private async Task FadeFloatingDateAsync(double opacity, uint milliseconds)
+        {
+            try
+            {
+                // A new fade replaces one under way (the reader scrolled again during a fade-out).
+                await FloatingDatePill.FadeToAsync(opacity, milliseconds);
+
+                if (!_floatingDate.IsShown)
+                {
+                    FloatingDatePill.IsVisible = false;
+                    FloatingDatePill.Opacity = 0;
+                }
+            }
+            catch (Exception)
+            {
+                // An animation: nothing here may end the app.
+            }
+        }
+
+        /// <summary>Hides the date at once: new rows bound, or the page closing.</summary>
+        private void HideFloatingDateNow()
+        {
+            _floatingDate.Reset();
+            FloatingDatePill.CancelAnimations();
+            FloatingDatePill.Opacity = 0;
+            FloatingDatePill.IsVisible = false;
+        }
+
+        /// <summary>The page is closing: the date is hidden and every handler it added is removed.</summary>
+        private void StopFloatingDate()
+        {
+            try
+            {
+                List.HandlerChanged -= OnListHandlerChanged;
+                List.Scrolled -= OnListScrolled;
+                OnThisDayCard.SizeChanged -= OnThisDayCardChanged;
+                OnThisDayCard.PropertyChanged -= OnThisDayCardPropertyChanged;
+
+                _scrollState.Detach();
+                _scrollStateList?.RemoveOnScrollListener(_scrollState);
+                _scrollStateList = null;
+
+                HideFloatingDateNow();
+            }
+            catch (Exception)
+            {
+                // Closing goes on whatever happened here.
+            }
+        }
+
+        /// <summary>
+        /// Puts the date just below the On this day card while the card is open, else at the top. A translation,
+        /// so moving it never lays out the page.
+        /// </summary>
+        private void PlaceFloatingDate()
+        {
+            FloatingDatePill.TranslationY = OnThisDayCard.IsVisible && OnThisDayCard.Height > 0
+                ? OnThisDayCard.Margin.Top + OnThisDayCard.Height
+                : 0;
+        }
+
+        private void OnThisDayCardChanged(object? sender, EventArgs e)
+        {
+            try
+            {
+                PlaceFloatingDate();
+            }
+            catch (Exception)
+            {
+                // A layout handler: nothing here may end the app.
+            }
+        }
+
+        private void OnThisDayCardPropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
+        {
+            if (e.PropertyName == nameof(IsVisible))
+            {
+                OnThisDayCardChanged(sender, e);
+            }
         }
 
         // -----------------------------------------------------------------------------------------

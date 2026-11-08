@@ -232,5 +232,19 @@
                        TextColor="{AppThemeBinding Light={StaticResource MutedTextLight}, Dark={StaticResource MutedTextDark}}" />
             </Grid>
         </Border>
+
+        <!-- The floating date (CH-65): the top row's day in the separators' look and wording, shown only while
+             the reader scrolls and faded out after the list rests. Never takes a touch; sits just below the
+             On this day card while that is open (moved with TranslationY, no layout per scroll). -->
+        <Border x:Name="FloatingDatePill" IsVisible="False" Opacity="0" InputTransparent="True"
+                HorizontalOptions="Center" VerticalOptions="Start" Margin="0,8,0,0"
+                Padding="10,4" StrokeThickness="0" StrokeShape="RoundRectangle 8"
+                BackgroundColor="{AppThemeBinding Light={StaticResource SeparatorBackgroundLight}, Dark={StaticResource SeparatorBackgroundDark}}">
+            <Border.Shadow>
+                <Shadow Radius="4" Opacity="0.2" Offset="0,1" Brush="Black" />
+            </Border.Shadow>
+            <Label x:Name="FloatingDateText" FontSize="12"
+                   TextColor="{AppThemeBinding Light={StaticResource MutedTextLight}, Dark={StaticResource MutedTextDark}}" />
+        </Border>
     </Grid>
 </ContentPage>
