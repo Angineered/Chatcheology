@@ -9,9 +9,9 @@ namespace Chatcheology.Mobile.Conversation
     /// <remarks>
     /// <para><strong>The rule</strong> (the desktop's, with no toggle, plus Angie's exception of
     /// 2026-10-21): an attachment that is a low-quality copy of another is hidden, and its full copy
-    /// carries the note that a smaller duplicate is hidden. <strong>Except</strong> a Restored copy whose
+    /// counts it as a hidden copy (no note is shown). <strong>Except</strong> a Restored copy whose
     /// full copy is not Restored: it is the only copy of that photo the archive has, so it is shown,
-    /// labelled "Low-quality copy", and it is not counted in the full copy's note.</para>
+    /// labelled "Low-quality copy", and it is not counted in the full copy's hidden copies.</para>
     /// <para>A copy and its full copy can sit in different messages, and so on different pages, which
     /// is why this is built from the whole conversation rather than page by page. Only links and states
     /// are kept: a few numbers per linked attachment.</para>

@@ -242,7 +242,7 @@ namespace Chatcheology.Mobile.Tests
             Assert.Equal(10, cards.Count(card => card.Kind == AttachmentCardKind.Image));
 
             // Two copies hidden beside their images, one shown with its label beside a Missing card.
-            Assert.Equal(2, cards.Count(card => card.LowQualityNote.Length > 0));
+            Assert.Equal(2, cards.Count(card => card.HiddenCopies > 0));
             var shownCopy = Assert.Single(cards, card => card.LowQualityLabel.Length > 0);
             Assert.Contains(messages, message => message.ShownAttachments.Contains(shownCopy)
                 && message.ShownAttachments.Any(card => card.Kind == AttachmentCardKind.Missing));
