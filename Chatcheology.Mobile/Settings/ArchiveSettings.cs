@@ -18,6 +18,12 @@ namespace Chatcheology.Mobile.Settings
 
         /// <summary>Stores <paramref name="value"/> under <paramref name="key"/>; <see langword="null"/> removes it.</summary>
         void Set(string key, string? value);
+
+        /// <summary>
+        /// Makes every earlier <see cref="Set"/> reach storage before it returns (CH-71 step 2: a refresh's carried
+        /// settings are on disk before any archive folder moves). False when that could not be confirmed.
+        /// </summary>
+        bool Flush();
     }
 
     /// <summary>What the app remembers about one archive, keyed by its <c>CONTENTS.sha256</c> hash.</summary>
@@ -386,9 +392,11 @@ namespace Chatcheology.Mobile.Settings
 
         /// <summary>
         /// Carries every setting of the archive <paramref name="fromSha256"/> (stars, position, me, last opened, On this
-        /// day, layers, filters, mutes, noted-date posted day) to <paramref name="toSha256"/>, exactly: a setting the old
-        /// archive does not have is removed from the new one. Validation and the message digest are not carried: they
-        /// belong to the files they were worked out from. The old keys stay until <see cref="Purge"/>.
+        /// day, layers, filters, mutes, noted-date posted day) to <paramref name="toSha256"/>. Stars are joined: stars
+        /// already kept under the new hash (left by removing that same archive earlier) stay, with the old archive's added.
+        /// Every other setting takes the old archive's value exactly: one it does not have is removed from the new one.
+        /// Validation and the message digest are not carried: they belong to the files they were worked out from. The
+        /// old keys stay until <see cref="Purge"/>. Call <see cref="Flush"/> before relying on them.
         /// </summary>
         public void CopyArchive(string fromSha256, string toSha256)
         {
@@ -400,11 +408,20 @@ namespace Chatcheology.Mobile.Settings
                 return;
             }
 
+            var messages = GetStarredMessages(toSha256).Union(GetStarredMessages(fromSha256)).ToList();
+            var attachments = GetStarredAttachments(toSha256).Union(GetStarredAttachments(fromSha256)).ToList();
+
             foreach (var name in Carried)
             {
                 Set(toSha256, name, Get(fromSha256, name));
             }
+
+            SetStarredMessages(toSha256, messages);
+            SetStarredAttachments(toSha256, attachments);
         }
+
+        /// <summary>Makes every setting written so far reach storage; false when that could not be confirmed (CH-71 step 2).</summary>
+        public bool Flush() => _store.Flush();
 
         /// <summary>
         /// Removes everything stored for the archive, stars included: only after a refresh or adoption carried them to

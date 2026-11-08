@@ -19,8 +19,6 @@ namespace Chatcheology.Mobile.Import
     /// (<see cref="ArchiveSettings.CopyArchive"/>) except validation, which is the new copy's own. A version 4 archive
     /// whose earlier messages are exactly an archive installed before version 4 replaces it only when the owner answers
     /// Replace to <see cref="IImportQuestions.AskAdoption"/>.</para>
-    /// </remarks>
-    /// <remarks>
     /// <para><strong>The source is only read.</strong> Anything in it the contents list does not name
     /// (<c>desktop.ini</c>, <c>Thumbs.db</c>, <c>.nomedia</c>) is never opened.</para>
     /// <para><strong>Nothing is left behind.</strong> A refusal after copying began, a failed check and a
@@ -335,7 +333,10 @@ namespace Chatcheology.Mobile.Import
 
             // Adoption: archives installed before version 4 (no archive id) whose messages are exactly an earlier part of
             // this one. Never without the question; the largest first, and asked once: "Import as new" ends the asking.
+            // Archives before version 4 that were compared and did not match: said in the outcome, so a missed adoption is
+            // never silent (their stars stay with them). Not counted without questions: nothing is compared then.
             MessageDigest? newWhole = null;
+            var unmatched = 0;
 
             if (questions is not null)
             {
@@ -348,6 +349,7 @@ namespace Chatcheology.Mobile.Import
                 {
                     if (InstalledDigest(candidate, useStored: false, cancellationToken) is not { } earlier)
                     {
+                        unmatched++;
                         continue;
                     }
 
@@ -356,6 +358,7 @@ namespace Chatcheology.Mobile.Import
 
                     if (!MessageDigest.Continues(earlier, through))
                     {
+                        unmatched++;
                         continue;
                     }
 
@@ -373,7 +376,7 @@ namespace Chatcheology.Mobile.Import
                 }
             }
 
-            return InstallNew(staging, plan, newWhole ?? DigestOfCopy(staging, null, cancellationToken).Whole);
+            return InstallNew(staging, plan, newWhole ?? DigestOfCopy(staging, null, cancellationToken).Whole, unmatched);
         }
 
         /// <summary>
@@ -406,7 +409,7 @@ namespace Chatcheology.Mobile.Import
             return MessageDigest.Compute(reader, through, cancellationToken);
         }
 
-        private ImportResult InstallNew(string staging, Placement plan, MessageDigest? digest)
+        private ImportResult InstallNew(string staging, Placement plan, MessageDigest? digest, int unmatchedOlder = 0)
         {
             var folder = _library.MoveIn(staging);
 
@@ -417,6 +420,7 @@ namespace Chatcheology.Mobile.Import
             {
                 ContentsSha256 = plan.Hash,
                 InstallId = Path.GetFileName(folder),
+                UnmatchedOlderArchives = unmatchedOlder,
                 RequiredBytes = plan.Required,
                 AvailableBytes = plan.Available,
                 CheckCount = plan.Checks,
@@ -425,9 +429,9 @@ namespace Chatcheology.Mobile.Import
 
         /// <summary>
         /// Replaces an installed archive with the validated copy, keeping all its settings (CH-71 step 2). Order: the
-        /// settings are carried to the new hash first, then the copy is moved in, then the old archive is moved out and
-        /// its keys removed. Cut short anywhere, nothing is lost: at worst both copies stay installed, each with the
-        /// settings, until one is removed.
+        /// settings are carried to the new hash and flushed to disk first (a failed flush refuses, before anything moves),
+        /// then the copy is moved in, then the old archive is moved out and its keys removed. Cut short anywhere, nothing
+        /// is lost: at worst both copies stay installed, each with the settings, until one is removed.
         /// </summary>
         private ImportResult Replace(
             string staging, Placement plan, InstalledIdentity target, MessageDigest earlier, MessageDigest whole, bool adopted)
@@ -442,24 +446,42 @@ namespace Chatcheology.Mobile.Import
                 // The new files are validated: their own result, never the old copy's.
                 _settings.SetValidation(plan.Hash, _clock.GetUtcNow().UtcDateTime, plan.Passed, plan.Checks);
                 _settings.SetMessageDigest(plan.Hash, whole);
+
+                // On disk before any folder moves: otherwise a kill after the swap could lose the carried stars.
+                if (!_settings.Flush())
+                {
+                    return new ImportResult(ImportOutcome.Refused, ImportRefusal.CopyFailed)
+                    {
+                        ContentsSha256 = plan.Hash, RequiredBytes = plan.Required, AvailableBytes = plan.Available,
+                    };
+                }
             }
 
             var folder = _library.MoveIn(staging);
             var retired = false;
 
+            // From here the new copy is installed with the settings: nothing below may turn the outcome into a refusal.
             try
             {
                 _library.Retire(target.Folder);
                 retired = true;
             }
-            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            catch (Exception)
             {
-                // The old copy stays installed with its settings; it can be removed from the start screen.
+                // Any failure: the old copy stays installed with its settings; it can be removed from the start screen.
             }
 
-            if (retired && target.ContentsSha256 is { } purged)
+            if (retired && target.ContentsSha256 is { } purged && _settings is not null)
             {
-                _settings?.Purge(purged);
+                try
+                {
+                    _settings.Purge(purged);
+                    _settings.Flush();
+                }
+                catch (Exception)
+                {
+                    // Keys of an archive no longer installed: harmless leftovers.
+                }
             }
 
             return new ImportResult(ImportOutcome.Refreshed)

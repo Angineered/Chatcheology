@@ -470,13 +470,13 @@ namespace Chatcheology.Mobile.Notifications
         /// the runtime's per-process string hash), so a day's notification replaces the last one and Forget can
         /// cancel it. Never 0.
         /// </summary>
-        public static int NotificationId(string archiveId)
+        public static int NotificationId(string installId)
         {
-            ArgumentException.ThrowIfNullOrEmpty(archiveId);
+            ArgumentException.ThrowIfNullOrEmpty(installId);
 
             var hash = 2166136261u;
 
-            foreach (var c in archiveId)
+            foreach (var c in installId)
             {
                 hash = (hash ^ c) * 16777619u;
             }

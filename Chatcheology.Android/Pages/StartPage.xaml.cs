@@ -53,7 +53,7 @@ namespace Chatcheology.Android.Pages
 
             // Started from a noted-date notification: that archive, with its On this day card.
             if (MainActivity.TakePendingArchive() is { } pending
-                && opening?.Archives.FirstOrDefault(archive => archive.Id == pending) is { IsReadable: true } notified)
+                && opening?.Archives.FirstOrDefault(archive => archive.InstallId == pending) is { IsReadable: true } notified)
             {
                 await OpenAsync(notified, showOnThisDay: true);
             }
@@ -68,7 +68,7 @@ namespace Chatcheology.Android.Pages
         {
             var opening = await RefreshAsync();
 
-            if (opening?.Archives.FirstOrDefault(archive => archive.Id == id) is { IsReadable: true } archive)
+            if (opening?.Archives.FirstOrDefault(archive => archive.InstallId == id) is { IsReadable: true } archive)
             {
                 await OpenAsync(archive, showOnThisDay);
             }
@@ -283,7 +283,7 @@ namespace Chatcheology.Android.Pages
             }
 
             // Its noted dates no longer notify (CH-47).
-            NotedDateNotifier.Cancel(archive.Id);
+            NotedDateNotifier.Cancel(archive.InstallId);
             _ = NotedDateNotifier.UpdateAsync();
 
             await RefreshAsync();

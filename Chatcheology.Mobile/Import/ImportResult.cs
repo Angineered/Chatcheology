@@ -131,6 +131,12 @@ namespace Chatcheology.Mobile.Import
         /// <summary>For Refreshed: true when it replaced an archive installed before version 4, after the owner said so.</summary>
         public bool Adopted { get; internal init; }
 
+        /// <summary>
+        /// For Installed (a version 4 archive): how many archives installed before version 4 were compared with it and did
+        /// not match, so their stars were not moved (CH-71 step 2). 0 when there were none.
+        /// </summary>
+        public int UnmatchedOlderArchives { get; internal init; }
+
         /// <summary>The bytes the import needs, the margin included; 0 before it was worked out.</summary>
         public long RequiredBytes { get; internal init; }
 
@@ -149,6 +155,9 @@ namespace Chatcheology.Mobile.Import
         /// <summary>What happened, in a sentence, for the import screen.</summary>
         public string Message => Outcome switch
         {
+            ImportOutcome.Installed when UnmatchedOlderArchives > 0 =>
+                $"The archive was imported as a new archive. It did not match {(UnmatchedOlderArchives == 1 ? "the older archive" : Count(UnmatchedOlderArchives, "older archive"))} " +
+                "on this phone, so no stars were moved. Remove this copy before starring if that is wrong.",
             ImportOutcome.Installed => "The archive was imported.",
             ImportOutcome.AlreadyInstalled => "This archive is already imported. Nothing was copied.",
             ImportOutcome.NotEnoughSpace =>

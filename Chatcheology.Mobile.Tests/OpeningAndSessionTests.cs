@@ -94,7 +94,7 @@ namespace Chatcheology.Mobile.Tests
 
             Assert.Equal(StartScreen.ChooseArchive, opening.Screen);
             Assert.Null(opening.Archive);
-            Assert.Equal(["d", "b", "c", "a"], opening.Archives.Select(archive => archive.Id));
+            Assert.Equal(["d", "b", "c", "a"], opening.Archives.Select(archive => archive.InstallId));
         }
 
         [Fact]

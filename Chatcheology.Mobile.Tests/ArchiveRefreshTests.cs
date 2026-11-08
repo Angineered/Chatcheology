@@ -80,7 +80,7 @@ namespace Chatcheology.Mobile.Tests
             Directory.Exists(_library.StagingFolder) ? Directory.GetFileSystemEntries(_library.StagingFolder) : [];
 
         private InstalledArchive Installed(string installId) =>
-            _library.ListArchives(_settings).Single(archive => archive.Id == installId);
+            _library.ListArchives(_settings).Single(archive => archive.InstallId == installId);
 
         /// <summary>Stars, position, me, layers, filters, mutes, On this day and the noted-date posted day on an archive.</summary>
         private void SetEverything(string hash)
@@ -236,7 +236,7 @@ namespace Chatcheology.Mobile.Tests
         // Refresh refused: nothing changes.
         // -------------------------------------------------------------------------------------
 
-        public static TheoryData<string> Changes => new() { "text", "removed", "attachment-state", "attachment-id", "low-quality", "sender", "time", "older" };
+        public static TheoryData<string> Changes => new() { "text", "removed", "attachment-state", "attachment-id", "low-quality", "sender", "time", "prepended", "older" };
 
         [Theory]
         [MemberData(nameof(Changes))]
@@ -294,6 +294,18 @@ namespace Chatcheology.Mobile.Tests
                 {
                     builder.Add("Synthetic hello", ArchiveBuilder.Local, at: new DateTime(2025, 3, 1, 7, 59, 0));
                     builder.Add("Synthetic second line", ArchiveBuilder.Other, at: new DateTime(2025, 3, 1, 8, 1, 0));
+                    builder.Add("Synthetic system line", sender: null);
+                    builder.Media(new AttachmentSpec(501), new AttachmentSpec(502, LowQualityOf: 501));
+                    builder.Media(new AttachmentSpec(503, ArchiveAttachmentState.Unmatched));
+                    builder.Add("Synthetic last earlier line", ArchiveBuilder.Local);
+                    Newer(builder);
+                },
+                "prepended" => builder =>
+                {
+                    // An earlier message added before the installed ones: every later sequence number shifts by one.
+                    builder.Add("Synthetic message found before the start", ArchiveBuilder.Other, at: new DateTime(2025, 2, 28, 21, 0, 0));
+                    builder.Add("Synthetic hello", ArchiveBuilder.Local, at: new DateTime(2025, 3, 1, 8, 0, 0));
+                    builder.Add("Synthetic second line", ArchiveBuilder.Other);
                     builder.Add("Synthetic system line", sender: null);
                     builder.Media(new AttachmentSpec(501), new AttachmentSpec(502, LowQualityOf: 501));
                     builder.Media(new AttachmentSpec(503, ArchiveAttachmentState.Unmatched));
@@ -414,6 +426,94 @@ namespace Chatcheology.Mobile.Tests
         }
 
         [Fact]
+        public void Copying_settings_joins_stars_already_kept_under_the_new_hash_and_the_rest_takes_the_old_values()
+        {
+            // Stars left under the new hash by removing that same archive earlier (the remove rule) are not discarded.
+            SetEverything("old");
+            _settings.SetStarredMessages("new", [6, 9]);
+            _settings.SetStarredAttachments("new", [new StarredAttachment(8, 801), new StarredAttachment(4, 501)]);
+            _settings.SetPosition("new", 99);
+
+            _settings.CopyArchive("old", "new");
+
+            Assert.Equal([2, 6, 9], _settings.GetStarredMessages("new"));
+            Assert.Equal(
+                [new StarredAttachment(4, 501), new StarredAttachment(5, 503), new StarredAttachment(8, 801)],
+                _settings.GetStarredAttachments("new"));
+            Assert.Equal(5, _settings.GetPosition("new"));
+            Assert.Equal(ArchiveBuilder.Other, _settings.GetMe("new"));
+        }
+
+        [Fact]
+        public void The_carried_settings_are_flushed_before_any_folder_moves()
+        {
+            var first = Import(Write(b => Earlier(b)));
+            SetEverything(first.ContentsSha256!);
+            var oldFolder = Assert.Single(_library.ListInstalled());
+            var source = Write(builder => { Earlier(builder); Newer(builder); });
+            var newHash = ArchiveLibrary.ContentsSha256Of(source)!;
+
+            var seen = new List<(IReadOnlyList<string> Installed, IReadOnlyList<int> Stars, bool Validated, bool Digest)>();
+            _store.OnFlush = () => seen.Add((
+                _library.ListInstalled(), _settings.GetStarredMessages(newHash), _settings.GetValidation(newHash) is not null,
+                _settings.GetMessageDigest(newHash) is not null));
+
+            var refreshed = Import(source);
+
+            Assert.Equal(ImportOutcome.Refreshed, refreshed.Outcome);
+            Assert.True(seen.Count >= 1);
+
+            // The first flush: carried stars, validation and digest are written, and only the old copy is installed yet.
+            var first_ = seen[0];
+            Assert.Equal([oldFolder], first_.Installed);
+            Assert.Equal([2, 6], first_.Stars);
+            Assert.True(first_.Validated);
+            Assert.True(first_.Digest);
+        }
+
+        [Fact]
+        public void A_failed_flush_refuses_the_refresh_before_anything_moves()
+        {
+            var first = Import(Write(b => Earlier(b)));
+            SetEverything(first.ContentsSha256!);
+            var oldFolder = Assert.Single(_library.ListInstalled());
+            _store.FlushSucceeds = false;
+
+            var result = Import(Write(builder => { Earlier(builder); Newer(builder); }));
+
+            Assert.Equal(ImportRefusal.CopyFailed, result.Refusal);
+            Assert.Equal([oldFolder], _library.ListInstalled());
+            AssertEverything(first.ContentsSha256!);
+            Assert.Empty(StagingLeft());
+        }
+
+        [Fact]
+        public void A_failure_of_any_kind_removing_the_old_copy_still_reports_the_update_with_the_old_copy_left()
+        {
+            var first = Import(Write(b => Earlier(b)));
+            SetEverything(first.ContentsSha256!);
+            var oldFolder = Assert.Single(_library.ListInstalled());
+
+            // The old folder vanishes after the flush and before it is retired: Retire throws ArgumentException, not IO.
+            _store.OnFlush = () =>
+            {
+                if (Directory.Exists(oldFolder))
+                {
+                    Directory.Delete(oldFolder, recursive: true);
+                }
+            };
+
+            var result = Import(Write(builder => { Earlier(builder); Newer(builder); }));
+
+            Assert.Equal(ImportOutcome.Refreshed, result.Outcome);
+            Assert.False(result.ReplacedRemoved);
+            Assert.Contains("The earlier copy could not be removed", result.Message, StringComparison.Ordinal);
+            Assert.DoesNotContain("Nothing was kept", result.Message, StringComparison.Ordinal);
+            Assert.Equal(result.InstallId, Path.GetFileName(Assert.Single(_library.ListInstalled())));
+            AssertEverything(result.ContentsSha256!);
+        }
+
+        [Fact]
         public void Copying_settings_is_exact_and_leaves_validation_and_digest_behind()
         {
             SetEverything("old");
@@ -430,9 +530,9 @@ namespace Chatcheology.Mobile.Tests
 
             // A setting the old archive does not have is not left over on the new one.
             _settings.SetPosition("new", 99);
-            _settings.SetStarredMessages("old", []);
+            _settings.SetMe("old", null);
             _settings.CopyArchive("old", "new");
-            Assert.Empty(_settings.GetStarredMessages("new"));
+            Assert.Null(_settings.GetMe("new"));
             Assert.Equal(5, _settings.GetPosition("new"));
         }
 
@@ -547,6 +647,8 @@ namespace Chatcheology.Mobile.Tests
             Assert.Equal(ImportOutcome.Installed, result.Outcome);
             Assert.Equal(2, _library.ListInstalled().Count);
             AssertEverything(old.ContentsSha256!);
+            Assert.Equal(0, result.UnmatchedOlderArchives);
+            Assert.Equal("The archive was imported.", result.Message);
         }
 
         [Fact]
@@ -560,7 +662,23 @@ namespace Chatcheology.Mobile.Tests
             Assert.Empty(answers.Asked);
             Assert.Equal(ImportOutcome.Installed, result.Outcome);
             Assert.Equal(2, _library.ListInstalled().Count);
+
+            // Never silent: the outcome says no older archive matched, so no stars moved (a count, no title or text).
+            Assert.Equal(1, result.UnmatchedOlderArchives);
+            Assert.Equal(
+                "The archive was imported as a new archive. It did not match the older archive on this phone, so no stars were moved. " +
+                "Remove this copy before starring if that is wrong.",
+                result.Message);
+
+            // Two unmatched older archives are counted.
+            InstallVersionThreeBeside(builder => builder.Add("Synthetic unrelated line"));
+            var third = Import(Write(builder => { Earlier(builder); Newer(builder); builder.Add("Synthetic another"); }, archiveId: OtherId), answers);
+            Assert.Equal(2, third.UnmatchedOlderArchives);
+            Assert.Contains("did not match 2 older archives", third.Message, StringComparison.Ordinal);
         }
+
+        private void InstallVersionThreeBeside(Action<ArchiveBuilder> messages) =>
+            Assert.Equal(ImportOutcome.Installed, Import(Write(messages, version: 3)).Outcome);
 
         [Fact]
         public void An_installed_version_four_archive_with_another_id_is_never_offered_for_adoption()

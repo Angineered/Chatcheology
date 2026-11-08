@@ -85,7 +85,7 @@ namespace Chatcheology.Android.Pages
                 // Counts only: never an id, a title or text.
                 var refreshed = result.Outcome == ImportOutcome.Refreshed
                     ? $" added={result.AddedMessages} adopted={(result.Adopted ? 1 : 0)} replacedRemoved={(result.ReplacedRemoved ? 1 : 0)}"
-                    : string.Empty;
+                    : result.UnmatchedOlderArchives > 0 ? $" unmatchedOlder={result.UnmatchedOlderArchives}" : string.Empty;
                 AppState.LogTiming("import", watch.Elapsed, $"outcome={result.Outcome} refusal={result.Refusal}{refreshed} {_readCounts}");
             }
             catch (Exception)
@@ -212,7 +212,12 @@ namespace Chatcheology.Android.Pages
 
             if (result is { Outcome: ImportOutcome.Refreshed, ReplacedRemoved: true, ReplacedInstallId: { } replaced })
             {
-                // CH-71 step 2: the replaced copy's notification goes; the new copy's is scheduled below.
+                // CH-71 step 2: the replaced copy's noted-date notification goes; the new copy's is scheduled below.
+                // The own-memories notification ("A memory today", one per phone) is deliberately not cancelled even when
+                // its tap names the replaced folder: cancelling would remove the owner's reminder for the day. Its tap then
+                // finds no such folder and falls back to the start screen, or at app start to the usual opening rule (StartPage
+                // looks the id up and opens nothing for a missing one); the next one names the
+                // new folder (UpdateAsync below picks the last-opened archive, whose last-opened time was carried over).
                 NotedDateNotifier.Cancel(replaced);
             }
 

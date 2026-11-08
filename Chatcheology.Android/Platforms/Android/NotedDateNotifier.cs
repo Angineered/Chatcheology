@@ -275,14 +275,14 @@ namespace Chatcheology.Android
         private static Notification BuildOwn(DueOwnNotification due) =>
             Build(NotedDateSchedule.OwnNotificationId, due.Text, due.TapInstallId);
 
-        private static Notification Build(int id, string text, string? archiveId)
+        private static Notification Build(int id, string text, string? installId)
         {
             var open = new Intent(Context, typeof(MainActivity))
                 .SetFlags(ActivityFlags.NewTask | ActivityFlags.SingleTop | ActivityFlags.ClearTop);
 
-            if (archiveId is not null)
+            if (installId is not null)
             {
-                open.PutExtra(ArchiveExtra, archiveId);
+                open.PutExtra(ArchiveExtra, installId);
             }
 
             var tap = PendingIntent.GetActivity(Context, id, open, PendingIntentFlags.Immutable | PendingIntentFlags.UpdateCurrent);

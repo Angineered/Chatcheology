@@ -212,6 +212,23 @@ namespace Chatcheology.Mobile.Tests.Support
     {
         internal Dictionary<string, string> Values { get; } = new(StringComparer.Ordinal);
 
+        /// <summary>How many times <see cref="Flush"/> was called.</summary>
+        internal int Flushes { get; private set; }
+
+        /// <summary>Called on each flush, before it returns (CH-71 step 2: to check what is on "disk" when).</summary>
+        internal Action? OnFlush { get; set; }
+
+        /// <summary>What <see cref="Flush"/> answers.</summary>
+        internal bool FlushSucceeds { get; set; } = true;
+
+        public bool Flush()
+        {
+            Flushes++;
+            OnFlush?.Invoke();
+
+            return FlushSucceeds;
+        }
+
         public string? Get(string key) => Values.TryGetValue(key, out var value) ? value : null;
 
         public void Set(string key, string? value)
