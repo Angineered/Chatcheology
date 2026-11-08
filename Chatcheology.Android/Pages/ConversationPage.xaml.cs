@@ -463,9 +463,33 @@ namespace Chatcheology.Android.Pages
                 return;
             }
 
-            _scrollStateList?.RemoveOnScrollListener(_scrollState);
+            RemoveScrollState();
             _scrollStateList = recycler;
             _scrollStateList?.AddOnScrollListener(_scrollState);
+        }
+
+        /// <summary>
+        /// Takes the scroll-state listener off its list. A list whose Java view is already gone (CH-60: a closed page's
+        /// views are not always handed back in order) is skipped; a failing remove never stops the caller.
+        /// </summary>
+        private void RemoveScrollState()
+        {
+            var list = _scrollStateList;
+            _scrollStateList = null;
+
+            if (list is null || list.Handle == IntPtr.Zero)
+            {
+                return;
+            }
+
+            try
+            {
+                list.RemoveOnScrollListener(_scrollState);
+            }
+            catch (Exception)
+            {
+                // The listener calls nothing once the page closes (ScrollStateListener.Detach).
+            }
         }
 
         /// <summary>
@@ -567,9 +591,7 @@ namespace Chatcheology.Android.Pages
                 _scrollState.Detach();
                 HideFloatingDateNow();
 
-                var list = _scrollStateList;
-                _scrollStateList = null;
-                list?.RemoveOnScrollListener(_scrollState);
+                RemoveScrollState();
             }
             catch (Exception)
             {
