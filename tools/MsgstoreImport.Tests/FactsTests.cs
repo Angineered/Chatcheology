@@ -55,10 +55,10 @@ public sealed partial class FactsTests
                     size, d.UnknownHash(), KeyToken + _n.ToString(CultureInfo.InvariantCulture));
 
             // A: the smaller parent is the low-quality copy of the child. Also a type-2 link (ignored).
-            A1 = d.AddAttachment("11:13:00", false);
-            A2 = d.AddAttachment("11:13:00", false);
-            var rA1 = Rec("11:13:01", 1000);
-            var rA2 = Rec("11:13:05", 5000);
+            A1 = d.AddAttachment("14:05:00", false);
+            A2 = d.AddAttachment("14:05:00", false);
+            var rA1 = Rec("14:05:01", 1000);
+            var rA2 = Rec("14:05:05", 5000);
 
             // B: parent larger than child. C: equal sizes.
             B1 = d.AddAttachment("11:14:00", false);
@@ -106,7 +106,7 @@ public sealed partial class FactsTests
             var rI2 = Rec("11:22:02", 5000);
 
             var text = d.AddNonMediaMessage("11:30:00", true, 0, Secret);
-            var elsewhere = d.AddRecord("11:13:30", false, FileToken + "-x.jpg", 10, d.UnknownHash(), KeyToken + "X", chat: 8);
+            var elsewhere = d.AddRecord("14:05:30", false, FileToken + "-x.jpg", 10, d.UnknownHash(), KeyToken + "X", chat: 8);
 
             string Id(long id) => id.ToString(CultureInfo.InvariantCulture);
             string Link(long parent, long child, int type) => $"({Id(child)}, {Id(parent)}, {type.ToString(CultureInfo.InvariantCulture)})";

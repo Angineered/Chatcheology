@@ -23,21 +23,21 @@ public sealed class ProbeTests
             var d = Data;
 
             // Minute before: one sent attachment, one record.
-            var before = d.AddAttachment("11:12:00", outgoing: true);
+            var before = d.AddAttachment("14:04:00", outgoing: true);
             var beforeAsset = d.AddAsset();
-            d.AddRecordFor(beforeAsset, "11:12:30", true, "PKEYBEFORE");
+            d.AddRecordFor(beforeAsset, "14:04:30", true, "PKEYBEFORE");
 
             // Target minute, received: four slots.
-            Slots = [d.AddAttachment("11:13:00", false), d.AddAttachment("11:13:00", false),
-                     d.AddAttachment("11:13:00", false), d.AddAttachment("11:13:00", false)];
+            Slots = [d.AddAttachment("14:05:00", false), d.AddAttachment("14:05:00", false),
+                     d.AddAttachment("14:05:00", false), d.AddAttachment("14:05:00", false)];
             Assets = [d.AddAsset(), d.AddAsset(), d.AddAsset()];
 
-            d.AddRecordFor(Assets[0], "11:13:01", false, "PKEYONE");
-            d.AddNonMediaMessage("11:13:02", false, 0, Secret);
-            d.AddRecordFor(Assets[1], "11:13:05", false, "PKEYTWO");
-            d.AddNonMediaMessage("11:13:06", false, 15, null); // e.g. a revoked item
-            d.AddRecordFor(Assets[2], "11:13:09", false, "PKEYTHREE");
-            d.AddRecordFor(Assets[2], "11:13:10", false, "PKEYFOUR", nameAndSize: false); // same hash again
+            d.AddRecordFor(Assets[0], "14:05:01", false, "PKEYONE");
+            d.AddNonMediaMessage("14:05:02", false, 0, Secret);
+            d.AddRecordFor(Assets[1], "14:05:05", false, "PKEYTWO");
+            d.AddNonMediaMessage("14:05:06", false, 15, null); // e.g. a revoked item
+            d.AddRecordFor(Assets[2], "14:05:09", false, "PKEYTHREE");
+            d.AddRecordFor(Assets[2], "14:05:10", false, "PKEYFOUR", nameAndSize: false); // same hash again
 
             // Minute after: nothing in either direction.
             _ = before;
@@ -51,7 +51,7 @@ public sealed class ProbeTests
             "probe", "--msgstore", Data.MsgstorePath, "--workspace", Data.WorkspacePath,
             "--conversation", "1", "--chat", SyntheticData.ChatID.ToString(CultureInfo.InvariantCulture),
             "--utc-offset", SyntheticData.OffsetText, "--local-participant", "1",
-            "--date", "2026-03-02", "--time", "11:13", "--probe-out", output ?? Probe,
+            "--date", "2026-03-02", "--time", "14:05", "--probe-out", output ?? Probe,
         ];
 
         public void Dispose() => Data.Dispose();
@@ -111,9 +111,9 @@ public sealed class ProbeTests
         var text = File.ReadAllText(m.Probe);
         var lines = text.Split('\n');
 
-        Assert.Contains("## TARGET KEY: 2026-03-02 11:13 received", text);
-        Assert.Contains("## 2026-03-02 11:12 sent", text);
-        Assert.Contains("## 2026-03-02 11:14 received", text);
+        Assert.Contains("## TARGET KEY: 2026-03-02 14:05 received", text);
+        Assert.Contains("## 2026-03-02 14:04 sent", text);
+        Assert.Contains("## 2026-03-02 14:06 received", text);
         Assert.DoesNotContain(Secret, text);
 
         // Attachment table: the last two slots share one asset, resolved by this batch.

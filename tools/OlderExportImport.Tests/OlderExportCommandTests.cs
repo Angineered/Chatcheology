@@ -369,6 +369,8 @@ namespace Chatcheology.Tools.OlderExportImport.Tests
             Assert.Equal(0, dryCode);
             Assert.Contains("schema version: 5", dryOutput, StringComparison.Ordinal);
             Assert.Contains("Dry run: nothing was written.", dryOutput, StringComparison.Ordinal);
+            Assert.Contains("Version-5 shape gate: PASS.", dryOutput, StringComparison.Ordinal);
+            Assert.Contains("--apply would add the version-", dryOutput, StringComparison.Ordinal);
             Assert.DoesNotContain(_root, dryOutput, StringComparison.Ordinal);
             SqliteConnection.ClearAllPools();
             Assert.Equal(before, File.ReadAllBytes(file));
@@ -386,6 +388,55 @@ namespace Chatcheology.Tools.OlderExportImport.Tests
             var (againCode, againOutput, _) = Run("migrate", "--workspace-folder", workspace, "--apply");
             Assert.Equal(0, againCode);
             Assert.Contains("Already current; nothing was written.", againOutput, StringComparison.Ordinal);
+        }
+
+        [Fact]
+        public void Migrate_DryRun_ReportsWhyApplyWouldRefuse_AndWritesNothing()
+        {
+            var workspace = Path.Combine(_root, "workspace");
+            var file = Path.Combine(workspace, "older-exports.db");
+
+            Assert.Equal(0, Run(
+                "import", Folder("olderzz"), "--workspace-folder", workspace,
+                "--local", "Alex Example", "--other", "Sam Sample", "--position", "1", "--shown", "yes", "--create").Code);
+
+            // Version 5, plus a table the version-5 shape does not have.
+            using (var connection = new SqliteConnection($"Data Source={file};Pooling=False"))
+            {
+                connection.Open();
+                using var command = connection.CreateCommand();
+                command.CommandText = "DROP TABLE AttachmentCaptionFact; CREATE TABLE Stray (Id INTEGER PRIMARY KEY); PRAGMA user_version = 5;";
+                command.ExecuteNonQuery();
+            }
+
+            SqliteConnection.ClearAllPools();
+            var before = File.ReadAllBytes(file);
+
+            var (code, output, _) = Run("migrate", "--workspace-folder", workspace);
+
+            Assert.Equal(OlderExportCommand.Failed, code);
+            Assert.Contains("--apply would refuse:", output, StringComparison.Ordinal);
+            Assert.Contains("Stray", output, StringComparison.Ordinal);
+            Assert.DoesNotContain(_root, output, StringComparison.Ordinal);
+
+            SqliteConnection.ClearAllPools();
+            Assert.Equal(before, File.ReadAllBytes(file));
+
+            // A main workspace's marker is missing: refused as not an older-exports file.
+            using (var connection = new SqliteConnection($"Data Source={file};Pooling=False"))
+            {
+                connection.Open();
+                using var command = connection.CreateCommand();
+                command.CommandText = "DROP TABLE Stray; DELETE FROM OlderExportsInfo;";
+                command.ExecuteNonQuery();
+            }
+
+            SqliteConnection.ClearAllPools();
+
+            var (markerCode, markerOutput, _) = Run("migrate", "--workspace-folder", workspace);
+            Assert.Equal(OlderExportCommand.Failed, markerCode);
+            Assert.Contains("--apply would refuse:", markerOutput, StringComparison.Ordinal);
+            Assert.Contains("marker", markerOutput, StringComparison.Ordinal);
         }
 
         [Fact]

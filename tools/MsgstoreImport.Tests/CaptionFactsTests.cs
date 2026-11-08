@@ -164,15 +164,15 @@ public sealed partial class CaptionFactsTests
             "--manifest-sha256", sha, "--i-have-a-backup",
         ];
 
-        /// <summary>Every stored caption, by attachment: (text, from the low-quality copy, batch).</summary>
-        internal Dictionary<long, (string Text, bool FromCopy, string Batch)> Captions()
+        /// <summary>Every stored caption, by attachment: (text, from the type-12 partner, batch).</summary>
+        internal Dictionary<long, (string Text, bool FromPartner, string Batch)> Captions()
         {
             var result = new Dictionary<long, (string, bool, string)>();
 
             using (var connection = Chatcheology.Data.Workspace.WorkspaceDatabase.OpenReadOnlyConnection(Data.WorkspacePath))
             using (var command = connection.CreateCommand())
             {
-                command.CommandText = "SELECT AttachmentID, CaptionText, FromLowQualityCopy, SourceBatch FROM AttachmentCaptionFact;";
+                command.CommandText = "SELECT AttachmentID, CaptionText, FromPartner, SourceBatch FROM AttachmentCaptionFact;";
 
                 using var reader = command.ExecuteReader();
 
@@ -241,7 +241,7 @@ public sealed partial class CaptionFactsTests
         Assert.Matches(Line("  ambiguous pairing (no row)", 0), stdout);
         Assert.Matches(Line("paired attachments with a caption (manifest rows)", 8), stdout);
         Assert.Matches(Line("  from their own message", 7), stdout);
-        Assert.Matches(Line("  from the low-quality partner", 1), stdout);
+        Assert.Matches(Line("  from the type-12 linked partner (either side)", 1), stdout);
         Assert.Matches(Line("  read from media_caption (text column empty)", 1), stdout);
         Assert.Matches(Line("  own caption used, partner's differs", 2), stdout);
         Assert.Matches(Line("paired attachments with no caption (no row)", 4), stdout);
@@ -262,8 +262,8 @@ public sealed partial class CaptionFactsTests
         Assert.Equal(new[] { f.A, f.B1, f.B2, f.C1, f.C2, f.I, f.J, f.L }.Order(), rows.Keys.Order());
         Assert.Equal(CaptionRow.Digest(OwnCaption), rows[f.A].CaptionSha256);
         Assert.Equal(f.RecordA, rows[f.A].CaptionMessageID);
-        Assert.False(rows[f.B1].FromLowQualityCopy);
-        Assert.True(rows[f.B2].FromLowQualityCopy);
+        Assert.False(rows[f.B1].FromPartner);
+        Assert.True(rows[f.B2].FromPartner);
         Assert.Equal(f.RecordB1, rows[f.B2].CaptionMessageID);
         Assert.Equal(CaptionRow.Digest(HiddenCopyCaption), rows[f.B2].CaptionSha256);
         Assert.Equal(CaptionRow.Digest(FirstOfPair), rows[f.C1].CaptionSha256);
@@ -298,9 +298,9 @@ public sealed partial class CaptionFactsTests
 
         Assert.Equal(8, captions.Count);
         Assert.All(captions.Values, c => Assert.Equal(tag, c.Batch));
-        Assert.Equal((OwnCaption, false), (captions[f.A].Text, captions[f.A].FromCopy));
-        Assert.Equal((HiddenCopyCaption, false), (captions[f.B1].Text, captions[f.B1].FromCopy));
-        Assert.Equal((HiddenCopyCaption, true), (captions[f.B2].Text, captions[f.B2].FromCopy));
+        Assert.Equal((OwnCaption, false), (captions[f.A].Text, captions[f.A].FromPartner));
+        Assert.Equal((HiddenCopyCaption, false), (captions[f.B1].Text, captions[f.B1].FromPartner));
+        Assert.Equal((HiddenCopyCaption, true), (captions[f.B2].Text, captions[f.B2].FromPartner));
         Assert.Equal(FirstOfPair, captions[f.C1].Text);
         Assert.Equal(SecondOfPair, captions[f.C2].Text);
         Assert.Equal(LegacyCaption, captions[f.I].Text);
@@ -336,7 +336,7 @@ public sealed partial class CaptionFactsTests
         // A caption from another batch on an attachment this batch does not touch.
         f.Data.Workspace(
             $"""
-            INSERT INTO AttachmentCaptionFact (AttachmentID, CaptionText, FromLowQualityCopy, SourceBatch, RecordedDateTimeUtc)
+            INSERT INTO AttachmentCaptionFact (AttachmentID, CaptionText, FromPartner, SourceBatch, RecordedDateTimeUtc)
             VALUES ({Id(f.K)}, 'kept', 0, 'otherbatch01', '2026-11-01T00:00:00.0000000Z');
             """);
         f.Data.CloseAll();
@@ -396,7 +396,7 @@ public sealed partial class CaptionFactsTests
         using var f = new Fixture();
         f.Data.Workspace(
             $"""
-            INSERT INTO AttachmentCaptionFact (AttachmentID, CaptionText, FromLowQualityCopy, SourceBatch, RecordedDateTimeUtc)
+            INSERT INTO AttachmentCaptionFact (AttachmentID, CaptionText, FromPartner, SourceBatch, RecordedDateTimeUtc)
             VALUES ({Id(f.A)}, 'earlier', 0, 'otherbatch01', '2026-11-01T00:00:00.0000000Z'),
                    ({Id(f.E)}, 'earlier too', 0, 'otherbatch01', '2026-11-01T00:00:00.0000000Z');
             """);

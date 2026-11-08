@@ -479,12 +479,11 @@ namespace Chatcheology.Tools.OlderExportImport
                     "There is no older-exports file in the workspace folder. Nothing was written.");
             }
 
-            int before;
+            OlderExportsMigrationCheck check;
 
             try
             {
-                using var connection = Chatcheology.Data.Workspace.WorkspaceDatabase.OpenReadOnlyConnection(databasePath);
-                before = Chatcheology.Data.Workspace.WorkspaceDatabase.ReadSchemaVersion(connection);
+                check = OlderExportsDatabase.CheckMigration(databasePath);
             }
             finally
             {
@@ -493,15 +492,27 @@ namespace Chatcheology.Tools.OlderExportImport
 
             var current = Chatcheology.Data.Workspace.WorkspaceDatabase.SchemaVersion;
 
-            output.WriteLine($"older-exports workspace schema version: {before.ToString(CultureInfo.InvariantCulture)}");
+            output.WriteLine($"older-exports workspace schema version: {check.Version.ToString(CultureInfo.InvariantCulture)}");
 
             if (!parsed.Apply)
             {
-                output.WriteLine(before == current
-                    ? "Already current; nothing to migrate."
-                    : $"Dry run: nothing was written. Back up the file, close the viewer, then add --apply to migrate it to version {current.ToString(CultureInfo.InvariantCulture)}.");
+                switch (check.Outcome)
+                {
+                    case OlderExportsMigrationOutcome.AlreadyCurrent:
+                        output.WriteLine("Older-exports tables and marker: OK. Already current; nothing to migrate.");
+                        return Success;
 
-                return Success;
+                    case OlderExportsMigrationOutcome.WouldMigrate:
+                        output.WriteLine("Older-exports tables and marker: OK. Version-5 shape gate: PASS.");
+                        output.WriteLine(
+                            $"Dry run: nothing was written. --apply would add the version-{current.ToString(CultureInfo.InvariantCulture)} " +
+                            "table in one transaction. Back up the file and close the viewer first.");
+                        return Success;
+
+                    default:
+                        output.WriteLine($"Dry run: nothing was written. --apply would refuse: {check.Refusal}");
+                        return Failed;
+                }
             }
 
             bool migrated;

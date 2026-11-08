@@ -74,8 +74,8 @@ namespace Chatcheology.Data.Tests.MsgstoreFacts
 
             Assert.Equal(2, facts.Count);
             Assert.Equal(Untrimmed, facts[A(0)].CaptionText);
-            Assert.False(facts[A(0)].FromLowQualityCopy);
-            Assert.True(facts[A(1)].FromLowQualityCopy);
+            Assert.False(facts[A(0)].FromPartner);
+            Assert.True(facts[A(1)].FromPartner);
             Assert.Equal("caption-1", facts[A(0)].SourceBatch);
             Assert.Equal(Recorded, facts[A(0)].RecordedDateTimeUtc);
             Assert.Equal(DateTimeKind.Utc, facts[A(0)].RecordedDateTimeUtc.Kind);
@@ -198,7 +198,7 @@ namespace Chatcheology.Data.Tests.MsgstoreFacts
                 using var command = connection.CreateCommand();
                 command.CommandText =
                     """
-                    INSERT INTO AttachmentCaptionFact (AttachmentID, CaptionText, FromLowQualityCopy, SourceBatch, RecordedDateTimeUtc)
+                    INSERT INTO AttachmentCaptionFact (AttachmentID, CaptionText, FromPartner, SourceBatch, RecordedDateTimeUtc)
                     VALUES ($a, $c, $f, 'b', '2026-11-08T00:00:00.0000000Z');
                     """;
                 command.Parameters.AddWithValue("$a", attachment);

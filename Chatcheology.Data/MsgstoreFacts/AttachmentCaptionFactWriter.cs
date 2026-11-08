@@ -75,14 +75,14 @@ namespace Chatcheology.Data.MsgstoreFacts
                 command.CommandText =
                     """
                     INSERT INTO AttachmentCaptionFact (
-                        AttachmentID, CaptionText, FromLowQualityCopy, SourceBatch, RecordedDateTimeUtc)
+                        AttachmentID, CaptionText, FromPartner, SourceBatch, RecordedDateTimeUtc)
                     VALUES (
-                        $attachmentID, $captionText, $fromLowQualityCopy, $sourceBatch, $recorded);
+                        $attachmentID, $captionText, $fromPartner, $sourceBatch, $recorded);
                     """;
 
                 var attachmentID = command.Parameters.Add("$attachmentID", SqliteType.Integer);
                 var captionText = command.Parameters.Add("$captionText", SqliteType.Text);
-                var fromLowQualityCopy = command.Parameters.Add("$fromLowQualityCopy", SqliteType.Integer);
+                var fromPartner = command.Parameters.Add("$fromPartner", SqliteType.Integer);
 
                 command.Parameters.AddWithValue("$sourceBatch", sourceBatch);
                 command.Parameters.AddWithValue(
@@ -94,7 +94,7 @@ namespace Chatcheology.Data.MsgstoreFacts
                 {
                     attachmentID.Value = row.AttachmentID;
                     captionText.Value = row.CaptionText;
-                    fromLowQualityCopy.Value = row.FromLowQualityCopy ? 1 : 0;
+                    fromPartner.Value = row.FromPartner ? 1 : 0;
 
                     command.ExecuteNonQuery();
                 }

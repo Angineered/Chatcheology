@@ -101,9 +101,11 @@ import <export-folder> --workspace-folder <folder> --local <name> --other <name>
 `migrate --workspace-folder <folder> [--apply]` (CH-71): the older-exports file is an ordinary
 workspace underneath, so when the workspace schema moves on (version 5 to 6 added the caption
 table), the file has to move with it, or the archive export and the viewer refuse it. Without
-`--apply` it opens the file read-only and prints its schema version. With `--apply` it proves the
-file is an older-exports file (its own tables and marker), checks it has exactly the version-5
-shape, and adds the version-6 table in one transaction. Nothing else changes. Back up the file and
+`--apply` it opens the file read-only, runs the same checks as `--apply` and prints its schema
+version and what `--apply` would do (already current, migrate, or refuse with the reason; exit 1
+on a refusal). With `--apply` it proves the file is an older-exports file (its own tables and
+marker), checks it has exactly the version-5 shape, and adds the version-6 table in one
+transaction. Nothing else changes. Back up the file and
 close the viewer first; restoring the backup is the undo. A file already at the current version is
 left alone.
 

@@ -63,7 +63,7 @@ internal sealed partial class Options
 
             apply and undo-batch take the text-facts manifest as usual; undo-batch removes the batch's rows.
 
-          Plan picture captions (CH-63, CH-71: captions from the msgstore, own or low-quality partner's;
+          Plan picture captions (CH-63, CH-71: captions from the msgstore, own or the type-12 partner's;
           read-only; counts only, never the captions):
 
             MsgstoreImport plan --rule caption-facts --msgstore ... --workspace ... --conversation ... --chat ...

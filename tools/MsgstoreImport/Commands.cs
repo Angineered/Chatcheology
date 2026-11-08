@@ -333,14 +333,14 @@ internal static class RowLoop
 
 internal static class Applier
 {
-    internal const string ActorLabel = "Angie (msgstore import)";
+    internal const string ActorLabel = ActorLabels.MsgstoreImport;
 
     internal static string Marker(string tag) => "import batch " + tag;
 
     internal static string Description(ManifestRow row, string tag, PairingRule rule = PairingRule.Minute) => rule switch
     {
         PairingRule.NameSizeReviewed =>
-            $"Angie inspected the file and confirmed it (review list {row.ReviewList}); " +
+            $"{ActorLabels.ReviewedStatementPrefix}{row.ReviewList}); " +
             $"WhatsApp msgstore record (message key_id {row.KeyID}), " +
             $"paired by {(row.PairedBy == PairingRule.DaySequence ? "day message sequence" : "minute")}, " +
             $"file matched by name+size only; {Marker(tag)}",

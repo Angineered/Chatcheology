@@ -17,10 +17,11 @@ namespace Chatcheology.Data.MsgstoreFacts
         public required string CaptionText { get; init; }
 
         /// <summary>
-        /// True when the caption was read from the attachment's hidden low-quality partner
-        /// (msgstore association type 12) rather than from its own message.
+        /// True when the caption was read from the type-12 linked partner of the attachment's own
+        /// msgstore message (either side of the link: the hidden low-quality copy or the shown full
+        /// copy) rather than from its own message.
         /// </summary>
-        public required bool FromLowQualityCopy { get; init; }
+        public required bool FromPartner { get; init; }
 
         /// <summary>The batch that recorded the row.</summary>
         public required string SourceBatch { get; init; }
@@ -34,9 +35,9 @@ namespace Chatcheology.Data.MsgstoreFacts
     /// </summary>
     /// <param name="AttachmentID">The attachment the caption belongs to.</param>
     /// <param name="CaptionText">The caption exactly as the msgstore holds it; never empty.</param>
-    /// <param name="FromLowQualityCopy">Whether it was read from the low-quality partner.</param>
+    /// <param name="FromPartner">Whether it was read from the type-12 linked partner (either side).</param>
     public sealed record AttachmentCaptionFactRow(
         long AttachmentID,
         string CaptionText,
-        bool FromLowQualityCopy);
+        bool FromPartner);
 }

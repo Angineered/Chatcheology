@@ -949,8 +949,9 @@ namespace Chatcheology.Data.Workspace
         /// so the caption exists only in the msgstore. One row per attachment that has a caption;
         /// an attachment with no row simply has no known caption. <c>CaptionText</c> is stored
         /// exactly as the msgstore holds it, never trimmed or normalised, and is never empty.
-        /// <c>FromLowQualityCopy</c> is 1 when the caption was read from the attachment's hidden
-        /// low-quality partner (msgstore association type 12) rather than its own message.
+        /// <c>FromPartner</c> is 1 when the caption was read from the message linked to the
+        /// attachment's own message by msgstore association type 12 (either side of the link: the
+        /// hidden low-quality copy or the shown full copy) rather than from its own message.
         /// </para>
         /// </remarks>
         private static readonly string[] VersionSixSchemaStatements =
@@ -959,12 +960,12 @@ namespace Chatcheology.Data.Workspace
             CREATE TABLE AttachmentCaptionFact (
                 AttachmentID        INTEGER PRIMARY KEY,
                 CaptionText         TEXT NOT NULL,
-                FromLowQualityCopy  INTEGER NOT NULL,
+                FromPartner         INTEGER NOT NULL,
                 SourceBatch         TEXT NOT NULL,
                 RecordedDateTimeUtc TEXT NOT NULL,
 
                 CHECK (length(CaptionText) > 0),
-                CHECK (FromLowQualityCopy IN (0, 1)),
+                CHECK (FromPartner IN (0, 1)),
                 CHECK (length(SourceBatch) > 0),
 
                 FOREIGN KEY (AttachmentID) REFERENCES Attachment (AttachmentID)
@@ -1440,18 +1441,7 @@ namespace Chatcheology.Data.Workspace
         internal static void MigrateVersionFiveToVersionSix(
             SqliteConnection connection, IReadOnlyCollection<string> additionalTables)
         {
-            ArgumentNullException.ThrowIfNull(connection);
-            ArgumentNullException.ThrowIfNull(additionalTables);
-
-            RequireExactShape(
-                connection,
-                VersionFiveSchemaVersion,
-                VersionTwoTableNames
-                    .Concat(VersionThreeTableNames)
-                    .Append(MsgstoreFactTableName)
-                    .Append(MessageMsgstoreFactTableName)
-                    .Concat(additionalTables),
-                VersionThreeIndexNames.Concat(VersionFourIndexNames).Concat(VersionFiveIndexNames));
+            RequireVersionFiveShape(connection, additionalTables);
 
             using var transaction = connection.BeginTransaction();
 
@@ -1465,6 +1455,29 @@ namespace Chatcheology.Data.Workspace
             }
 
             transaction.Commit();
+        }
+
+        /// <summary>
+        /// The version-5-to-6 shape gate on its own: throws unless the database holds exactly the
+        /// version-5 tables and named indexes plus <paramref name="additionalTables"/>. Read-only, so
+        /// a dry run can ask what the migration would do.
+        /// </summary>
+        /// <exception cref="InvalidOperationException">The shape is not the version-5 shape.</exception>
+        internal static void RequireVersionFiveShape(
+            SqliteConnection connection, IReadOnlyCollection<string> additionalTables)
+        {
+            ArgumentNullException.ThrowIfNull(connection);
+            ArgumentNullException.ThrowIfNull(additionalTables);
+
+            RequireExactShape(
+                connection,
+                VersionFiveSchemaVersion,
+                VersionTwoTableNames
+                    .Concat(VersionThreeTableNames)
+                    .Append(MsgstoreFactTableName)
+                    .Append(MessageMsgstoreFactTableName)
+                    .Concat(additionalTables),
+                VersionThreeIndexNames.Concat(VersionFourIndexNames).Concat(VersionFiveIndexNames));
         }
 
         /// <summary>

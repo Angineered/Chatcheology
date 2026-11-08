@@ -175,7 +175,7 @@ internal sealed class MissingPlanResult
 /// </remarks>
 internal static class MissingReview
 {
-    internal const string ActorLabel = "Angie (accepted missing list)";
+    internal const string ActorLabel = ActorLabels.AcceptedMissingList;
 
     internal const string NoFileInAnyCopy = "no file in any copy";
     internal const string WhatsAppKeptNoFile = "WhatsApp kept no file";

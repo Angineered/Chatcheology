@@ -20,7 +20,7 @@ public sealed class ProbeLinksTests
     }
 
     /// <summary>
-    /// 11:13 received: four attachments, four records (two large, two small copies), paired by the
+    /// 14:05 received: four attachments, four records (two large, two small copies), paired by the
     /// minute rule; type-1 links large to small, once with the smaller side as child and once as
     /// parent. 11:20 sent: one attachment, two equal-size records (not paired), one type-2 link.
     /// One type-3 link to a message in another chat. A forwarded text message carries text the probe
@@ -53,17 +53,17 @@ public sealed class ProbeLinksTests
                 d.Msgstore("CREATE TABLE message_thumbnail (key_id TEXT, thumbnail BLOB); INSERT INTO message_thumbnail VALUES ('" + KeyToken + "X', NULL);");
             }
 
-            _ = new[] { d.AddAttachment("11:13:00", false), d.AddAttachment("11:13:00", false),
-                        d.AddAttachment("11:13:00", false), d.AddAttachment("11:13:00", false) };
+            _ = new[] { d.AddAttachment("14:05:00", false), d.AddAttachment("14:05:00", false),
+                        d.AddAttachment("14:05:00", false), d.AddAttachment("14:05:00", false) };
             var large1 = d.AddAsset(size: 4096);
             var small1 = d.AddAsset(size: 1024);
             var large2 = d.AddAsset(size: 4096);
             var small2 = d.AddAsset(size: 1024);
 
-            var l1 = d.AddRecordFor(large1, "11:13:01", false, KeyToken + "L1");
-            var s1 = d.AddRecordFor(small1, "11:13:02", false, KeyToken + "S1");
-            var l2 = d.AddRecordFor(large2, "11:13:05", false, KeyToken + "L2");
-            var s2 = d.AddRecordFor(small2, "11:13:06", false, KeyToken + "S2");
+            var l1 = d.AddRecordFor(large1, "14:05:01", false, KeyToken + "L1");
+            var s1 = d.AddRecordFor(small1, "14:05:02", false, KeyToken + "S1");
+            var l2 = d.AddRecordFor(large2, "14:05:05", false, KeyToken + "L2");
+            var s2 = d.AddRecordFor(small2, "14:05:06", false, KeyToken + "S2");
 
             d.AddAttachment("11:20:00", true);
             var a = d.AddRecord("11:20:01", true, FileToken + "-a.jpg", 500, d.UnknownHash(), KeyToken + "A");
@@ -202,11 +202,11 @@ public sealed class ProbeLinksTests
     {
         using var f = new Fixture(Shape.Modern);
 
-        var (exit, stdout, _) = f.Run("2026-03-02T11:13");        Assert.Equal(0, exit);
+        var (exit, stdout, _) = f.Run("2026-03-02T14:05");        Assert.Equal(0, exit);
         NoIdentifiers(f, stdout);
 
         var minute = Section(stdout, "## 3a.", "## 4.");
-        Assert.Contains("2026-03-02 11:13", minute);
+        Assert.Contains("2026-03-02 14:05", minute);
         Assert.Matches(@"msgstore media records in the minute \(both directions\)\s+4", minute);
         Assert.Matches(@"workspace attachments in the minute \(both directions\)\s+4", minute);
         Assert.Matches(@"media records in the minute paired to attachments\s+4", minute);
@@ -256,7 +256,7 @@ public sealed class ProbeLinksTests
     public void Neither_structure_says_so_and_the_scan_still_lists_matching_tables()
     {
         using var f = new Fixture(Shape.Neither);
-        var (exit, stdout, stderr) = f.Run("2026-03-02T11:13");
+        var (exit, stdout, stderr) = f.Run("2026-03-02T14:05");
 
         Assert.Equal("", stderr);
         Assert.Equal(0, exit);
@@ -276,7 +276,7 @@ public sealed class ProbeLinksTests
     public void Unreadable_virtual_table_is_reported_and_the_probe_completes()
     {
         using var f = new Fixture(Shape.Modern, unreadableVirtualTable: true);
-        var (exit, stdout, stderr) = f.Run("2026-03-02T11:13");
+        var (exit, stdout, stderr) = f.Run("2026-03-02T14:05");
 
         Assert.Equal("", stderr);
         Assert.Equal(0, exit);
@@ -299,7 +299,7 @@ public sealed class ProbeLinksTests
         var msgstore = PlanTests.Sha(f.Data.MsgstorePath);
         var files = Directory.GetFiles(f.Data.DirectoryPath).Order().ToList();
 
-        var (exit, _, _) = f.Run("2026-03-02T11:13");
+        var (exit, _, _) = f.Run("2026-03-02T14:05");
 
         Assert.Equal(0, exit);
         Assert.Equal(workspace, PlanTests.Sha(f.Data.WorkspacePath));
@@ -312,13 +312,13 @@ public sealed class ProbeLinksTests
     {
         var (exit, _, stderr) = Scenario.Cli(
             ["probe-links", "--msgstore", "m", "--workspace", "w", "--conversation", "1", "--chat", "7",
-             "--utc-offset", "+02:00", "--local-participant", "1", "--minute", "2026-03-02 11:13"]);
+             "--utc-offset", "+02:00", "--local-participant", "1", "--minute", "2026-03-02 14:05"]);
         Assert.Equal(2, exit);
         Assert.Contains("--minute must look like", stderr);
 
         (exit, _, stderr) = Scenario.Cli(
             ["probe", "--msgstore", "m", "--workspace", "w", "--conversation", "1", "--chat", "7",
-             "--utc-offset", "+02:00", "--local-participant", "1", "--minute", "2026-03-02T11:13"]);
+             "--utc-offset", "+02:00", "--local-participant", "1", "--minute", "2026-03-02T14:05"]);
         Assert.Equal(2, exit);
         Assert.Contains("--minute applies only to probe-links", stderr);
 

@@ -141,7 +141,7 @@ internal sealed partial class DaySequence(Pairing pairing)
     private static partial Regex ImportShape();
 
     /// <summary>The reviewed name+size text: Angie's fixed statement, then the record phrase.</summary>
-    [GeneratedRegex(@"^Angie inspected the file and confirmed it \(review list [0-9a-f]{12}\); WhatsApp msgstore record \(message key_id (\S+?)\), ")]
+    [GeneratedRegex(ActorLabels.ReviewedStatementPattern)]
     private static partial Regex ReviewedShape();
 
     /// <summary>

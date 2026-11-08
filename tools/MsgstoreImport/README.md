@@ -358,10 +358,10 @@ has a caption. Rules:
 - A value counts as a caption when it is not empty after the CH-22 normalisation (U+200E/U+200F
   removed, LF, NFC, trim). The normalisation is only used for that decision and for comparing; the
   caption is **stored exactly as the msgstore holds it**, untrimmed.
-- **The hidden low-quality copy.** If the attachment's own message has no caption, the messages linked
+- **The type-12 partner.** If the attachment's own message has no caption, the messages linked
   to it by `message_association` type 12 (either side) are looked at, but only a partner in the same
   chat, direction and local minute. Exactly one distinct caption among them is used and recorded with
-  `FromLowQualityCopy = 1`; two or more different ones make the attachment ambiguous (no row). An own
+  `FromPartner = 1` (the partner may be the hidden low-quality copy or the shown full copy); two or more different ones make the attachment ambiguous (no row). An own
   caption always wins; a different partner caption is only counted.
 - An attachment that already has a caption from another batch is left alone and counted.
 

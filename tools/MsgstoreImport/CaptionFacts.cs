@@ -10,13 +10,13 @@ namespace MsgstoreImport;
 /// <param name="AttachmentID">The workspace attachment.</param>
 /// <param name="MessageID">The msgstore message the attachment pairs to.</param>
 /// <param name="CaptionMessageID">The msgstore message the caption was read from: the same, or its type-12 partner.</param>
-/// <param name="FromLowQualityCopy">True when the caption was read from the type-12 partner.</param>
+/// <param name="FromPartner">True when the caption was read from the type-12 partner.</param>
 /// <param name="CaptionSha256">SHA-256 (lower-case hex) of the caption's UTF-8 bytes, exactly as stored.</param>
 /// <remarks>
 /// The manifest never holds the caption itself: it is personal content. Apply reads the text from the
 /// msgstore again and writes it only when its digest still equals the approved one.
 /// </remarks>
-internal sealed record CaptionRow(long AttachmentID, long MessageID, long CaptionMessageID, bool FromLowQualityCopy, string CaptionSha256)
+internal sealed record CaptionRow(long AttachmentID, long MessageID, long CaptionMessageID, bool FromPartner, string CaptionSha256)
 {
     internal static string Digest(string caption) => Manifest.Sha256Hex(Encoding.UTF8.GetBytes(caption));
 }
@@ -28,7 +28,7 @@ internal sealed record CaptionRow(long AttachmentID, long MessageID, long Captio
 internal sealed class CaptionFactsManifest
 {
     internal const string Token = "caption-facts";
-    internal const string Header = "AttachmentID\tMsgstoreMessageID\tCaptionMessageID\tFromLowQualityCopy\tCaptionSha256";
+    internal const string Header = "AttachmentID\tMsgstoreMessageID\tCaptionMessageID\tFromPartner\tCaptionSha256";
 
     internal required PairingParameters Parameters { get; init; }
     internal required IReadOnlyList<CaptionRow> Rows { get; init; }
@@ -38,7 +38,7 @@ internal sealed class CaptionFactsManifest
     internal byte[] ToBytes() =>
         FactsManifestFormat.ToBytes(Token, Header, Parameters, Rows.Select(row =>
             $"{Text.Id(row.AttachmentID)}\t{Text.Id(row.MessageID)}\t{Text.Id(row.CaptionMessageID)}\t" +
-            $"{(row.FromLowQualityCopy ? "1" : "0")}\t{row.CaptionSha256}"));
+            $"{(row.FromPartner ? "1" : "0")}\t{row.CaptionSha256}"));
 
     /// <exception cref="FormatException">The bytes are not a well-formed caption-facts manifest.</exception>
     internal static CaptionFactsManifest Parse(byte[] bytes)
@@ -66,7 +66,7 @@ internal sealed class CaptionFactsManifest
 
             if (fromCopy == (captionMessage == message))
             {
-                throw new FormatException("A manifest row's caption source does not agree with its FromLowQualityCopy flag.");
+                throw new FormatException("A manifest row's caption source does not agree with its FromPartner flag.");
             }
 
             if (!seen.Add(attachment))
@@ -123,11 +123,11 @@ internal sealed class CaptionComputation
 /// upgrade, may be stale. A value counts as a caption when it is a string that is not empty after the
 /// CH-22 normalisation (U+200E/U+200F removed, LF, NFC, trim). The normalisation is used only to decide
 /// that and to compare; the stored caption is the msgstore value exactly, untrimmed.</para>
-/// <para><strong>The low-quality partner.</strong> When the attachment's own message has no caption,
+/// <para><strong>The type-12 partner</strong> (either side of the link: the hidden low-quality copy, or the shown full copy for a caption that sits on it while the attachment is the hidden copy). When the attachment's own message has no caption,
 /// the messages linked to it by <c>message_association</c> type 12 (either side) are looked at, but
 /// only a partner in the same chat, the same direction and the same local minute, as the <c>facts</c>
 /// rule requires of a link. Exactly one distinct caption among them is used and marked
-/// <c>FromLowQualityCopy</c>; two or more different ones make the attachment ambiguous (no row). When
+/// <c>FromPartner</c>; two or more different ones make the attachment ambiguous (no row). When
 /// the own message has a caption it is used, whatever the partner holds; a different partner caption
 /// is only counted.</para>
 /// <para>Missing is better than wrong: no caption is ever guessed, merged or edited.</para>
@@ -486,8 +486,8 @@ internal static class CaptionFactsPlanner
 
         text.AppendLine();
         text.AppendLine(Text.Line("paired attachments with a caption (manifest rows)", c.Rows.Count));
-        text.AppendLine(Text.Line("  from their own message", c.Rows.Count(r => !r.FromLowQualityCopy)));
-        text.AppendLine(Text.Line("  from the low-quality partner", c.Rows.Count(r => r.FromLowQualityCopy)));
+        text.AppendLine(Text.Line("  from their own message", c.Rows.Count(r => !r.FromPartner)));
+        text.AppendLine(Text.Line("  from the type-12 linked partner (either side)", c.Rows.Count(r => r.FromPartner)));
         text.AppendLine(Text.Line("  read from media_caption (text column empty)", c.FromMediaCaptionColumn));
         text.AppendLine(Text.Line("  own caption used, partner's differs", c.OwnAndPartnerDiffer));
         text.AppendLine(Text.Line("paired attachments with no caption (no row)", c.NoCaption));
@@ -570,9 +570,9 @@ internal static class CaptionFactsBatch
         {
             if (!stored.TryGetValue(row.AttachmentID, out var fact))
             {
-                toWrite.Add(new AttachmentCaptionFactRow(row.AttachmentID, now.Captions[row.AttachmentID], row.FromLowQualityCopy));
+                toWrite.Add(new AttachmentCaptionFactRow(row.AttachmentID, now.Captions[row.AttachmentID], row.FromPartner));
             }
-            else if (fact.SourceBatch == tag && fact.FromLowQualityCopy == row.FromLowQualityCopy
+            else if (fact.SourceBatch == tag && fact.FromPartner == row.FromPartner
                      && CaptionRow.Digest(fact.CaptionText) == row.CaptionSha256)
             {
                 already++;

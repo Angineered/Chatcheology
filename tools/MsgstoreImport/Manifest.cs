@@ -63,7 +63,7 @@ internal enum PairingRule
 
     /// <summary>
     /// CH-63 / CH-71: not a Phase 7 write. Picture captions copied from the msgstore, one row per paired
-    /// attachment that has a caption (its own, or its hidden low-quality partner's). Its own manifest
+    /// attachment that has a caption (its own, or its type-12 linked partner's, either side). Its own manifest
     /// layout (see <c>CaptionFactsManifest</c>).
     /// </summary>
     CaptionFacts,

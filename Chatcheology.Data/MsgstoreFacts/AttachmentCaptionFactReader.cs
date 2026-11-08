@@ -46,7 +46,7 @@ namespace Chatcheology.Data.MsgstoreFacts
                 {
                     AttachmentID = reader.GetInt64(0),
                     CaptionText = reader.GetString(1),
-                    FromLowQualityCopy = reader.GetInt64(2) == 1,
+                    FromPartner = reader.GetInt64(2) == 1,
                     SourceBatch = reader.GetString(3),
                     RecordedDateTimeUtc = DateTime.Parse(
                         reader.GetString(4),
@@ -65,7 +65,7 @@ namespace Chatcheology.Data.MsgstoreFacts
 
         private const string FactsStatement =
             """
-            SELECT f.AttachmentID, f.CaptionText, f.FromLowQualityCopy, f.SourceBatch, f.RecordedDateTimeUtc
+            SELECT f.AttachmentID, f.CaptionText, f.FromPartner, f.SourceBatch, f.RecordedDateTimeUtc
             FROM AttachmentCaptionFact AS f
             WHERE f.AttachmentID IN (SELECT value FROM json_each($ids))
             ORDER BY f.AttachmentID;

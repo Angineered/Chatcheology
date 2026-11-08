@@ -43,7 +43,7 @@ internal sealed record ReviewRow(long AttachmentID, long MediaAssetID, string Ke
 /// </remarks>
 internal sealed class NameSize(Pairing pairing)
 {
-    internal const string ReviewedActorLabel = "Angie (reviewed name+size list)";
+    internal const string ReviewedActorLabel = ActorLabels.ReviewedNameSize;
     internal const string NotNameSize = "matched by hash (earlier rules)";
     internal const string Ambiguous = "name+size matches 2+ assets (no single proposal)";
 

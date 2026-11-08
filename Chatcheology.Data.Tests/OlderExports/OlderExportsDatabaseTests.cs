@@ -193,6 +193,42 @@ namespace Chatcheology.Data.Tests.OlderExports
         }
 
         [Fact]
+        public void CheckMigration_reports_what_migrate_would_do_and_writes_nothing()
+        {
+            using var folders = new SyntheticExportFolders();
+            OlderExportsDatabase.Create(folders.OlderExportsPath, Now);
+
+            Assert.Equal(
+                OlderExportsMigrationOutcome.AlreadyCurrent,
+                OlderExportsDatabase.CheckMigration(folders.OlderExportsPath).Outcome);
+
+            MakeVersionFive(folders.OlderExportsPath);
+            var before = File.ReadAllBytes(folders.OlderExportsPath);
+
+            var check = OlderExportsDatabase.CheckMigration(folders.OlderExportsPath);
+            Assert.Equal((5, OlderExportsMigrationOutcome.WouldMigrate, (string?)null), (check.Version, check.Outcome, check.Refusal));
+
+            SqliteConnection.ClearAllPools();
+            Assert.Equal(before, File.ReadAllBytes(folders.OlderExportsPath));
+
+            using (var connection = WorkspaceDatabase.OpenConnection(folders.OlderExportsPath))
+            using (var command = connection.CreateCommand())
+            {
+                command.CommandText = "CREATE TABLE Stray (Id INTEGER PRIMARY KEY);";
+                command.ExecuteNonQuery();
+            }
+
+            SqliteConnection.ClearAllPools();
+
+            var refused = OlderExportsDatabase.CheckMigration(folders.OlderExportsPath);
+            Assert.Equal(OlderExportsMigrationOutcome.WouldRefuse, refused.Outcome);
+            Assert.Contains("Stray", refused.Refusal, StringComparison.Ordinal);
+
+            SqliteConnection.ClearAllPools();
+            Assert.Throws<InvalidOperationException>(() => OlderExportsDatabase.MigrateToCurrent(folders.OlderExportsPath));
+        }
+
+        [Fact]
         public void Migrate_refuses_a_main_workspace_under_the_fixed_name_and_writes_nothing()
         {
             using var folders = new SyntheticExportFolders();
