@@ -2,6 +2,7 @@ using System.Globalization;
 using Chatcheology.Archive;
 using Chatcheology.Core.Models;
 using Chatcheology.Data.Memories;
+using Chatcheology.Data.NewerMessages;
 using Chatcheology.Data.OlderExports;
 
 namespace Chatcheology.Data.ArchiveExport
@@ -27,6 +28,14 @@ namespace Chatcheology.Data.ArchiveExport
     /// <para><strong>One owner for the rows.</strong> The exporter writes what this builds and
     /// <see cref="ArchiveWorkspaceComparer"/> compares an archive against it.</para>
     /// <para>A missing older-exports or memories file means none: counted as zero, never an error.</para>
+    /// <para><strong>Newer messages</strong> (format version 4, CH-71 step 3b): the newer-messages file beside the
+    /// workspace, after the workspace conversation in <c>NewerMessageID</c> order, <c>Source = Msgstore</c>.
+    /// Identifiers and sequence numbers follow <see cref="NewerMessagesArchiveIds"/>, so every earlier message and
+    /// attachment keeps its identifier and sequence number when newer messages are added. A system row is a System
+    /// message with its fixed wording; a placeholder (something the archive cannot show yet) is a User message of
+    /// its sender carrying only its fixed wording, which the phone recognises and shows muted. The file's
+    /// participants must be the conversation's local and other participant, as the request names them. A missing
+    /// file means none.</para>
     /// </remarks>
     internal sealed class ArchiveCombinedSource
     {
@@ -34,12 +43,16 @@ namespace Chatcheology.Data.ArchiveExport
             ArchiveExportSource workspace,
             OlderExportsArchiveSource? older,
             MemoriesArchiveSource? memories,
+            NewerMessagesArchiveSource? newer,
+            long conversationID,
             long localParticipantID,
             long? otherParticipantID)
         {
             Workspace = workspace;
             Older = older;
             Memories = memories;
+            Newer = newer;
+            ConversationID = conversationID;
             LocalParticipantID = localParticipantID;
             OtherParticipantID = otherParticipantID;
 
@@ -57,6 +70,10 @@ namespace Chatcheology.Data.ArchiveExport
             }
 
             WorkspaceArchiveSequence = archiveSequence;
+
+            // CH-71 step 3b: newer ids right above everything the older-export part uses (NewerMessagesArchiveIds).
+            NewerMessageIDBase = OlderMessageIDBase + OlderTimeline.Count;
+            NewerAttachmentIDBase = OlderAttachmentIDBase + OlderTimeline.Sum(pair => pair.Message.Attachments.Count);
         }
 
         internal ArchiveExportSource Workspace { get; }
@@ -66,6 +83,20 @@ namespace Chatcheology.Data.ArchiveExport
 
         /// <summary>The memories file, or <see langword="null"/> when there is none beside the workspace.</summary>
         internal MemoriesArchiveSource? Memories { get; }
+
+        /// <summary>The newer-messages file, or <see langword="null"/> when there is none beside the workspace.</summary>
+        internal NewerMessagesArchiveSource? Newer { get; }
+
+        internal long ConversationID { get; }
+
+        /// <summary>The highest archive message id the workspace and older-export parts use: newer ids start above it.</summary>
+        internal long NewerMessageIDBase { get; }
+
+        /// <summary>The highest archive attachment id the workspace and older-export parts use: newer ids start above it.</summary>
+        internal long NewerAttachmentIDBase { get; }
+
+        /// <summary>The newer messages; none when there is no file.</summary>
+        internal int NewerMessageCount => Newer?.Messages.Count ?? 0;
 
         internal long LocalParticipantID { get; }
 
@@ -84,12 +115,16 @@ namespace Chatcheology.Data.ArchiveExport
         /// <summary>Each workspace sequence number's archive sequence number.</summary>
         internal IReadOnlyDictionary<int, int> WorkspaceArchiveSequence { get; }
 
-        internal int MessageCount => OlderTimeline.Count + Workspace.Messages.Count;
+        internal int MessageCount => OlderTimeline.Count + Workspace.Messages.Count + NewerMessageCount;
 
-        /// <summary>Every recorded media root of the three files, and the memories media folder.</summary>
+        /// <summary>The messages before the newer ones: the shown older messages and the workspace conversation's.</summary>
+        internal int EarlierMessageCount => OlderTimeline.Count + Workspace.Messages.Count;
+
+        /// <summary>Every recorded media root of the source files, and the memories media folder.</summary>
         internal IEnumerable<string> MediaRoots =>
             Workspace.MediaRoots
                 .Concat(Older?.MediaRoots ?? [])
+                .Concat(Newer?.MediaRoots ?? [])
                 .Concat(Memories is { } memories ? [memories.MediaFolder] : []);
 
         /// <summary>Reads the three files.</summary>
@@ -107,11 +142,12 @@ namespace Chatcheology.Data.ArchiveExport
 
             var older = OlderExportsArchiveSource.ReadBeside(workspacePath, cancellationToken);
             var memories = MemoriesArchiveSource.ReadBeside(workspacePath, cancellationToken);
+            var newer = NewerMessagesArchiveSource.ReadBeside(workspacePath, cancellationToken);
 
             var others = workspace.Participants.Where(p => p.ParticipantID != localParticipantID).ToList();
             long? other = others.Count == 1 && workspace.Participants.Count == 2 ? others[0].ParticipantID : null;
 
-            var source = new ArchiveCombinedSource(workspace, older, memories, localParticipantID, other);
+            var source = new ArchiveCombinedSource(workspace, older, memories, newer, conversationID, localParticipantID, other);
 
             source.RefuseWhatCannotBeMapped();
 
@@ -124,6 +160,8 @@ namespace Chatcheology.Data.ArchiveExport
 
         private void RefuseWhatCannotBeMapped()
         {
+            RefuseNewerThatCannotBeMapped();
+
             var needsTwo = OlderTimeline.Count > 0
                            || (Memories?.Entries.Any(e => e.Periods.Any(p => p.Items.Count > 0)) ?? false);
 
@@ -183,6 +221,71 @@ namespace Chatcheology.Data.ArchiveExport
                     $"{unmapped.ToString(CultureInfo.InvariantCulture)} memory link(s) name a message the " +
                     "workspace conversation does not hold, so they cannot be mapped onto the archive's " +
                     "timeline. Nothing was written.");
+            }
+        }
+
+        /// <summary>
+        /// The newer-messages file must continue this conversation, with this local participant and the
+        /// conversation's other one, from this workspace's end; every sender must follow its direction.
+        /// </summary>
+        private void RefuseNewerThatCannotBeMapped()
+        {
+            if (Newer is not { } newer)
+            {
+                return;
+            }
+
+            if (newer.Info.ConversationID != ConversationID)
+            {
+                throw new ArchiveExportRefusedException(
+                    "The newer-messages file beside the workspace continues another conversation. Nothing was written.");
+            }
+
+            if (OtherParticipantID is null
+                || newer.Info.LocalParticipantID != LocalParticipantID
+                || newer.Info.OtherParticipantID != OtherParticipantID)
+            {
+                throw new ArchiveExportRefusedException(
+                    "The newer-messages file's participants are not the conversation's two, with the LocalParticipantID " +
+                    "as its own side. Nothing was written.");
+            }
+
+            if (newer.Messages.Count == 0)
+            {
+                return;
+            }
+
+            // D1/D2: the workspace is the checked past and does not change; newer messages continue from its last
+            // day. A workspace that now ends on another day would put them in the wrong place.
+            DateOnly? lastDay = Workspace.Messages.Count == 0
+                ? null
+                : DateOnly.FromDateTime(Workspace.Messages.Max(m => m.MessageDateTimeLocal));
+
+            if (lastDay != newer.Info.WorkspaceLastDay)
+            {
+                throw new ArchiveExportRefusedException(
+                    "The workspace conversation no longer ends on the day the newer messages continue from. Nothing " +
+                    "was written.");
+            }
+
+            // NewerMessagesArchiveIds: newer sequence numbers follow the earlier ones directly, which needs the
+            // earlier timeline to be gapless.
+            if (WorkspaceArchiveSequence.Values.Max() != EarlierMessageCount)
+            {
+                throw new ArchiveExportRefusedException(
+                    "The workspace conversation's sequence numbers are not 1 to its message count, so newer messages " +
+                    "cannot be numbered after them. Nothing was written.");
+            }
+
+            var wrongSender = newer.Messages.Count(m =>
+                m.Kind != NewerMessagesDatabase.KindSystem
+                && m.SenderParticipantID != (m.FromMe ? LocalParticipantID : OtherParticipantID));
+
+            if (wrongSender > 0)
+            {
+                throw new ArchiveExportRefusedException(
+                    $"{wrongSender.ToString(CultureInfo.InvariantCulture)} newer message(s) name a sender that does not " +
+                    "follow their direction. Nothing was written.");
             }
         }
 
@@ -271,8 +374,99 @@ namespace Chatcheology.Data.ArchiveExport
                 });
             }
 
+            if (Newer is { } newer)
+            {
+                for (var index = 0; index < newer.Messages.Count; index++)
+                {
+                    messages.Add(ToArchiveMessage(newer, newer.Messages[index], index + 1));
+                }
+            }
+
             return messages;
         }
+
+        /// <summary>
+        /// One newer message as the archive holds it (CH-71 step 3b). User: its text exactly as stored (empty for a
+        /// media message without text), its one attachment with the caption. System: no sender, the fixed wording.
+        /// Placeholder: its sender, the fixed wording only. Forwarded facts as stored (null = not known): on the
+        /// attachment for a media message, as the workspace keeps them per attachment, otherwise on the message.
+        /// </summary>
+        private ArchiveMessage ToArchiveMessage(NewerMessagesArchiveSource newer, NewerMessageRow row, int position)
+        {
+            var messageID = NewerMessagesArchiveIds.MessageID(NewerMessageIDBase, row.NewerMessageID);
+            var isSystem = row.Kind == NewerMessagesDatabase.KindSystem;
+            var attachments = new List<ArchiveAttachment>(1);
+
+            if (row.Attachment is { } attachment)
+            {
+                attachments.Add(ToArchiveAttachment(newer, row, attachment, messageID));
+            }
+
+            NewerMessagesArchiveSource.TryParseLocal(row.DateTimeLocal, out var local);
+
+            return new ArchiveMessage
+            {
+                MessageID = messageID,
+                SequenceNumber = NewerMessagesArchiveIds.SequenceNumber(EarlierMessageCount, position),
+                DateTimeLocal = local,
+                Kind = isSystem ? ArchiveMessageKind.System : ArchiveMessageKind.User,
+                SenderParticipantID = isSystem ? null : row.SenderParticipantID,
+                Text = row.Text ?? string.Empty,
+                IsForwarded = row.Attachment is null ? row.IsForwarded : null,
+                ForwardScore = row.Attachment is null ? row.ForwardScore : null,
+                Attachments = attachments,
+                Source = ArchiveMessageSource.Msgstore,
+            };
+        }
+
+        private ArchiveAttachment ToArchiveAttachment(
+            NewerMessagesArchiveSource newer, NewerMessageRow row, NewerAttachmentRow attachment, long messageID)
+        {
+            var restored = attachment.State == NewerMessagesDatabase.StateRestored;
+            var file = restored ? newer.Files[attachment.NewerAttachmentID] : null;
+
+            return new ArchiveAttachment
+            {
+                AttachmentID = NewerMessagesArchiveIds.AttachmentID(NewerAttachmentIDBase, attachment.NewerAttachmentID),
+                MessageID = messageID,
+                Ordinal = 1,
+                State = restored ? ArchiveAttachmentState.Restored : ArchiveAttachmentState.Unmatched,
+                MediaSha256 = restored ? attachment.Sha256 : null,
+                OriginalFileName = file?.FileName,
+                IsForwarded = row.IsForwarded,
+                ForwardScore = row.ForwardScore,
+                LowQualityCopyOfAttachmentID = attachment.LowQualityCopyOfAttachmentID is { } full
+                    ? NewerMessagesArchiveIds.AttachmentID(NewerAttachmentIDBase, full)
+                    : null,
+                Basis = restored
+                    ? new ArchiveAttachmentBasis
+                    {
+                        BasisType = NewerMessagesArchiveSource.BasisType,
+                        BasisText = NewerMessagesArchiveSource.BasisText,
+                        Actor = null,
+                        ConfirmedUtc = newer.RunTimes[row.RunID],
+                    }
+                    : null,
+                Caption = row.Caption,
+            };
+        }
+
+        /// <summary>
+        /// The newer media files the archive needs: one per distinct stored path (hash and the file's extension), with
+        /// the file under its media root.
+        /// </summary>
+        internal IReadOnlyList<(string Sha256, string FileName, string FullPath)> NewerMediaNeeds() =>
+            Newer is not { } newer
+                ? []
+                : newer.Messages
+                    .Select(m => m.Attachment)
+                    .OfType<NewerAttachmentRow>()
+                    .Where(a => a.State == NewerMessagesDatabase.StateRestored)
+                    .Select(a => (Sha256: a.Sha256!, File: newer.Files[a.NewerAttachmentID]))
+                    .DistinctBy(a => ArchiveFormat.MediaFileName(a.Sha256, a.File.FileName))
+                    .OrderBy(a => ArchiveFormat.MediaFileName(a.Sha256, a.File.FileName), StringComparer.Ordinal)
+                    .Select(a => (a.Sha256, a.File.FileName, a.File.FullPath))
+                    .ToList();
 
         private ArchiveAttachment ToArchiveAttachment(
             OlderExport export, OlderAttachment attachment, long messageID, long attachmentID)
@@ -370,6 +564,27 @@ namespace Chatcheology.Data.ArchiveExport
                         DurationMS = asset.DurationMS,
                         Width = asset.Width,
                         Height = asset.Height,
+                    });
+                }
+            }
+
+            // CH-71 step 3b: newer restored payloads, in timeline order, as the file and the media folder describe them.
+            foreach (var (sha, file) in (Newer?.Messages ?? [])
+                         .Select(m => m.Attachment)
+                         .OfType<NewerAttachmentRow>()
+                         .Where(a => a.State == NewerMessagesDatabase.StateRestored)
+                         .Select(a => (a.Sha256!, Newer!.Files[a.NewerAttachmentID])))
+            {
+                if (seen.Add(sha))
+                {
+                    media.Add(new ArchiveMedia
+                    {
+                        Sha256 = sha,
+                        MediaType = file.MediaType,
+                        SizeBytes = file.SizeBytes,
+                        DurationMS = null,
+                        Width = null,
+                        Height = null,
                     });
                 }
             }

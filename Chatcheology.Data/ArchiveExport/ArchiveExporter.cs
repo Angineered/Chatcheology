@@ -35,6 +35,11 @@ namespace Chatcheology.Data.ArchiveExport
     /// <see cref="ArchiveCombinedSource"/>: older messages first in one timeline, exact-name older files
     /// copied and checked against their recorded SHA-256, and the memory tables with entry images. The
     /// expected counts stay the workspace conversation's.</para>
+    /// <para><strong>Newer messages</strong> (CH-71 step 3b): <c>newer-messages.db</c> beside the workspace (fixed
+    /// name; absent means none) adds its messages after the workspace conversation as <c>Source = Msgstore</c>
+    /// (<see cref="ArchiveCombinedSource"/>); their restored files are copied from the registered media folder and
+    /// checked against their recorded SHA-256. A damaged file refuses the export before anything is written. The
+    /// expected counts stay the workspace conversation's.</para>
     /// <para><strong>Deterministic.</strong> The same workspace gives the same rows and the same
     /// media bytes; only the creation time differs. It prints nothing; progress goes to the callback.</para>
     /// </remarks>
@@ -92,8 +97,9 @@ namespace Chatcheology.Data.ArchiveExport
             // The three files are read exactly as an export reads them, so anything that would refuse the
             // export refuses here; the counts are the workspace conversation's, which the export's
             // expected counts are checked against.
-            var source = ArchiveCombinedSource.Read(
-                workspacePath, conversationID, localParticipantID, PageSize, progress: null, cancellationToken).Workspace;
+            var combined = ArchiveCombinedSource.Read(
+                workspacePath, conversationID, localParticipantID, PageSize, progress: null, cancellationToken);
+            var source = combined.Workspace;
 
             return new ArchiveExportPreview(
                 Messages: source.Messages.Count,
@@ -101,7 +107,8 @@ namespace Chatcheology.Data.ArchiveExport
                 Missing: source.MissingReviewed,
                 Unmatched: source.Unmatched,
                 MediaFiles: source.AssetSha256.Count,
-                MediaBytes: source.ToArchiveMedia().Sum(media => media.SizeBytes));
+                MediaBytes: source.ToArchiveMedia().Sum(media => media.SizeBytes),
+                NewerMessages: combined.NewerMessageCount);
         }
 
         /// <summary>Exports the conversation.</summary>
@@ -284,6 +291,7 @@ namespace Chatcheology.Data.ArchiveExport
                 .ToHashSet(StringComparer.Ordinal);
 
             CopyOlderMedia(combined, partial, storedPaths, cancellationToken);
+            CopyNewerMedia(combined, partial, storedPaths, cancellationToken);
             var imageExtensions = CopyEntryImages(combined, partial, storedPaths, cancellationToken);
 
             AfterMediaCopiedForTests?.Invoke(partial);
@@ -498,6 +506,57 @@ namespace Chatcheology.Data.ArchiveExport
                     $"{Count(failed)} of {Count(needs.Count)} older-export media files have no readable copy whose " +
                     $"bytes match the SHA-256 recorded at import ({Count(unreadable)} copies not there or " +
                     $"unreadable, {Count(different)} with different bytes). No archive folder was written.");
+            }
+        }
+
+        /// <summary>
+        /// Copies each newer restored file (CH-71 step 3b) into <c>media/</c> from its registered media folder,
+        /// hashing its bytes while copying: a file whose SHA-256 is no longer the one recorded when the newer messages
+        /// were added stops the export (never a different picture under a recorded hash). A file already stored at the
+        /// same path (the same payload, under the same extension) is not copied again.
+        /// </summary>
+        private static void CopyNewerMedia(
+            ArchiveCombinedSource combined, string partial, HashSet<string> storedPaths, CancellationToken cancellationToken)
+        {
+            var folder = Path.Combine(partial, ArchiveFormat.MediaFolderName);
+            int failed = 0, different = 0;
+
+            var needs = combined.NewerMediaNeeds();
+
+            foreach (var (sha, fileName, fullPath) in needs)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                var name = ArchiveFormat.MediaFileName(sha, fileName);
+
+                if (storedPaths.Contains(name))
+                {
+                    continue;
+                }
+
+                switch (TryCopy(fullPath, Path.Combine(folder, name), sha))
+                {
+                    case CopyOutcome.Copied:
+                        storedPaths.Add(name);
+                        break;
+
+                    case CopyOutcome.Different:
+                        different++;
+                        failed++;
+                        break;
+
+                    default:
+                        failed++;
+                        break;
+                }
+            }
+
+            if (failed > 0)
+            {
+                throw new ArchiveExportStoppedException(
+                    $"{Count(failed)} of {Count(needs.Count)} newer-message media files are not in their media folder " +
+                    $"with the bytes their recorded SHA-256 names ({Count(different)} with different bytes). No archive " +
+                    "folder was written.");
             }
         }
 

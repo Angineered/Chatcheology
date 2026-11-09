@@ -157,7 +157,7 @@ namespace Chatcheology.Data.ArchiveExport
                     }
                     else
                     {
-                        // CH-71: no source file of this build produces message-store messages yet.
+                        // CH-71 step 3b: the newer-messages file beside the workspace.
                         msgstoreMessages++;
                     }
 
@@ -216,7 +216,7 @@ namespace Chatcheology.Data.ArchiveExport
                 record.Add(ArchiveMismatchKind.SourceCountDiffers, null);
             }
 
-            if (msgstoreMessages != 0)
+            if (msgstoreMessages != combined.NewerMessageCount)
             {
                 record.Add(ArchiveMismatchKind.SourceCountDiffers, null);
             }
@@ -255,6 +255,7 @@ namespace Chatcheology.Data.ArchiveExport
                 unmatched: attachments.Count(a => a.State == ArchiveAttachmentState.Unmatched),
                 workspaceMessages: source.Messages.Count,
                 exportMessages: combined.OlderTimeline.Count,
+                msgstoreMessages: combined.NewerMessageCount,
                 exports: combined.Older?.Exports
                     .Select(e => new ArchiveComparisonExportCounts(e.Position, e.Shown, e.MessageCount, e.ShownMessages.Count, e.HiddenCount))
                     .ToList() ?? [],
@@ -655,6 +656,7 @@ namespace Chatcheology.Data.ArchiveExport
                 int unmatched,
                 int workspaceMessages,
                 int exportMessages,
+                int msgstoreMessages,
                 IReadOnlyList<ArchiveComparisonExportCounts> exports,
                 IReadOnlyList<ArchiveCollectionCounts> collections,
                 int definitions,
@@ -672,6 +674,7 @@ namespace Chatcheology.Data.ArchiveExport
                 FirstMismatches = _first.ToList(),
                 WorkspaceMessages = workspaceMessages,
                 ExportMessages = exportMessages,
+                MsgstoreMessages = msgstoreMessages,
                 Exports = exports,
                 Collections = collections,
                 ItemDefinitions = definitions,
@@ -851,6 +854,9 @@ namespace Chatcheology.Data.ArchiveExport
 
         /// <summary>Version 2: the older exports' shown messages, all exports together.</summary>
         public int ExportMessages { get; init; }
+
+        /// <summary>Version 4 (CH-71 step 3b): the newer-messages file's messages. 0 with no file.</summary>
+        public int MsgstoreMessages { get; init; }
 
         /// <summary>Version 2: each older export's shown and hidden messages, in position order. Empty with no older-exports file.</summary>
         public IReadOnlyList<ArchiveComparisonExportCounts> Exports { get; init; } = [];

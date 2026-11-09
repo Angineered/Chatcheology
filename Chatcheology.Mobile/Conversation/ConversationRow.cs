@@ -80,6 +80,10 @@ namespace Chatcheology.Mobile.Conversation
             Text = PresentedText(message);
             TextSpans = LinkScanner.Scan(Text);
 
+            // CH-71 step 3b: something the archive cannot show yet stands in its sender's bubble as a muted line,
+            // never as the sender's own words (not shared, not searched).
+            NotShownText = IsNotShownPlaceholder(message) ? message.Text : string.Empty;
+
             Attachments = attachments;
             ShownAttachments = attachments.Where(card => card.IsShown).ToList();
             ForwardedText = ForwardedLabel(message);
@@ -120,6 +124,47 @@ namespace Chatcheology.Mobile.Conversation
 
         /// <summary>Whether there is any text to show.</summary>
         public bool HasText => Text.Length > 0;
+
+        /// <summary>
+        /// The fixed wording of a message the archive cannot show yet (a poll, a location, a call...; CH-71 D6), drawn
+        /// muted and in italics in its sender's bubble; empty for every other message.
+        /// </summary>
+        public string NotShownText { get; }
+
+        /// <summary>Whether the bubble stands for something the archive cannot show yet.</summary>
+        public bool HasNotShownText => NotShownText.Length > 0;
+
+        /// <summary>
+        /// The fixed wordings of what the archive cannot show yet, exactly as the msgstore import writes them
+        /// (<c>tools\MsgstoreImport\NewerKinds.cs</c>; a test there checks the two lists agree). Never the item's
+        /// content.
+        /// </summary>
+        public static readonly IReadOnlySet<string> NotShownWordings = new HashSet<string>(StringComparer.Ordinal)
+        {
+            "Poll (not shown in this archive)",
+            "Location (not shown in this archive)",
+            "Contact card (not shown in this archive)",
+            "Call (not shown in this archive)",
+            "View-once media (not shown in this archive)",
+            "Deleted message (not shown in this archive)",
+            "Message type not shown in this archive",
+        };
+
+        /// <summary>
+        /// Whether <paramref name="message"/> is a placeholder for something the archive cannot show yet: a user
+        /// message read from the message store (CH-71 step 3b), with no attachment, whose whole text is one of
+        /// <see cref="NotShownWordings"/>. Only the message store's rows are read this way, so the same words typed
+        /// in the chat itself stay the sender's text.
+        /// </summary>
+        public static bool IsNotShownPlaceholder(ArchiveMessage message)
+        {
+            ArgumentNullException.ThrowIfNull(message);
+
+            return message.Source == ArchiveMessageSource.Msgstore
+                   && message.Kind == ArchiveMessageKind.User
+                   && message.Attachments.Count == 0
+                   && NotShownWordings.Contains(message.Text);
+        }
 
         /// <summary>
         /// What Share hands to the share sheet: the message text exactly as written (links and emoji as
@@ -240,7 +285,8 @@ namespace Chatcheology.Mobile.Conversation
         }
 
         /// <summary>
-        /// The text a bubble shows (and search finds): empty for the media placeholder; for a user message
+        /// The text a bubble shows (and search finds): empty for the media placeholder and for a message the archive
+        /// cannot show yet (<see cref="IsNotShownPlaceholder"/>, drawn as <see cref="NotShownText"/>); for a user message
         /// with attachments whose first line is an older export's <c>NAME (file attached)</c> line naming one
         /// of them, the lines after it (the caption), or empty when there are none (CH-33). Otherwise the
         /// text as stored.
@@ -251,7 +297,7 @@ namespace Chatcheology.Mobile.Conversation
 
             var text = message.Text;
 
-            if (IsPlaceholder(text))
+            if (IsPlaceholder(text) || IsNotShownPlaceholder(message))
             {
                 return string.Empty;
             }

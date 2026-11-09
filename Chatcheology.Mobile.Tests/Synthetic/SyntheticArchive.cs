@@ -53,6 +53,12 @@ namespace Chatcheology.Mobile.Synthetic
     /// <see cref="SyntheticArchive.ArchiveId"/>. The phone treats an import with an installed archive's id as a refresh
     /// of it (CH-71 step 2), so archives meant to be installed side by side need ids of their own.
     /// </param>
+    /// <param name="NewerMessages">
+    /// Whether to add the invented newer messages (CH-71 step 3b, <c>Source = Msgstore</c>) on the day after the last
+    /// one: text, a forwarded text, a photo with a caption, an unmatched picture with a caption, a poll and a call
+    /// placeholder, and a system row, as the archive export writes them (<see cref="SyntheticArchive.NewerMessageCount"/>).
+    /// Version 4 only.
+    /// </param>
     internal sealed record SyntheticArchiveOptions(
         int Messages = 3000,
         int Days = 120,
@@ -73,7 +79,8 @@ namespace Chatcheology.Mobile.Synthetic
         bool NotedDates = false,
         bool YearlyMemories = false,
         int Captions = 0,
-        string? ArchiveId = null);
+        string? ArchiveId = null,
+        bool NewerMessages = false);
 
     /// <summary>
     /// Writes a whole portable archive (the current format, or version 2 with noted dates) of invented conversation through
@@ -381,6 +388,16 @@ namespace Chatcheology.Mobile.Synthetic
                 });
             }
 
+            if (options.NewerMessages)
+            {
+                if (version < ArchiveFormat.FirstVersionWithCaptionsAndArchiveId || images.Count == 0)
+                {
+                    throw new ArgumentException("Newer messages need version 4 and at least one image.", nameof(options));
+                }
+
+                WriteNewerMessages(writer, options, DayOf(options, options.Messages - 1).AddDays(1), images[0]);
+            }
+
             if (options.Memories)
             {
                 SyntheticMemories.Write(writer, mediaFolder, messageTimes);
@@ -411,6 +428,61 @@ namespace Chatcheology.Mobile.Synthetic
             File.WriteAllBytes(Path.Combine(folder, ArchiveContents.FileName), ArchiveContents.Build(folder));
 
             return counts;
+        }
+
+        /// <summary>How many newer messages <see cref="SyntheticArchiveOptions.NewerMessages"/> adds.</summary>
+        internal const int NewerMessageCount = 7;
+
+        /// <summary>
+        /// The invented newer messages (CH-71 step 3b), shaped as the archive export writes the newer-messages file's
+        /// rows: Source Msgstore; a placeholder is a user message carrying only its fixed wording; a system row a System
+        /// message with its fixed wording; a media message has empty text, the caption on its one attachment.
+        /// </summary>
+        private static void WriteNewerMessages(ArchiveWriter writer, SyntheticArchiveOptions options, DateOnly day, (string Sha, string Name) image)
+        {
+            var firstID = 1000L + options.Messages;
+            var firstSequence = options.Messages + 1;
+
+            (long? Sender, string Text, bool? Forwarded, bool System)[] rows =
+            [
+                (Other, "Synthetic newer hello from the message store", false, false),
+                (Local, "Synthetic newer forwarded line", true, false),
+                (Other, "", null, false),
+                (Local, "", null, false),
+                (Other, "Poll (not shown in this archive)", null, false),
+                (Local, "Call (not shown in this archive)", null, false),
+                (null, "System message (not shown in this archive)", null, true),
+            ];
+
+            for (var index = 0; index < rows.Length; index++)
+            {
+                var messageID = firstID + index;
+                var (sender, text, forwarded, system) = rows[index];
+                var attachments = new List<ArchiveAttachment>();
+
+                if (index == 2)
+                {
+                    attachments.Add(Attachment(70_001, messageID, ArchiveAttachmentState.Restored, image.Sha, image.Name, caption: "Synthetic newer caption"));
+                }
+                else if (index == 3)
+                {
+                    attachments.Add(Attachment(70_002, messageID, ArchiveAttachmentState.Unmatched, null, null, caption: "Synthetic caption of a picture not found"));
+                }
+
+                writer.WriteMessage(new ArchiveMessage
+                {
+                    MessageID = messageID,
+                    SequenceNumber = firstSequence + index,
+                    DateTimeLocal = day.ToDateTime(new TimeOnly(9 + index, 15)),
+                    Kind = system ? ArchiveMessageKind.System : ArchiveMessageKind.User,
+                    SenderParticipantID = sender,
+                    Text = text,
+                    IsForwarded = forwarded,
+                    ForwardScore = forwarded == true ? 1 : null,
+                    Attachments = attachments,
+                    Source = ArchiveMessageSource.Msgstore,
+                });
+            }
         }
 
         /// <summary>

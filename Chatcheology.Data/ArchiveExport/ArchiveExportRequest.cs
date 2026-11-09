@@ -65,8 +65,12 @@ namespace Chatcheology.Data.ArchiveExport
     /// <param name="Unmatched">Every other unresolved attachment.</param>
     /// <param name="MediaFiles">Distinct media payloads, one file each in the archive.</param>
     /// <param name="MediaBytes">Their recorded sizes, added up.</param>
+    /// <param name="NewerMessages">
+    /// Messages of <c>newer-messages.db</c> beside the workspace (CH-71 step 3b), added after the conversation; 0 when
+    /// there is none. Not part of the expected counts.
+    /// </param>
     public sealed record ArchiveExportPreview(
-        int Messages, int Restored, int Missing, int Unmatched, int MediaFiles, long MediaBytes);
+        int Messages, int Restored, int Missing, int Unmatched, int MediaFiles, long MediaBytes, int NewerMessages = 0);
 
     /// <summary>What a completed export wrote. Counts only.</summary>
     public sealed class ArchiveExportResult

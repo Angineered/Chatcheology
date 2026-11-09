@@ -367,6 +367,40 @@ namespace Chatcheology.Desktop.Tests
             viewModel.CloseSession();
         }
 
+        /// <remarks>CH-71 step 3b: newer messages are in the archive for the phone; the desktop viewer shows the workspace only.</remarks>
+        [Fact]
+        public async Task NewerMessages_AreCountedAsPhoneOnly_InTheConfirmationAndTheSummary()
+        {
+            var viewModel = await OpenedAsync();
+
+            _operations.PreviewResult = new ArchiveExportPreview(12, 7, 3, 2, 6, 1024, NewerMessages: 4);
+            _operations.OnExport = (_, _, _) => new ArchiveExportResult
+            {
+                Counts = new ArchiveCounts(2, 16, 3, 1, 1, 1, 1) { MsgstoreMessages = 4, WorkspaceMessages = 12 },
+                ContentsSha256 = new string('a', 64),
+                DifferentCopies = 0,
+                UnreadableCopies = 0,
+                FromLaterCopy = 0,
+                LowQualityLinksOutsideConversation = 0,
+            };
+
+            viewModel.ExportArchiveCommand.Execute(null);
+
+            await FinishedAsync(viewModel);
+
+            var confirmation = Assert.Single(_confirmations);
+            Assert.Contains("Newer messages: 4 (phone only)", confirmation.Text, StringComparison.Ordinal);
+            Assert.Contains("4 newer messages (phone only).", viewModel.Archive.Lines);
+            Assert.Equal("1 newer message (phone only).", ArchiveViewModel.NewerMessagesLine(1));
+
+            // Without newer messages, neither says anything about them.
+            Assert.DoesNotContain("Newer", ArchiveViewModel.ConfirmationText(new ArchiveExportPreview(5, 1, 1, 1, 1, 21), "Ada"), StringComparison.Ordinal);
+
+            AssertNothingPrivateShown(viewModel);
+
+            viewModel.CloseSession();
+        }
+
         [Fact]
         public async Task AFailedCheck_ShowsCountsAndKindsOnly()
         {

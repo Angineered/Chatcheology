@@ -32,5 +32,16 @@ namespace Chatcheology.Data.NewerMessages
         /// <param name="highestEarlierAttachmentID">The highest archive attachment id the workspace and older-export parts use.</param>
         public static long AttachmentID(long highestEarlierAttachmentID, long newerAttachmentID) =>
             checked(highestEarlierAttachmentID + newerAttachmentID);
+
+        /// <summary>The archive sequence number of a newer message.</summary>
+        /// <param name="earlierMessages">The shown older-export messages plus the workspace conversation's messages.</param>
+        /// <param name="position">The message's 1-based position among the newer messages, by <c>NewerMessageID</c>.</param>
+        public static int SequenceNumber(int earlierMessages, int position)
+        {
+            ArgumentOutOfRangeException.ThrowIfNegative(earlierMessages);
+            ArgumentOutOfRangeException.ThrowIfLessThan(position, 1);
+
+            return checked(earlierMessages + position);
+        }
     }
 }

@@ -56,11 +56,15 @@ namespace Chatcheology.Mobile.Tests
                 // CH-71: the invented archive id, and a few captioned pictures (at least one with a link).
                 Assert.Equal(options.ArchiveId, reader.Info.ArchiveId);
                 Assert.True(ArchiveFormat.IsArchiveId(options.ArchiveId));
-                Assert.Equal(options.Captions, counts.Captions);
+                // CH-71 step 3b: the standard install also carries the newer messages, two of them captioned.
+                var newerCaptions = options.NewerMessages ? 2 : 0;
+                Assert.Equal(options.Captions + newerCaptions, counts.Captions);
                 Assert.InRange(counts.Captions, 3, 10);
+                Assert.Equal(options.NewerMessages ? SyntheticArchive.NewerMessageCount : 0, counts.MsgstoreMessages);
 
                 var captions = reader.ReadAllPages()
                     .SelectMany(p => p.Messages)
+                    .Where(m => m.Source != ArchiveMessageSource.Msgstore)
                     .SelectMany(m => m.Attachments)
                     .Select(a => a.Caption)
                     .OfType<string>()
