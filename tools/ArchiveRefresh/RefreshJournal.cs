@@ -57,35 +57,67 @@ internal sealed class RefreshJournal
             throw new FormatException("The apply progress file in the plan folder is not this plan's.");
         }
 
-        foreach (var line in lines[1..])
+        // Every complete line ends with a newline, so the text after the last newline is either empty or a line
+        // cut off by a stop mid-write. Only that last, cut-off line may be ignored; any other bad line is damage.
+        var body = lines[1..];
+
+        for (var i = 0; i < body.Length; i++)
         {
-            if (line.Length == 0)
+            var line = body[i];
+            var last = i == body.Length - 1;
+
+            if (line.Length == 0 && last)
             {
                 continue;
             }
 
-            // A line cut short by a stop mid-write ends without its state; it is ignored, as never written.
-            if (line.Split('\t') is [var kind and ("backup" or "begin" or "done"), var name, var state]
-                && state.Length > 0 && state.EndsWith(';') is false)
+            if (TryParse(line) is { } entry && !last)
             {
-                try
-                {
-                    RefreshFiles.ParseState(state);
-                    journal.Entries.Add((kind, name, state));
-                }
-                catch (FormatException)
-                {
-                    // As above: an incomplete last line.
-                }
+                journal.Entries.Add(entry);
+            }
+            else if (!last)
+            {
+                throw new FormatException(
+                    "The apply progress file in the plan folder is damaged (a line other than the last cannot be read). Plan again.");
+            }
+            else
+            {
+                // A last line without its newline was cut off mid-write: ignored, as never written.
+                journal._cutOff = true;
             }
         }
 
         return journal;
     }
 
+    private bool _cutOff;
+
+    private static (string, string, string)? TryParse(string line)
+    {
+        if (line.Split('\t') is not [var kind and ("backup" or "begin" or "done"), var name, var state] || name.Length == 0)
+        {
+            return null;
+        }
+
+        try
+        {
+            RefreshFiles.ParseState(state);
+            return (kind, name, state);
+        }
+        catch (FormatException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>The name of the first backup this plan's applies made: the files as they were before the refresh.</summary>
+    internal string? FirstBackup => Entries.FirstOrDefault(e => e.Kind == "backup").Name;
+
     internal void Record(string kind, string name, string state)
     {
-        var header = File.Exists(_path) ? "" : $"{Magic}\t{Version}\t{PlanSha256}\n";
+        // After a cut-off last line, the next record starts on a new line.
+        var header = File.Exists(_path) ? (_cutOff ? "\n" : "") : $"{Magic}\t{Version}\t{PlanSha256}\n";
+        _cutOff = false;
 
         using (var stream = new FileStream(_path, FileMode.Append, FileAccess.Write, FileShare.None))
         {

@@ -293,6 +293,85 @@ public sealed class RefreshTests : IDisposable
         Assert.Equal(3, Directory.GetDirectories(_f.BackupRoot).Length);
     }
 
+    private (string Plan, string Sha, string Archive, string FirstBackup) StopBeforeCaptions()
+    {
+        var plan = _f.Plan();
+        var archive = _f.NewArchiveOut();
+
+        var stop = _f.Apply(plan.Folder, plan.Sha, archive, _f.Hooks(before: step =>
+        {
+            if (step == RefreshApplier.StepCaptions)
+            {
+                throw new RefreshRefusedException("invented stop for the test");
+            }
+        }));
+
+        Assert.Equal(2, stop.Exit);
+
+        return (plan.Folder, plan.Sha, archive, Path.GetFileName(Assert.Single(Directory.GetDirectories(_f.BackupRoot))));
+    }
+
+    [Fact]
+    public void A_stop_names_the_first_backup_as_the_undo_and_a_rerun_s_backup_as_taken_before_it()
+    {
+        var (plan, sha, archive, first) = StopBeforeCaptions();
+
+        var second = _f.Apply(plan, sha, archive, _f.Hooks(before: step =>
+        {
+            if (step == RefreshApplier.StepExport)
+            {
+                // Something appears at the output: the exporter refuses inside the step.
+                File.WriteAllText(archive, "invented");
+            }
+        }));
+
+        Assert.Equal(2, second.Exit);
+        Assert.Contains("Stopped at step export", second.Err, StringComparison.Ordinal);
+        File.Delete(archive);
+        Assert.Contains("restore the files of the first backup folder (" + first + ")", second.Err, StringComparison.Ordinal);
+        Assert.DoesNotContain("wrote nothing", second.Err, StringComparison.Ordinal);
+
+        var third = _f.Apply(plan, sha, archive);
+        Assert.True(third.Exit == 0, third.Err + third.Out);
+        Assert.Contains("backup taken before this rerun", third.Out, StringComparison.Ordinal);
+        Assert.Contains("in backup folder " + first, third.Out, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_partial_archive_folder_left_by_a_stopped_export_is_named_plainly()
+    {
+        var (plan, sha, archive, _) = StopBeforeCaptions();
+        Directory.CreateDirectory(archive + ".partial");
+
+        var rerun = _f.Apply(plan, sha, archive);
+
+        Assert.Equal(2, rerun.Exit);
+        Assert.Contains("Delete that .partial folder", rerun.Err, StringComparison.Ordinal);
+        Assert.DoesNotContain(archive, rerun.Err, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void A_damaged_progress_line_before_the_last_is_refused_and_a_cut_off_last_line_is_ignored()
+    {
+        var (plan, sha, archive, _) = StopBeforeCaptions();
+        var progress = Path.Combine(plan, RefreshJournal.FileName);
+        var good = File.ReadAllText(progress);
+
+        // A cut-off last line (no newline): ignored, and the next record starts on its own line.
+        File.WriteAllText(progress, good + "begin\tcaption-fac");
+        var rerun = _f.Apply(plan, sha, archive);
+        Assert.True(rerun.Exit == 0, rerun.Err + rerun.Out);
+        var lines = File.ReadAllText(progress).Split('\n');
+        Assert.Contains("begin\tcaption-fac", lines);
+        Assert.All(lines.Where(l => l.Length > 0).Skip(1), l => Assert.Matches("^(backup|begin|done)\t", l));
+
+        // A damaged line that is not the last: refused.
+        File.WriteAllText(progress, good.Replace("\nbackup\t", "\nbackup\tbroken\n", StringComparison.Ordinal));
+        var damaged = _f.Apply(plan, sha, archive);
+        Assert.Equal(2, damaged.Exit);
+        Assert.Contains("progress file in the plan folder is damaged", damaged.Err, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void Something_else_changing_the_files_between_a_stop_and_the_rerun_is_refused()
     {

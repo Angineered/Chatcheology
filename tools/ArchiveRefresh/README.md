@@ -7,7 +7,9 @@ comparer. Output is counts only: never text, names, file names, ids or paths. Te
 
 ## How to run it (monthly)
 
-From the repository folder, with the desktop viewer closed. Use the wrapper; one command per step.
+From the repository folder, with the desktop viewer closed. Use the wrapper; one command per step. Type
+folders without a trailing backslash when the path contains a space (PowerShell 5.1 passes `"C:\My Folder\"`
+on wrongly; ticket CH-74).
 
 1. Decrypt the msgstore with your own key (outside the project); copy the phone's WhatsApp folder (the
    one holding `Media\`). If PSN is included, run the fetch script as usual
@@ -62,6 +64,12 @@ digests, and each sub-manifest's SHA-256. Its SHA-256 is the one plan SHA-256.
 `apply-progress.tsv` in the plan folder records each backup, step begun and step done with the file
 state. Rerun the same apply after a stop: finished steps are skipped, a step stopped inside is run again
 (each is idempotent), and anything else changing the files in between is refused (plan again). Undo:
-restore the backup folder's files beside the workspace.
+restore the files of the FIRST backup folder (named in the apply output and in every stop message) beside
+the workspace: it holds them as they were before the refresh. Each rerun takes another backup, "taken
+before this rerun", which holds the partly refreshed files.
+
+If an apply stops during the export, a folder named like `--archive-out` with `.partial` on the end may
+be left beside it. Delete that `.partial` folder, or give a new `--archive-out`, then run the same apply
+again.
 
 Exit codes: 0 done and the archive passed; 1 failed or the archive did not pass; 2 refused or stopped.

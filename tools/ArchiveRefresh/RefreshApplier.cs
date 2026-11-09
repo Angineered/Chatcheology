@@ -113,6 +113,10 @@ internal static class RefreshApplier
                     "--archive-out as then. Nothing was written.");
             }
         }
+        else if (Directory.Exists(archiveOut + ArchiveExporter.PartialSuffix) || File.Exists(archiveOut + ArchiveExporter.PartialSuffix))
+        {
+            throw new RefreshRefusedException(PartialAdvice + " Nothing was written.");
+        }
         else if (Msg.Planner.ManifestOutRefusal(archiveOut, "--archive-out") is { } refusal)
         {
             throw new RefreshRefusedException(refusal + " Nothing was written.");
@@ -120,9 +124,18 @@ internal static class RefreshApplier
 
         if (remaining.Count > 0)
         {
+            var rerun = journal.FirstBackup is not null;
             var backup = Backup(options, hooks, journal);
-            report.AppendLine(Pad("backup before the first write") + $"{N(backup.Files)} file(s) copied and verified (size and SHA-256), folder {backup.Name}");
+            report.AppendLine(Pad(rerun ? "backup taken before this rerun" : "backup before the first write") +
+                              $"{N(backup.Files)} file(s) copied and verified (size and SHA-256), folder {backup.Name}");
             report.AppendLine(Pad("  not there, so not copied") + N(RefreshFiles.Writable.Length - backup.Files));
+        }
+
+        var firstBackup = journal.FirstBackup;
+
+        if (firstBackup is not null)
+        {
+            report.AppendLine(Pad("files as they were before the refresh") + "in backup folder " + firstBackup);
         }
 
         report.AppendLine("```");
@@ -141,12 +154,12 @@ internal static class RefreshApplier
             }
             catch (RefreshRefusedException exception)
             {
-                throw new RefreshRefusedException(StopMessage(step, exception.Message, applied));
+                throw new RefreshRefusedException(StopMessage(step, exception.Message, applied, firstBackup));
             }
             catch (Exception exception) when (exception is not RefreshRefusedException)
             {
                 // The exception's own message may carry a path, so only its type is shown.
-                throw new RefreshRefusedException(StopMessage(step, $"it could not complete ({exception.GetType().Name})", applied));
+                throw new RefreshRefusedException(StopMessage(step, $"it could not complete ({exception.GetType().Name})", applied, firstBackup));
             }
             finally
             {
@@ -176,7 +189,8 @@ internal static class RefreshApplier
         else
         {
             report.AppendLine("The archive did NOT pass (see the counts above). Do not copy it to the phone. The steps applied stay");
-            report.AppendLine("applied; the backup holds the files as they were before this apply.");
+            report.AppendLine("applied. To undo the whole refresh, restore the files of the first backup folder (" + (firstBackup ?? "none made") + "):");
+            report.AppendLine("it holds them as they were before the refresh; later backups were taken before a rerun.");
         }
 
         if (plan.Psn)
@@ -189,11 +203,18 @@ internal static class RefreshApplier
         return new ApplyResult(passed, report.ToString());
     }
 
-    private static string StopMessage(string step, string reason, List<string> applied) =>
+    private const string PartialAdvice =
+        "A folder named like --archive-out with .partial on the end is there: an export that stopped part way. Delete that " +
+        ".partial folder (only it, beside the --archive-out you gave), or give a new --archive-out, then run the same apply again.";
+
+    private static string StopMessage(string step, string reason, List<string> applied, string? firstBackup) =>
         $"Stopped at step {step}: {reason}" + Environment.NewLine +
-        $"Applied before the stop (in this or an earlier apply): {(applied.Count == 0 ? "none" : string.Join(", ", applied))}. " +
-        $"Step {step} is one transaction, so it wrote nothing. The backup holds the files as they were before this apply. " +
-        "Fix the cause and run the same apply again: finished steps are skipped. If an input changed, plan again.";
+        $"Finished before the stop (in this or an earlier apply): {(applied.Count == 0 ? "none" : string.Join(", ", applied))}. " +
+        $"Step {step} may have written part of its work (an export may already have made the archive id, a caption batch " +
+        "may be recorded); a rerun of the same apply continues safely and skips finished steps. If an input changed, plan again. " +
+        $"To undo the whole refresh, restore the files of the first backup folder ({firstBackup ?? "none made"}), which holds " +
+        "them as they were before the refresh." +
+        (step == StepExport ? " " + PartialAdvice.Replace(" is there:", " may be there:", StringComparison.Ordinal) : "");
 
     private static (RefreshPlanFile Plan, string Sha) LoadPlan(RefreshOptions options, string planFolder)
     {
