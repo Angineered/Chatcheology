@@ -245,7 +245,7 @@ internal static class NewerTool
         text.AppendLine();
         text.AppendLine("new messages by msgstore message_type (kind given):");
 
-        foreach (var (type, (kind, count)) in c.ByType)
+        foreach (var ((type, kind), count) in c.ByType)
         {
             text.AppendLine(Text.Line($"  type {Text.Id(type)} ({kind})", count));
         }

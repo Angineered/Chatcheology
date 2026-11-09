@@ -28,7 +28,8 @@ internal sealed class NewerComputation
 
     internal required List<NewerMessageRow> Rows { get; init; }
     internal required SortedDictionary<string, int> ByMonth { get; init; }
-    internal required SortedDictionary<long, (string Kind, int Count)> ByType { get; init; }
+    /// <summary>New messages by msgstore message_type and the kind given to them.</summary>
+    internal required SortedDictionary<(long Type, string Kind), int> ByType { get; init; }
     internal required int NoType { get; init; }
     internal required Tally Unmatched { get; init; }
     internal required int MediaTypeWithoutRecord { get; init; }
@@ -406,7 +407,7 @@ internal static class NewerPlanner
         var rootFull = Path.TrimEndingDirectorySeparator(Path.GetFullPath(mediaRoot));
         var unmatched = new Tally();
         var byMonth = new SortedDictionary<string, int>(StringComparer.Ordinal);
-        var byType = new SortedDictionary<long, (string Kind, int Count)>();
+        var byType = new SortedDictionary<(long Type, string Kind), int>();
         int noType = 0, mediaWithoutRecord = 0;
 
         var rows = new List<NewerMessageRow>(fresh.Count);
@@ -466,9 +467,7 @@ internal static class NewerPlanner
 
             if (m.Type is { } typeNumber)
             {
-                byType[typeNumber] = byType.TryGetValue(typeNumber, out var seen)
-                    ? (seen.Kind == label ? label : seen.Kind + ", " + label, seen.Count + 1)
-                    : (label, 1);
+                byType[(typeNumber, label)] = byType.GetValueOrDefault((typeNumber, label)) + 1;
             }
             else
             {
