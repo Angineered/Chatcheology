@@ -1,6 +1,6 @@
 # CH-71: the monthly archive refresh (Angie runs this; counts only on screen).
 # Run from the repo folder, one step at a time, in this order. Close the desktop viewer first.
-#   .\tools\ArchiveRefresh\Run-Refresh.ps1 -Step PsnFetch -PsnManifest <last game list> -PsnDefinitions <definitions file> -PsnAccountA <name> -PsnAccountB <name> -PsnLocal <a or b name> -PsnOut <new folder>
+#   .\tools\ArchiveRefresh\Run-Refresh.ps1 -Step PsnFetch -PsnManifest <last game list> -PsnDefinitions <definitions file> -PsnDecisions <your decisions csv> -PsnAccountA <name> -PsnAccountB <name> -PsnLocal <a or b name> -PsnOut <new folder>
 #       (only when PSN is included; needs a fresh Postman token; asks for it and the other account's id, hidden)
 #   .\tools\ArchiveRefresh\Run-Refresh.ps1 -Step Plan   -Workspace <workspace.db> -Msgstore <msgstore.db> -MediaRoot <WhatsApp folder copy> -Conversation <id> -Chat <chat _id> -LocalParticipant <id> -ExpectRestored <n> -ExpectMissing <n> -PlanFolder <new private folder> [PSN parameters]
 #   .\tools\ArchiveRefresh\Run-Refresh.ps1 -Step Apply  -Workspace <same> -Msgstore <same> -MediaRoot <same> -PlanFolder <same> -Sha256 <PLAN SHA-256> -BackupRoot <existing folder> -ArchiveOut <new folder> [same PSN parameters]
@@ -10,6 +10,7 @@
 #   -PsnLocal <a or b name> -PsnCurrent <current shared-activity file> -PsnDefinitions <definitions file>
 #   After PsnFetch these point into the PsnOut folder: psn-trophy-timestamps.json, psn-game-list.json, psn-trophy-definitions.json.
 # A stopped PsnFetch: run the same command again (same -PsnOut); finished games are skipped.
+# PsnFetch adds a game only when your decisions csv marks it together; new candidates go to psn-to-review.csv in -PsnOut.
 # A stopped Apply: fix the cause and run the same Apply again; finished steps are skipped.
 param(
     [Parameter(Mandatory = $true)][ValidateSet('PsnFetch', 'Plan', 'Apply', 'Images', 'Copy')][string]$Step,
@@ -32,7 +33,8 @@ param(
     [string]$PsnLocal,
     [string]$PsnCurrent,
     [string]$PsnDefinitions,
-    [string]$PsnOut
+    [string]$PsnOut,
+    [string]$PsnDecisions
 )
 
 $ErrorActionPreference = 'Stop'
@@ -64,14 +66,15 @@ $tool = "tools\ArchiveRefresh\bin\Release\net10.0\ArchiveRefresh.exe"
 
 switch ($Step) {
     'PsnFetch' {
-        if (-not $PsnManifest -or -not $PsnDefinitions -or -not $PsnAccountA -or -not $PsnAccountB -or -not $PsnLocal -or -not $PsnOut) {
-            throw "Give -PsnManifest (last game list), -PsnDefinitions, -PsnAccountA, -PsnAccountB, -PsnLocal and -PsnOut (a new folder)."
+        if (-not $PsnManifest -or -not $PsnDefinitions -or -not $PsnDecisions -or -not $PsnAccountA -or -not $PsnAccountB -or -not $PsnLocal -or -not $PsnOut) {
+            throw "Give -PsnManifest (last game list), -PsnDefinitions, -PsnDecisions (your decisions csv), -PsnAccountA, -PsnAccountB, -PsnLocal and -PsnOut (a new folder)."
         }
         if (-not (Test-Path -LiteralPath $PsnManifest -PathType Leaf)) { throw "Game list not found." }
         if (-not (Test-Path -LiteralPath $PsnDefinitions -PathType Leaf)) { throw "Definitions file not found." }
+        if (-not (Test-Path -LiteralPath $PsnDecisions -PathType Leaf)) { throw "Decisions file not found." }
         Build-Tool tools\MemoryImport\MemoryImport.csproj
         & "tools\MemoryImport\bin\Release\net10.0\MemoryImport.exe" psn-fetch --previous-list $PsnManifest --definitions $PsnDefinitions `
-            --account-a $PsnAccountA --account-b $PsnAccountB --local $PsnLocal --out $PsnOut
+            --decisions $PsnDecisions --account-a $PsnAccountA --account-b $PsnAccountB --local $PsnLocal --out $PsnOut
         if ($LASTEXITCODE -eq 0) {
             Write-Host ""
             Write-Host "Next: Plan with these PSN parameters (and -PsnAccountA, -PsnAccountB, -PsnLocal as above, -PsnCurrent the last plan folder's psn-shared-activity.json):"

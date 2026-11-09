@@ -260,23 +260,41 @@ namespace Chatcheology.Tools.MemoryImport
             var environment = psnFetch();
             using var api = new PsnApiClient(environment.Handler, environment.Prompt, environment.Sleep, output);
             var options = new PsnFetchOptions(
-                parsed.PreviousList!, parsed.DefinitionsFile!, parsed.AccountA!, parsed.AccountB!, parsed.Local!, parsed.Out!);
+                parsed.PreviousList!, parsed.DefinitionsFile!, parsed.DecisionsFile!, parsed.AccountA!, parsed.AccountB!, parsed.Local!, parsed.Out!);
             var result = PsnTrophyFetcher.Run(options, api, environment.Prompt, utcNow);
             var c = result.Counts;
 
             if (!result.Completed)
             {
-                output.WriteLine($"Stopped: listed games no longer returned by PlayStation: account a {c.MissingSideA}, account b {c.MissingSideB}.");
-                output.WriteLine($"Details are in {PsnTrophyFetcher.MissingFile} in the out folder. No trophies were fetched.");
-                output.WriteLine("Check those games, correct the game list if needed, and run again.");
+                output.WriteLine("Stopped before fetching any trophies.");
+
+                if (c.MissingSideA + c.MissingSideB > 0)
+                {
+                    output.WriteLine($"  listed games no longer returned by PlayStation: account a {c.MissingSideA}, account b {c.MissingSideB} (details: {PsnTrophyFetcher.MissingFile}).");
+                }
+
+                if (c.DecisionConflicts + c.ListedGamesNotTogether > 0)
+                {
+                    output.WriteLine($"  candidates matched by decisions rows with different statuses: {c.DecisionConflicts}");
+                    output.WriteLine($"  previous-list games marked excluded or uncertain: {c.ListedGamesNotTogether}");
+                    output.WriteLine($"  (details: {PsnTrophyFetcher.ConflictsFile})");
+                }
+
+                output.WriteLine("The details are in the out folder. Correct the decisions file or the game list, and run again.");
                 return Failed;
             }
 
             output.WriteLine("PSN fetch done.");
             output.WriteLine("Game list:");
             output.WriteLine($"  on the previous list: {c.ListedBefore}");
-            output.WriteLine($"  added (one trophy set on both accounts): {c.Added}");
-            output.WriteLine($"  to confirm by hand (not added; see {PsnTrophyFetcher.ToConfirmFile}): {c.ToConfirm}");
+            output.WriteLine($"  added from decisions (together): {c.Added}");
+            output.WriteLine($"  not added, excluded: {c.NotAddedExcluded}");
+            output.WriteLine($"  not added, uncertain: {c.NotAddedUncertain}");
+            output.WriteLine($"  not added, awaiting review (no decisions row; see {PsnTrophyFetcher.ToReviewFile}): {c.AwaitingReview}");
+            output.WriteLine($"  not added, together but a set would be in two games (to review): {c.TogetherBlocked}");
+            output.WriteLine($"  together-row pairs not offered as candidates (to review): {c.NotOffered}");
+            output.WriteLine($"  together rows with no pair returned on both accounts (see {PsnTrophyFetcher.TogetherNotReturnedFile}): {c.TogetherNotReturned}");
+            output.WriteLine($"  ids in together rows not returned for their account (same file): {c.TogetherIdsNotReturned}");
             output.WriteLine($"  listed now: {c.ListedNow}");
             output.WriteLine($"  icons added (added games only): {c.IconsAdded}");
             output.WriteLine($"  added games with no icon: {c.AddedWithoutIcon}");
@@ -297,9 +315,29 @@ namespace Chatcheology.Tools.MemoryImport
             output.WriteLine($"Calls: {api.Attempts}, retries: {api.Retries}, new tokens: {api.TokenRenewals}");
             output.WriteLine($"Check build (no -PsnCurrent): games {c.CheckGames}, events {c.CheckEvents}, games with events and no icon in the list {c.CheckGamesWithEventsAndNoIcon}");
 
-            if (c.ToConfirm > 0)
+            if (c.AwaitingReview > 0)
             {
-                output.WriteLine($"ATTENTION: {c.ToConfirm} pair(s) to confirm by hand; they are not in the game list.");
+                output.WriteLine(
+                    $"ATTENTION: {c.AwaitingReview} candidate(s) await review; they are not in the game list. " +
+                    $"Copy the rows you decide from {PsnTrophyFetcher.ToReviewFile} into your decisions file with a status.");
+            }
+
+            if (c.TogetherBlocked > 0)
+            {
+                output.WriteLine(
+                    $"ATTENTION: {c.TogetherBlocked} together pair(s) not added: a trophy set may be in only one game. " +
+                    $"See the reason column in {PsnTrophyFetcher.ToReviewFile} and correct the decisions rows.");
+            }
+
+            if (c.NotOffered > 0)
+            {
+                output.WriteLine(
+                    $"ATTENTION: {c.NotOffered} together-row pair(s) were not offered as candidates and are not added; see {PsnTrophyFetcher.ToReviewFile}.");
+            }
+
+            if (c.TogetherNotReturned + c.TogetherIdsNotReturned > 0)
+            {
+                output.WriteLine($"ATTENTION: together rows or ids PlayStation does not return; see {PsnTrophyFetcher.TogetherNotReturnedFile}.");
             }
 
             if (c.DefinitionSetsStillShort > 0)
@@ -559,7 +597,8 @@ namespace Chatcheology.Tools.MemoryImport
             output.WriteLine("  psn-build --timestamps <file> [--timestamps <file> ...] --manifest <file> --account-a <name> --account-b <name>");
             output.WriteLine("            (--out <file> [--overwrite] | --dry-run) [--icons-from <shared-activity-file>] [--allow-no-icon]");
             output.WriteLine("  psn-compare <old-file> <new-file> --local <prefix> --other <prefix> --pair-a <prefix>");
-            output.WriteLine("  psn-fetch --previous-list <game list> --definitions <definitions file> --account-a <name> --account-b <name>");
+            output.WriteLine("  psn-fetch --previous-list <game list> --definitions <definitions file> --decisions <decisions csv>");
+            output.WriteLine("            --account-a <name> --account-b <name>");
             output.WriteLine("            --local <a or b name> --out <new folder>");
             output.WriteLine();
             output.WriteLine("psn-build: --account-a is the account whose trophy set is first in every game key; the account names");
@@ -623,6 +662,8 @@ namespace Chatcheology.Tools.MemoryImport
             internal string? PreviousList { get; private set; }
 
             internal string? DefinitionsFile { get; private set; }
+
+            internal string? DecisionsFile { get; private set; }
 
             private bool BuildOptionGiven =>
                 Timestamps.Count > 0 || Manifest is not null || AccountA is not null || AccountB is not null
@@ -759,6 +800,10 @@ namespace Chatcheology.Tools.MemoryImport
                             parsed.DefinitionsFile = NextValue(argument);
                             break;
 
+                        case "--decisions":
+                            parsed.DecisionsFile = NextValue(argument);
+                            break;
+
                         default:
                             if (argument.StartsWith("--", StringComparison.Ordinal))
                             {
@@ -795,21 +840,21 @@ namespace Chatcheology.Tools.MemoryImport
                         || parsed.Overwrite || parsed.DryRun || parsed.AllowNoIcon)
                     {
                         throw new UsageException(
-                            "psn-fetch takes --previous-list, --definitions, --account-a, --account-b, --local and --out only.");
+                            "psn-fetch takes --previous-list, --definitions, --decisions, --account-a, --account-b, --local and --out only.");
                     }
 
-                    if (parsed.PreviousList is null || parsed.DefinitionsFile is null || parsed.AccountA is null
+                    if (parsed.PreviousList is null || parsed.DefinitionsFile is null || parsed.DecisionsFile is null || parsed.AccountA is null
                         || parsed.AccountB is null || parsed.Local is null || parsed.Out is null)
                     {
-                        throw new UsageException("psn-fetch needs --previous-list, --definitions, --account-a, --account-b, --local and --out.");
+                        throw new UsageException("psn-fetch needs --previous-list, --definitions, --decisions, --account-a, --account-b, --local and --out.");
                     }
 
                     return parsed;
                 }
 
-                if (parsed.PreviousList is not null || parsed.DefinitionsFile is not null)
+                if (parsed.PreviousList is not null || parsed.DefinitionsFile is not null || parsed.DecisionsFile is not null)
                 {
-                    throw new UsageException("--previous-list and --definitions belong to psn-fetch only.");
+                    throw new UsageException("--previous-list, --definitions and --decisions belong to psn-fetch only.");
                 }
 
                 if (parsed.Command == "psn-build")
