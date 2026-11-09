@@ -21,6 +21,8 @@
     <ProjectReference Include="..\MsgstoreImport\MsgstoreImport.csproj" />
     <ProjectReference Include="..\..\Chatcheology.Core\Chatcheology.Core.csproj" />
     <ProjectReference Include="..\..\Chatcheology.Data\Chatcheology.Data.csproj" />
+    <!-- CH-71 step 3b: the phone must recognise exactly the placeholder wordings the import writes. -->
+    <ProjectReference Include="..\..\Chatcheology.Mobile\Chatcheology.Mobile.csproj" />
   </ItemGroup>
 
   <ItemGroup>
