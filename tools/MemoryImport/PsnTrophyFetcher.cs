@@ -46,10 +46,16 @@ namespace Chatcheology.Tools.MemoryImport
         /// <summary>Games on the new list.</summary>
         public int ListedNow { get; internal set; }
 
-        /// <summary>Icons put into the new list (games that had none).</summary>
+        /// <summary>Added games given the title list's icon (previous-list games never get one here).</summary>
         public int IconsAdded { get; internal set; }
 
-        /// <summary>Listed games with no icon in the new list (PlayStation gave none).</summary>
+        /// <summary>Added games PlayStation gave no icon for.</summary>
+        public int AddedWithoutIcon { get; internal set; }
+
+        /// <summary>
+        /// Listed games with no icon in the new list: previous-list games listed without one (psn-build
+        /// carries theirs over from the current shared-activity file) and added games PlayStation gave none.
+        /// </summary>
         public int IconsNone { get; internal set; }
 
         /// <summary>Previous-list games PlayStation no longer returns for account a.</summary>
@@ -104,8 +110,10 @@ namespace Chatcheology.Tools.MemoryImport
     /// accounts with different sets is never added, only written to the to-confirm file (missing is
     /// better than wrong; no fuzzy matching); a listed game PlayStation no longer returns stops the
     /// run before any trophy is fetched. Then each listed game's earned-trophy times (the old fetch
-    /// script's <see cref="PsnSharedActivityBuilder.TimestampsFormat"/> shape), icons for listed
-    /// games without one, and definitions for listed sets not yet in the definitions file.
+    /// script's <see cref="PsnSharedActivityBuilder.TimestampsFormat"/> shape), the title icon for
+    /// added games only (a previous-list game keeps its entry as listed, with or without an icon:
+    /// psn-build carries a missing one over from the current shared-activity file), and definitions
+    /// for listed sets not yet in the definitions file.
     /// </summary>
     /// <remarks>
     /// The inputs are never written. Every output file is written beside itself first and then moved
@@ -430,6 +438,7 @@ namespace Chatcheology.Tools.MemoryImport
                     counts.Added = (int?)state["added"] ?? 0;
                     counts.ToConfirm = (int?)state["toConfirm"] ?? 0;
                     counts.IconsAdded = (int?)state["iconsAdded"] ?? 0;
+                    counts.AddedWithoutIcon = (int?)state["addedWithoutIcon"] ?? 0;
                     return PhaseListed;
 
                 default:
@@ -454,6 +463,7 @@ namespace Chatcheology.Tools.MemoryImport
             state["added"] = counts.Added;
             state["toConfirm"] = counts.ToConfirm;
             state["iconsAdded"] = counts.IconsAdded;
+            state["addedWithoutIcon"] = counts.AddedWithoutIcon;
             WriteJson(path, state);
         }
 
@@ -552,25 +562,14 @@ namespace Chatcheology.Tools.MemoryImport
                 }
             }
 
-            // Every previous game stays exactly as listed; one without an icon gets the title list's.
+            // Every previous game stays exactly as listed, icon or no icon: a game without one gets its
+            // icon carried over by psn-build from the current shared-activity file (the refresh passes
+            // it), so the compare shows no icon change for it. Only added games take the title icon.
             var games = new JsonArray();
 
             foreach (var game in previous)
             {
-                var node = game.Node.DeepClone().AsObject();
-
-                if (!game.HasIcon)
-                {
-                    var icon = titlesA[game.A.Id].Icon ?? titlesB[game.B.Id].Icon;
-
-                    if (icon is not null)
-                    {
-                        SetIcon(node, icon);
-                        counts.IconsAdded++;
-                    }
-                }
-
-                games.Add(node);
+                games.Add(game.Node.DeepClone());
             }
 
             foreach (var entry in added)
@@ -580,6 +579,10 @@ namespace Chatcheology.Tools.MemoryImport
                 if (entry["icon"] is not null)
                 {
                     counts.IconsAdded++;
+                }
+                else
+                {
+                    counts.AddedWithoutIcon++;
                 }
             }
 
@@ -621,12 +624,6 @@ namespace Chatcheology.Tools.MemoryImport
             }
 
             return entry;
-        }
-
-        private static void SetIcon(JsonObject node, string icon)
-        {
-            RemoveCaseInsensitive(node, "icon");
-            node["icon"] = icon;
         }
 
         private static void RemoveCaseInsensitive(JsonObject node, string name)

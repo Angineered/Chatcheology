@@ -278,8 +278,9 @@ namespace Chatcheology.Tools.MemoryImport
             output.WriteLine($"  added (one trophy set on both accounts): {c.Added}");
             output.WriteLine($"  to confirm by hand (not added; see {PsnTrophyFetcher.ToConfirmFile}): {c.ToConfirm}");
             output.WriteLine($"  listed now: {c.ListedNow}");
-            output.WriteLine($"  icons added: {c.IconsAdded}");
-            output.WriteLine($"  listed games with no icon: {c.IconsNone}");
+            output.WriteLine($"  icons added (added games only): {c.IconsAdded}");
+            output.WriteLine($"  added games with no icon: {c.AddedWithoutIcon}");
+            output.WriteLine($"  listed games with no icon (previous-list games: carried over from -PsnCurrent at Plan): {c.IconsNone}");
             output.WriteLine("Trophy times:");
             output.WriteLine($"  games fetched in this run: {c.GamesFetched}");
             output.WriteLine($"  games saved by an earlier run (skipped): {c.GamesAlreadySaved}");
@@ -290,16 +291,16 @@ namespace Chatcheology.Tools.MemoryImport
             output.WriteLine($"  sets fetched: {c.DefinitionSetsFetched} ({c.DefinitionsFetched} trophies)");
             output.WriteLine($"  sets in the new file: {c.DefinitionSetsNow}");
             output.WriteLine($"Calls: {api.Attempts}, retries: {api.Retries}, new tokens: {api.TokenRenewals}");
-            output.WriteLine($"Check build: games {c.CheckGames}, events {c.CheckEvents}, games with events and no icon {c.CheckGamesWithEventsAndNoIcon}");
+            output.WriteLine($"Check build (no -PsnCurrent): games {c.CheckGames}, events {c.CheckEvents}, games with events and no icon in the list {c.CheckGamesWithEventsAndNoIcon}");
 
             if (c.ToConfirm > 0)
             {
                 output.WriteLine($"ATTENTION: {c.ToConfirm} pair(s) to confirm by hand; they are not in the game list.");
             }
 
-            if (c.CheckGamesWithEventsAndNoIcon > 0)
+            if (c.AddedWithoutIcon > 0)
             {
-                output.WriteLine("ATTENTION: games with events have no icon; the refresh plan refuses them unless -PsnCurrent carries their icons.");
+                output.WriteLine("ATTENTION: added games have no icon; the refresh plan refuses any of them with events (-PsnCurrent has none for new games).");
             }
 
             return Success;

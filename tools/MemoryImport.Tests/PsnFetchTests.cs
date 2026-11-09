@@ -25,6 +25,7 @@ namespace Chatcheology.Tools.MemoryImport.Tests
         private const string QuestListIcon = "https://image.api.playstation.com/zz/quest-list.png";
         private const string QuestTitleIcon = "https://image.api.playstation.com/zz/quest-title.png";
         private const string RacerTitleIcon = "https://image.api.playstation.com/zz/racer-title.png";
+        private const string RacerCurrentIcon = "https://image.api.playstation.com/zz/racer-current.png";
         private const string BorderTitleIcon = "https://image.api.playstation.com/zz/border-title.png";
 
         private static readonly DateTime Now = new(2026, 11, 9, 8, 0, 0, DateTimeKind.Utc);
@@ -293,12 +294,11 @@ namespace Chatcheology.Tools.MemoryImport.Tests
             Assert.All(RequestsTo("/npCommunicationIds/" + RacerA), url => Assert.StartsWith("users/me/", url, StringComparison.Ordinal));
             Assert.All(RequestsTo("/npCommunicationIds/" + RacerB), url => Assert.StartsWith($"users/{Partner}/", url, StringComparison.Ordinal));
 
-            // psn-build accepts the output as the refresh will pass it, icons required.
-            var built = PsnSharedActivityBuilder.Build(
-                [File.ReadAllBytes(Path.Combine(Out, PsnTrophyFetcher.TimestampsFile))],
-                File.ReadAllBytes(Path.Combine(Out, PsnTrophyFetcher.GameListFile)),
-                AccountA,
-                AccountB);
+            // psn-build accepts the output as the refresh passes it (the current file for icon carry-over,
+            // icons required): see PsnBuild_CarriesListedGameIconsOverFromTheCurrentFile for the icons.
+            var timestampsOut = File.ReadAllBytes(Path.Combine(Out, PsnTrophyFetcher.TimestampsFile));
+            var listOut = File.ReadAllBytes(Path.Combine(Out, PsnTrophyFetcher.GameListFile));
+            var built = PsnSharedActivityBuilder.Build([timestampsOut], listOut, AccountA, AccountB, CurrentFile(timestampsOut));
             Assert.Equal(3, built.Counts.GamesBuilt);
             Assert.Equal(3, built.Counts.Events);
             Assert.Equal(0, built.Counts.IconsNone);
@@ -315,6 +315,51 @@ namespace Chatcheology.Tools.MemoryImport.Tests
             Assert.Contains(Server.Requests, request => request.Authorization == "Bearer " + Token);
         }
 
+        /// <summary>
+        /// Last month's shared-activity file, built from the previous list with icons for both listed
+        /// games (as the October file has them), without the game added this run.
+        /// </summary>
+        private byte[] CurrentFile(byte[] timestamps)
+        {
+            var list = JsonNode.Parse(File.ReadAllText(PreviousList))!;
+            list["games"]![1]!["icon"] = RacerCurrentIcon;
+            return PsnSharedActivityBuilder.Build(
+                [timestamps], System.Text.Encoding.UTF8.GetBytes(list.ToJsonString()), AccountA, AccountB).Json;
+        }
+
+        [Fact]
+        public void PsnBuild_CarriesListedGameIconsOverFromTheCurrentFile_AndCompareShowsNoIconChange()
+        {
+            var (result, _) = Fetch(new FakePrompt(Partner, Token));
+            Assert.True(result.Completed);
+
+            var timestamps = File.ReadAllBytes(Path.Combine(Out, PsnTrophyFetcher.TimestampsFile));
+            var list = File.ReadAllBytes(Path.Combine(Out, PsnTrophyFetcher.GameListFile));
+            var current = CurrentFile(timestamps);
+
+            // Without the current file the listed game with events and no icon is refused, as in the plan.
+            Assert.Throws<InvalidOperationException>(() => PsnSharedActivityBuilder.Build([timestamps], list, AccountA, AccountB));
+
+            // With it (the refresh passes -PsnCurrent): the icon is carried over, nothing is missing.
+            var built = PsnSharedActivityBuilder.Build([timestamps], list, AccountA, AccountB, current);
+            var games = JsonNode.Parse(built.Json)!["games"]!.AsArray().ToDictionary(g => (string)g!["key"]!, g => (string?)g!["icon"]);
+            Assert.Equal(RacerCurrentIcon, games[$"{RacerA}|{RacerB}"]);
+            Assert.Equal(QuestListIcon, games[$"{Quest}|{Quest}"]);
+            Assert.Equal(BorderTitleIcon, games[$"{Border}|{Border}"]);
+            Assert.Equal(1, built.Counts.IconsFromExistingFile);
+            Assert.Equal(2, built.Counts.IconsFromManifest);
+            Assert.Equal(0, built.Counts.IconsNone);
+
+            // psn-compare: the only game difference is the added one; no icon changes.
+            var compare = PsnSharedActivityComparer.Compare(
+                PsnSharedActivityReader.Parse(current, AccountA, AccountB, AccountA), current,
+                PsnSharedActivityReader.Parse(built.Json, AccountA, AccountB, AccountA), built.Json);
+            Assert.Equal(0, compare.GamesDifferentIcon);
+            Assert.Equal(0, compare.GamesDifferentTitle);
+            Assert.Equal(1, compare.GamesOnlyNew);
+            Assert.Equal(0, compare.GamesOnlyOld);
+        }
+
         [Fact]
         public void IconsAndDefinitions_AreAddedOnlyWhereMissing()
         {
@@ -326,12 +371,18 @@ namespace Chatcheology.Tools.MemoryImport.Tests
             // Listed with an icon: kept, even though the title list has another.
             Assert.Equal(QuestListIcon, (string)games[0]!["icon"]!);
 
-            // Listed without one: account a's title icon (account b's title has none).
-            Assert.Equal(RacerTitleIcon, (string)games[1]!["icon"]!);
+            // Listed without one: still none (psn-build carries it over from the current file), even
+            // though the title list has one.
+            Assert.False(games[1]!.AsObject().ContainsKey("icon"));
+            Assert.True(JsonNode.DeepEquals(
+                JsonNode.Parse(File.ReadAllText(PreviousList))!["games"]![1],
+                games[1]));
 
             // Added: the title icon.
             Assert.Equal(BorderTitleIcon, (string)games[2]!["icon"]!);
-            Assert.Equal(2, result.Counts.IconsAdded);
+            Assert.Equal(1, result.Counts.IconsAdded);
+            Assert.Equal(0, result.Counts.AddedWithoutIcon);
+            Assert.Equal(1, result.Counts.IconsNone);
 
             // Definitions fetched for the added game's set only; the given sets are copied unchanged.
             Assert.Equal([$"npCommunicationIds/{Border}/trophyGroups/all/trophies?npServiceName=trophy&limit=100&offset=0"],

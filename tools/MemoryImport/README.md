@@ -233,12 +233,15 @@ account that is `me` in the API; the other account is called by its id. The inpu
    (`users/{me|id}/npCommunicationIds/{set}/trophyGroups/all/trophies?npServiceName=...&limit=100&offset=n`,
    paged by `totalItemCount`, incomplete paging refused; earned trophies only), written as
    `chatcheology-psn-trophy-batch-v1`.
-3. A listed game without an icon gets the title list's icon (account a's, else account b's); a game
-   with one keeps it. Sets of listed games that are not in the definitions file get their
+3. Only games added this run get an icon, the title list's (account a's, else account b's). A
+   previous-list game keeps its entry exactly as listed, with or without an icon: psn-build (the
+   refresh's plan, with `-PsnCurrent`) carries a missing icon over from the current shared-activity
+   file, so psn-compare shows no icon change for it. Sets of listed games that are not in the definitions file get their
    definitions fetched (`npCommunicationIds/{set}/trophyGroups/all/trophies`, no user,
    `Accept-Language: en-US`, values as returned, missing fields null) and added to a copy of it.
-4. The outputs are checked with psn-build (icons allowed missing; the count is printed) and the
-   definitions reader before the run is marked finished.
+4. The outputs are checked with psn-build (without the current file, so icons are allowed missing;
+   the count is printed) and the definitions reader before the run is marked finished. An added game
+   PlayStation gave no icon is flagged ATTENTION: the plan would refuse it if it has events.
 
 Calls: bearer token, 450 ms pause after each, retries with backoff (5, 10, 20 ... s, at most 90) on
 408, 429, 5xx and network failures, at most 6 attempts; on 401, 403 or an expired-token reply it asks
@@ -254,7 +257,7 @@ a pair from the to-confirm file after checking it: copy its entry (without `reas
 `gameOnAccountB`) into the game list and run psn-fetch again into a new folder with that list as
 `--previous-list`.
 
-Prints counts only: games on the previous list, added, to confirm, listed now, icons added, games
+Prints counts only: games on the previous list, added, to confirm, listed now, icons added (added games only), added games and listed games with no icon, games
 fetched and skipped (resumed), trophies earned per account side, definition sets, calls, retries,
 new tokens, and the check build's games, events and games with events and no icon. Exit 0 done; 1
 stopped (missing games, or a failed call: progress saved, run again); 2 usage.
