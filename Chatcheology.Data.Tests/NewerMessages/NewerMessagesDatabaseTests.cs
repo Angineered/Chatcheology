@@ -8,7 +8,7 @@ namespace Chatcheology.Data.Tests.NewerMessages
     public sealed class NewerMessagesDatabaseTests : IDisposable
     {
         private static readonly DateTime Now = new(2026, 11, 9, 8, 0, 0, DateTimeKind.Utc);
-        private static readonly NewerMessagesInfo Info = new(1, 2, 3, 7, Now);
+        private static readonly NewerMessagesInfo Info = new(1, 2, 3, 7, new DateOnly(2026, 8, 12), Now);
 
         private readonly string _folder = Path.Combine(Path.GetTempPath(), "Chatcheology.NewerMessages.Tests", Guid.NewGuid().ToString("N"));
 
@@ -30,8 +30,9 @@ namespace Chatcheology.Data.Tests.NewerMessages
 
         private string NewerPath => Path.Combine(_folder, NewerMessagesDatabase.FileName);
 
-        private static NewerRefreshRun Run(string sha, string handOff, string handOffKey, string? root = null) => new()
+        private static NewerRefreshRun Run(string sha, string handOff, string handOffKey, string? root = null, bool handOffFromMe = true) => new()
         {
+            HandOffFromMe = handOffFromMe,
             RunDateTimeUtc = Now,
             ManifestSha256 = sha,
             MsgstoreSizeBytes = 4096,
@@ -123,6 +124,12 @@ namespace Chatcheology.Data.Tests.NewerMessages
                 NewerPath, Info, Run(new string('2', 64), NewerMessagesDatabase.HandOffPreviousRun, "K1"), [Message("K1", T0, true)]));
             Assert.Throws<InvalidOperationException>(() => NewerMessagesWriter.Append(
                 NewerPath, Info with { ChatRowID = 8 }, Run(new string('2', 64), NewerMessagesDatabase.HandOffPreviousRun, "K1"), [Message("K2", T0 + 1, true)]));
+            Assert.Throws<InvalidOperationException>(() => NewerMessagesWriter.Append(
+                NewerPath, Info with { WorkspaceLastDay = new DateOnly(2026, 8, 13) },
+                Run(new string('2', 64), NewerMessagesDatabase.HandOffPreviousRun, "K1"), [Message("K2", T0 + 1, true)]));
+            Assert.Throws<InvalidOperationException>(() => NewerMessagesWriter.Append(
+                NewerPath, Info, Run(new string('2', 64), NewerMessagesDatabase.HandOffPreviousRun, "K1", handOffFromMe: false),
+                [Message("K2", T0 + 1, true)]));
 
             SqliteConnection.ClearAllPools();
             Assert.Equal(before, File.ReadAllBytes(NewerPath));
@@ -130,6 +137,36 @@ namespace Chatcheology.Data.Tests.NewerMessages
             var ok = NewerMessagesWriter.Append(NewerPath, Info, Run(new string('2', 64), NewerMessagesDatabase.HandOffPreviousRun, "K1"), [Message("K2", T0 + 1, true)]);
             Assert.False(ok.Created);
             Assert.Equal([1L, 2L], NewerMessagesReader.Read(NewerPath).Messages.Select(m => m.NewerMessageID));
+        }
+
+        [Fact]
+        public void The_same_key_id_may_occur_once_in_each_direction()
+        {
+            NewerMessagesWriter.Append(NewerPath, Info, Run(new string('1', 64), NewerMessagesDatabase.HandOffWorkspace, "K0"),
+                [Message("K1", T0, true), Message("K1", T0 + 1000, false)]);
+
+            var read = NewerMessagesReader.Read(NewerPath);
+            Assert.Equal([(true, "K1"), (false, "K1")], read.Messages.Select(m => (m.FromMe, m.KeyID)));
+            Assert.Equal((false, "K1"), read.LastMessage);
+
+            // The same (direction, key_id) again is refused, by the run check and by the file.
+            Assert.Throws<ArgumentException>(() => NewerMessagesWriter.Append(
+                NewerPath, Info, Run(new string('2', 64), NewerMessagesDatabase.HandOffPreviousRun, "K1", handOffFromMe: false),
+                [Message("K2", T0 + 2000, true), Message("K2", T0 + 3000, true)]));
+            Assert.Throws<InvalidOperationException>(() => NewerMessagesWriter.Append(
+                NewerPath, Info, Run(new string('2', 64), NewerMessagesDatabase.HandOffPreviousRun, "K1", handOffFromMe: false),
+                [Message("K1", T0 + 2000, true)]));
+        }
+
+        [Fact]
+        public void A_media_root_is_stored_without_a_trailing_separator()
+        {
+            var root = Path.Combine(_folder, "root") + Path.DirectorySeparatorChar;
+
+            NewerMessagesWriter.Append(NewerPath, Info, Run(new string('1', 64), NewerMessagesDatabase.HandOffWorkspace, "K0", root),
+                [Message("K1", T0, true, new NewerAttachmentRow { State = NewerMessagesDatabase.StateRestored, Sha256 = new string('a', 64), RelativePath = "a" })]);
+
+            Assert.Equal(Path.Combine(_folder, "root"), NewerMessagesReader.Read(NewerPath).Runs[0].MediaRootPath);
         }
 
         [Fact]

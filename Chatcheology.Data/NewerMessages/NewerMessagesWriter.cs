@@ -10,10 +10,14 @@ namespace Chatcheology.Data.NewerMessages
     /// <remarks>
     /// <para><strong>Append only.</strong> Inserts one <c>RefreshRun</c> row, its messages in the order given
     /// (which becomes the timeline order) and their attachments; a media root is registered once and reused.
-    /// Nothing already in the file is updated or deleted, so identifiers and states never change.</para>
+    /// The only update is in the same transaction: this run's own new attachment rows get their low-quality link
+    /// after all of them are inserted. No row of an earlier run is updated and nothing is deleted, so identifiers
+    /// and states never change once a run has committed.</para>
+    /// <para><strong>Identity.</strong> A message is (from_me, key_id), as in WhatsApp; the same key_id may occur once
+    /// in each direction.</para>
     /// <para><strong>Hand-off.</strong> A <see cref="NewerMessagesDatabase.HandOffWorkspace"/> run is accepted only
     /// while nothing has been imported yet; a <see cref="NewerMessagesDatabase.HandOffPreviousRun"/> run only when its
-    /// <see cref="NewerRefreshRun.HandOffKeyID"/> is the file's last imported key_id. The hand-off itself is checked
+    /// hand-off (from_me, key_id) is the file's last imported message. The hand-off itself is checked
     /// against the msgstore by the caller; this is the file's own guard against a gap or an overlap.</para>
     /// <para><strong>Idempotent.</strong> A run whose manifest SHA-256 is already recorded writes nothing and
     /// reports <see cref="NewerMessagesWriteResult.AlreadyApplied"/>.</para>
@@ -66,11 +70,12 @@ namespace Chatcheology.Data.NewerMessages
                     var stored = NewerMessagesReader.ReadInfo(connection, transaction);
 
                     if (stored.ConversationID != info.ConversationID || stored.LocalParticipantID != info.LocalParticipantID
-                        || stored.OtherParticipantID != info.OtherParticipantID || stored.ChatRowID != info.ChatRowID)
+                        || stored.OtherParticipantID != info.OtherParticipantID || stored.ChatRowID != info.ChatRowID
+                        || stored.WorkspaceLastDay != info.WorkspaceLastDay)
                     {
                         throw new InvalidOperationException(
-                            "The newer-messages file continues another conversation, participant or msgstore chat. " +
-                            "Nothing has been written.");
+                            "The newer-messages file continues another conversation, participant, msgstore chat or " +
+                            "workspace end. Nothing has been written.");
                     }
 
                     if (Scalar(connection, transaction, "SELECT COUNT(*) FROM RefreshRun WHERE ManifestSha256 = $sha;",
@@ -81,7 +86,7 @@ namespace Chatcheology.Data.NewerMessages
                         return new NewerMessagesWriteResult(true, false, 0, 0, 0, 0);
                     }
 
-                    var last = LastKeyID(connection, transaction);
+                    var last = LastMessage(connection, transaction);
 
                     if (run.HandOff == NewerMessagesDatabase.HandOffWorkspace && last is not null)
                     {
@@ -90,14 +95,14 @@ namespace Chatcheology.Data.NewerMessages
                             "Nothing has been written.");
                     }
 
-                    if (run.HandOff == NewerMessagesDatabase.HandOffPreviousRun && !string.Equals(last, run.HandOffKeyID, StringComparison.Ordinal))
+                    if (run.HandOff == NewerMessagesDatabase.HandOffPreviousRun
+                        && (last is not { } l || l.FromMe != run.HandOffFromMe || !string.Equals(l.KeyID, run.HandOffKeyID, StringComparison.Ordinal)))
                     {
                         throw new InvalidOperationException(
                             "The run does not continue from the last imported message. Nothing has been written.");
                     }
 
-                    var duplicate = messages.Count(m =>
-                        Scalar(connection, transaction, "SELECT COUNT(*) FROM NewerMessage WHERE KeyID = $key;", ("$key", m.KeyID)) > 0);
+                    var duplicate = messages.Count(m => Exists(connection, transaction, m.FromMe, m.KeyID));
 
                     if (duplicate > 0)
                     {
@@ -141,13 +146,13 @@ namespace Chatcheology.Data.NewerMessages
                 throw new ArgumentException("The manifest SHA-256 must be 64 lower-case hex characters.");
             }
 
-            var keys = new HashSet<string>(StringComparer.Ordinal);
+            var keys = new HashSet<(bool, string)>();
 
             foreach (var m in messages)
             {
-                if (!keys.Add(m.KeyID))
+                if (!keys.Add((m.FromMe, m.KeyID)))
                 {
-                    throw new ArgumentException("A key_id appears twice in the run.");
+                    throw new ArgumentException("A message (from_me, key_id) appears twice in the run.");
                 }
 
                 if (NewerMessagesTimeZone.ToLocal(m.TimestampUtcMs) is not { } local
@@ -195,7 +200,7 @@ namespace Chatcheology.Data.NewerMessages
 
             if (run.MediaRootPath is { } root)
             {
-                var full = Path.GetFullPath(root);
+                var full = Path.TrimEndingDirectorySeparator(Path.GetFullPath(root));
 
                 command.CommandText = "SELECT MediaRootID FROM MediaRoot WHERE RootPath = $path;";
                 command.Parameters.AddWithValue("$path", full);
@@ -219,10 +224,10 @@ namespace Chatcheology.Data.NewerMessages
                 """
                 INSERT INTO RefreshRun (
                     RunDateTimeUtc, ManifestSha256, MsgstoreSizeBytes, MsgstoreUserVersion, MsgstoreSchemaSha256,
-                    HandOff, HandOffKeyID, MediaRootID, Messages, UserMessages, SystemMessages, Placeholders,
-                    Attachments, Restored, Unmatched, LastKeyID, LastSortID)
-                VALUES ($utc, $sha, $size, $uv, $schema, $handoff, $handoffKey, $root, $messages, $user, $system,
-                        $placeholders, $attachments, $restored, $unmatched, $lastKey, $lastSort);
+                    HandOff, HandOffKeyID, HandOffFromMe, MediaRootID, Messages, UserMessages, SystemMessages, Placeholders,
+                    Attachments, Restored, Unmatched, LastKeyID, LastFromMe, LastSortID)
+                VALUES ($utc, $sha, $size, $uv, $schema, $handoff, $handoffKey, $handoffFromMe, $root, $messages, $user, $system,
+                        $placeholders, $attachments, $restored, $unmatched, $lastKey, $lastFromMe, $lastSort);
                 SELECT last_insert_rowid();
                 """;
             command.Parameters.AddWithValue("$utc", NewerMessagesDatabase.FormatUtc(run.RunDateTimeUtc));
@@ -232,6 +237,8 @@ namespace Chatcheology.Data.NewerMessages
             command.Parameters.AddWithValue("$schema", run.MsgstoreSchemaSha256);
             command.Parameters.AddWithValue("$handoff", run.HandOff);
             command.Parameters.AddWithValue("$handoffKey", run.HandOffKeyID);
+            command.Parameters.AddWithValue("$handoffFromMe", run.HandOffFromMe ? 1 : 0);
+            command.Parameters.AddWithValue("$lastFromMe", lastMessage is null ? DBNull.Value : lastMessage.FromMe ? 1 : 0);
             command.Parameters.AddWithValue("$root", (object?)rootID ?? DBNull.Value);
             command.Parameters.AddWithValue("$messages", messages.Count);
             command.Parameters.AddWithValue("$user", messages.Count(m => m.Kind == NewerMessagesDatabase.KindUser));
@@ -246,7 +253,7 @@ namespace Chatcheology.Data.NewerMessages
             var runID = (long)command.ExecuteScalar()!;
             command.Parameters.Clear();
 
-            var attachmentByKey = new Dictionary<string, long>(StringComparer.Ordinal);
+            var attachmentByKey = new Dictionary<(bool, string), long>();
 
             foreach (var m in messages)
             {
@@ -300,17 +307,18 @@ namespace Chatcheology.Data.NewerMessages
                 command.Parameters.AddWithValue("$root", a.State == NewerMessagesDatabase.StateRestored ? rootID! : DBNull.Value);
                 command.Parameters.AddWithValue("$sha", (object?)a.Sha256 ?? DBNull.Value);
 
-                attachmentByKey[m.KeyID] = (long)command.ExecuteScalar()!;
+                attachmentByKey[(m.FromMe, m.KeyID)] = (long)command.ExecuteScalar()!;
                 command.Parameters.Clear();
             }
 
-            // Low-quality links, set on this run's own new rows only. The full copy may be of this run or an
-            // earlier one; a link whose low-quality side is an earlier row is never written (it would change it).
+            // Low-quality links, set in this same transaction on this run's own new rows only. The full copy is in
+            // the same direction (the link rule requires it) and may be of this run or an earlier one; a link whose
+            // low-quality side is an earlier row is never written (it would change a committed row).
             var links = 0;
 
             foreach (var m in messages.Where(m => m.Attachment?.LowQualityCopyOfKeyID is not null))
             {
-                var fullKey = m.Attachment!.LowQualityCopyOfKeyID!;
+                var fullKey = (m.FromMe, m.Attachment!.LowQualityCopyOfKeyID!);
 
                 if (!attachmentByKey.TryGetValue(fullKey, out var full))
                 {
@@ -318,9 +326,10 @@ namespace Chatcheology.Data.NewerMessages
                         """
                         SELECT a.NewerAttachmentID FROM NewerAttachment AS a
                         INNER JOIN NewerMessage AS n ON n.NewerMessageID = a.NewerMessageID
-                        WHERE n.KeyID = $key;
+                        WHERE n.KeyID = $key AND n.FromMe = $fromMe;
                         """;
-                    command.Parameters.AddWithValue("$key", fullKey);
+                    command.Parameters.AddWithValue("$key", fullKey.Item2);
+                    command.Parameters.AddWithValue("$fromMe", m.FromMe ? 1 : 0);
                     full = command.ExecuteScalar() is long found
                         ? found
                         : throw new ArgumentException("A low-quality link names a message with no imported attachment.");
@@ -329,7 +338,7 @@ namespace Chatcheology.Data.NewerMessages
 
                 command.CommandText = "UPDATE NewerAttachment SET LowQualityCopyOfAttachmentID = $full WHERE NewerAttachmentID = $id;";
                 command.Parameters.AddWithValue("$full", full);
-                command.Parameters.AddWithValue("$id", attachmentByKey[m.KeyID]);
+                command.Parameters.AddWithValue("$id", attachmentByKey[(m.FromMe, m.KeyID)]);
                 command.ExecuteNonQuery();
                 command.Parameters.Clear();
                 links++;
@@ -338,13 +347,27 @@ namespace Chatcheology.Data.NewerMessages
             return new NewerMessagesWriteResult(false, created, runID, messages.Count, attachments.Count, links);
         }
 
-        private static string? LastKeyID(SqliteConnection connection, SqliteTransaction transaction)
+        private static (bool FromMe, string KeyID)? LastMessage(SqliteConnection connection, SqliteTransaction transaction)
         {
             using var command = connection.CreateCommand();
             command.Transaction = transaction;
-            command.CommandText = "SELECT LastKeyID FROM RefreshRun WHERE LastKeyID IS NOT NULL ORDER BY RunID DESC LIMIT 1;";
+            command.CommandText =
+                "SELECT LastFromMe, LastKeyID FROM RefreshRun WHERE LastKeyID IS NOT NULL ORDER BY RunID DESC LIMIT 1;";
 
-            return command.ExecuteScalar() as string;
+            using var reader = command.ExecuteReader();
+
+            return reader.Read() ? (reader.GetInt64(0) != 0, reader.GetString(1)) : null;
+        }
+
+        private static bool Exists(SqliteConnection connection, SqliteTransaction transaction, bool fromMe, string key)
+        {
+            using var command = connection.CreateCommand();
+            command.Transaction = transaction;
+            command.CommandText = "SELECT COUNT(*) FROM NewerMessage WHERE FromMe = $fromMe AND KeyID = $key;";
+            command.Parameters.AddWithValue("$fromMe", fromMe ? 1 : 0);
+            command.Parameters.AddWithValue("$key", key);
+
+            return Convert.ToInt64(command.ExecuteScalar(), CultureInfo.InvariantCulture) > 0;
         }
 
         private static long Scalar(SqliteConnection connection, SqliteTransaction transaction, string sql, (string Name, object Value) parameter)

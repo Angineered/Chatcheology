@@ -5,9 +5,14 @@ namespace Chatcheology.Data.NewerMessages
     /// <param name="LocalParticipantID">The workspace participant <c>from_me = 1</c> maps to.</param>
     /// <param name="OtherParticipantID">The conversation's other participant (<c>from_me = 0</c>).</param>
     /// <param name="ChatRowID">The msgstore <c>chat._id</c> the messages are read from.</param>
+    /// <param name="WorkspaceLastDay">
+    /// The main workspace's last local day at the first run. Every later run refuses a message after its hand-off
+    /// on or before this day, and a message before its hand-off after this day that was never imported.
+    /// </param>
     /// <param name="CreatedDateTimeUtc">When the file was created (first run).</param>
     public sealed record NewerMessagesInfo(
-        long ConversationID, long LocalParticipantID, long OtherParticipantID, long ChatRowID, DateTime CreatedDateTimeUtc);
+        long ConversationID, long LocalParticipantID, long OtherParticipantID, long ChatRowID, DateOnly WorkspaceLastDay,
+        DateTime CreatedDateTimeUtc);
 
     /// <summary>One refresh run, as it is written and as it is read back.</summary>
     public sealed class NewerRefreshRun
@@ -33,6 +38,9 @@ namespace Chatcheology.Data.NewerMessages
         /// <summary>The msgstore key_id right before the first message of this run.</summary>
         public required string HandOffKeyID { get; init; }
 
+        /// <summary>The hand-off message's direction; with <see cref="HandOffKeyID"/> its identity.</summary>
+        public required bool HandOffFromMe { get; init; }
+
         /// <summary>The media folder files were checked under; null when none was given (every attachment Unmatched).</summary>
         public string? MediaRootPath { get; init; }
 
@@ -45,6 +53,7 @@ namespace Chatcheology.Data.NewerMessages
         public int Restored { get; init; }
         public int Unmatched { get; init; }
         public string? LastKeyID { get; init; }
+        public bool? LastFromMe { get; init; }
         public long? LastSortID { get; init; }
     }
 
@@ -124,7 +133,10 @@ namespace Chatcheology.Data.NewerMessages
         /// <summary>SHA-256 (lower-case hex) of the file under the media root; only when Restored.</summary>
         public string? Sha256 { get; init; }
 
-        /// <summary>Written: the key_id of the message whose attachment is the full copy this one is the low-quality copy of.</summary>
+        /// <summary>
+        /// Written: the key_id of the message whose attachment is the full copy this one is the low-quality copy of.
+        /// That message is in the same direction (the link rule requires it), so (this message's from_me, this key) names it.
+        /// </summary>
         public string? LowQualityCopyOfKeyID { get; init; }
 
         /// <summary>Read back: the full copy's <see cref="NewerAttachmentID"/>.</summary>
@@ -143,5 +155,9 @@ namespace Chatcheology.Data.NewerMessages
     {
         /// <summary>The key_id of the last imported message, or null when nothing has been imported.</summary>
         public string? LastKeyID => Runs.LastOrDefault(r => r.LastKeyID is not null)?.LastKeyID;
+
+        /// <summary>The identity (from_me, key_id) of the last imported message, or null when nothing has been imported.</summary>
+        public (bool FromMe, string KeyID)? LastMessage =>
+            Runs.LastOrDefault(r => r.LastKeyID is not null) is { LastKeyID: { } key, LastFromMe: { } fromMe } ? (fromMe, key) : null;
     }
 }

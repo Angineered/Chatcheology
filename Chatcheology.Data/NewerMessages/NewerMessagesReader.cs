@@ -46,7 +46,8 @@ namespace Chatcheology.Data.NewerMessages
                         """
                         SELECT RunID, RunDateTimeUtc, ManifestSha256, MsgstoreSizeBytes, MsgstoreUserVersion,
                                MsgstoreSchemaSha256, HandOff, HandOffKeyID, MediaRootID, Messages, UserMessages,
-                               SystemMessages, Placeholders, Attachments, Restored, Unmatched, LastKeyID, LastSortID
+                               SystemMessages, Placeholders, Attachments, Restored, Unmatched, LastKeyID, LastSortID,
+                               HandOffFromMe, LastFromMe
                         FROM RefreshRun ORDER BY RunID;
                         """;
 
@@ -75,6 +76,8 @@ namespace Chatcheology.Data.NewerMessages
                             Unmatched = reader.GetInt32(15),
                             LastKeyID = reader.IsDBNull(16) ? null : reader.GetString(16),
                             LastSortID = reader.IsDBNull(17) ? null : reader.GetInt64(17),
+                            HandOffFromMe = reader.GetInt64(18) != 0,
+                            LastFromMe = reader.IsDBNull(19) ? null : reader.GetInt64(19) != 0,
                         });
                     }
                 }
@@ -159,7 +162,7 @@ namespace Chatcheology.Data.NewerMessages
             command.Transaction = transaction;
             command.CommandText =
                 """
-                SELECT ConversationID, LocalParticipantID, OtherParticipantID, ChatRowID, CreatedDateTimeUtc
+                SELECT ConversationID, LocalParticipantID, OtherParticipantID, ChatRowID, CreatedDateTimeUtc, WorkspaceLastDay
                 FROM NewerMessagesInfo WHERE NewerMessagesInfoID = 1;
                 """;
 
@@ -170,8 +173,13 @@ namespace Chatcheology.Data.NewerMessages
                 throw new InvalidOperationException("The newer-messages file has no marker row.");
             }
 
+            if (!DateOnly.TryParseExact(reader.GetString(5), "yyyy'-'MM'-'dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var lastDay))
+            {
+                throw new InvalidOperationException("The newer-messages file's workspace last day is not a date.");
+            }
+
             return new NewerMessagesInfo(
-                reader.GetInt64(0), reader.GetInt64(1), reader.GetInt64(2), reader.GetInt64(3),
+                reader.GetInt64(0), reader.GetInt64(1), reader.GetInt64(2), reader.GetInt64(3), lastDay,
                 DateTime.ParseExact(reader.GetString(4), "yyyy'-'MM'-'dd'T'HH':'mm':'ss'Z'", CultureInfo.InvariantCulture,
                     DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal));
         }

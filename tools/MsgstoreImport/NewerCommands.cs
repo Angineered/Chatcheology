@@ -156,7 +156,7 @@ internal static class NewerTool
         }
 
         var info = new NewerMessagesInfo(parameters.ConversationID, parameters.LocalParticipantID, now.OtherParticipantID,
-            parameters.ChatID, DateTime.UtcNow);
+            parameters.ChatID, now.WorkspaceLastDay, DateTime.UtcNow);
 
         var run = new NewerRefreshRun
         {
@@ -167,7 +167,8 @@ internal static class NewerTool
             MsgstoreSchemaSha256 = now.MsgstoreSchemaSha256,
             HandOff = now.FirstRun ? NewerMessagesDatabase.HandOffWorkspace : NewerMessagesDatabase.HandOffPreviousRun,
             HandOffKeyID = now.HandOffKeyID,
-            MediaRootPath = Path.GetFullPath(options.MediaRoot),
+            HandOffFromMe = now.HandOffFromMe,
+            MediaRootPath = Path.TrimEndingDirectorySeparator(Path.GetFullPath(options.MediaRoot)),
         };
 
         NewerMessagesWriteResult written;

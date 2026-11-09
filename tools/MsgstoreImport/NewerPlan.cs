@@ -18,6 +18,10 @@ internal sealed class NewerComputation
     internal required bool FirstRun { get; init; }
     internal required int PreviousRuns { get; init; }
     internal required string HandOffKeyID { get; init; }
+    internal required bool HandOffFromMe { get; init; }
+
+    /// <summary>The workspace's last local day: computed on the first run, read from the marker on later runs.</summary>
+    internal required DateOnly WorkspaceLastDay { get; init; }
 
     // First-run hand-off figures (zero on later runs).
     internal int LastDayWorkspaceMessages { get; init; }
@@ -220,8 +224,9 @@ internal static class NewerPlanner
         var textColumn = TextPairing.TextColumn(msgstore);
         var all = ReadMsgstore(msgstore, schema, p.ChatID, textColumn);
 
-        var firstRun = stored?.LastKeyID is null;
+        var firstRun = stored?.LastMessage is null;
         MsRow handOff;
+        DateOnly workspaceLastDay;
         int lastDayCount = 0, earlierDays = 0, comparedText = 0, comparedMedia = 0, directionOnly = 0;
 
         if (firstRun)
@@ -234,6 +239,14 @@ internal static class NewerPlanner
             }
 
             var lastDay = ws.Max(w => w.Day);
+            workspaceLastDay = lastDay;
+
+            if (stored is not null && stored.Info.WorkspaceLastDay != lastDay)
+            {
+                throw new RefusalException(
+                    "The newer-messages.db beside the workspace was started from another workspace end. Nothing was written.");
+            }
+
             var wsDays = ws.GroupBy(w => w.Day).ToDictionary(g => g.Key, g => g.Count());
             var msDays = all.Where(m => m.Day is not null).GroupBy(m => m.Day!.Value).ToDictionary(g => g.Key, g => g.Count());
 
@@ -365,7 +378,10 @@ internal static class NewerPlanner
         }
         else
         {
-            var found = all.Where(m => string.Equals(m.RawKey, stored!.LastKeyID, StringComparison.Ordinal)).ToList();
+            var last = stored!.LastMessage!.Value;
+            workspaceLastDay = stored.Info.WorkspaceLastDay;
+
+            var found = all.Where(m => m.FromMe == last.FromMe && string.Equals(m.RawKey, last.KeyID, StringComparison.Ordinal)).ToList();
 
             if (found.Count != 1)
             {
@@ -375,6 +391,22 @@ internal static class NewerPlanner
             }
 
             handOff = found[0];
+
+            // The msgstore may have been renumbered since (a phone restore or migration). Then (a) a message of the
+            // workspace's time could sort after the hand-off and be imported a second time, or (b) a message never
+            // imported could sort before it and be skipped silently. Either refuses.
+            var importedIDs = stored.Messages.Select(m => (m.FromMe, m.KeyID)).ToHashSet();
+            var earlyAfter = all.Count(m => After(m, handOff) && m.Day is { } d && d <= workspaceLastDay);
+            var skippedBefore = all.Count(m => !After(m, handOff) && m.Day is { } d && d > workspaceLastDay
+                                               && (m.RawKey is null || !importedIDs.Contains((m.FromMe, m.RawKey))));
+
+            if (earlyAfter + skippedBefore > 0)
+            {
+                throw new RefusalException(
+                    $"Hand-off refused: the msgstore's order no longer fits what was imported ({Text.Count(earlyAfter)} messages " +
+                    $"after the hand-off are on or before the workspace's last day, {Text.Count(skippedBefore)} messages before " +
+                    "it are newer than the workspace but were never imported). Nothing was written.");
+            }
         }
 
         if (handOff.Key is null)
@@ -385,15 +417,15 @@ internal static class NewerPlanner
         var fresh = all.Where(m => After(m, handOff)).ToList();
         var noTime = fresh.Count(m => m.Local is null);
         var noKey = fresh.Count(m => m.Key is null);
-        var twice = fresh.Where(m => m.Key is not null).GroupBy(m => m.Key!, StringComparer.Ordinal).Count(g => g.Count() > 1);
-        var storedKeys = stored?.Messages.Select(m => m.KeyID).ToHashSet(StringComparer.Ordinal) ?? [];
-        var already = fresh.Count(m => m.Key is not null && storedKeys.Contains(m.Key));
+        var twice = fresh.Where(m => m.Key is not null).GroupBy(m => (m.FromMe, m.Key!)).Count(g => g.Count() > 1);
+        var storedKeys = stored?.Messages.Select(m => (m.FromMe, m.KeyID)).ToHashSet() ?? [];
+        var already = fresh.Count(m => m.Key is not null && storedKeys.Contains((m.FromMe, m.Key)));
 
         if (noTime + noKey + twice + already > 0)
         {
             throw new RefusalException(
                 $"Refused: of the {Text.Count(fresh.Count)} messages after the hand-off, {Text.Count(noTime)} have no readable " +
-                $"time, {Text.Count(noKey)} no usable key_id, {Text.Count(twice)} key_ids appear twice and " +
+                $"time, {Text.Count(noKey)} no usable key_id, {Text.Count(twice)} (direction, key_id) pairs appear twice and " +
                 $"{Text.Count(already)} are already imported. Nothing was written.");
         }
 
@@ -527,12 +559,12 @@ internal static class NewerPlanner
 
         if (stored is not null)
         {
-            var byKey = all.Where(m => m.RawKey is not null).GroupBy(m => m.RawKey!, StringComparer.Ordinal)
-                .ToDictionary(g => g.Key, g => g.First(), StringComparer.Ordinal);
+            var byKey = all.Where(m => m.RawKey is not null).GroupBy(m => (m.FromMe, m.RawKey!))
+                .ToDictionary(g => g.Key, g => g.First());
 
             foreach (var s in stored.Messages)
             {
-                if (!byKey.TryGetValue(s.KeyID, out var now))
+                if (!byKey.TryGetValue((s.FromMe, s.KeyID), out var now))
                 {
                     gone++;
                 }
@@ -565,6 +597,8 @@ internal static class NewerPlanner
             FirstRun = firstRun,
             PreviousRuns = stored?.Runs.Count ?? 0,
             HandOffKeyID = handOff.Key,
+            HandOffFromMe = handOff.FromMe,
+            WorkspaceLastDay = workspaceLastDay,
             LastDayWorkspaceMessages = lastDayCount,
             EarlierDaysCompared = earlierDays,
             ComparedText = comparedText,
@@ -738,8 +772,8 @@ internal static class NewerPlanner
         }
 
         var msByID = all.ToDictionary(m => m.ID);
-        var storedByKey = stored?.Messages.Where(m => m.Attachment is not null).ToDictionary(m => m.KeyID, StringComparer.Ordinal)
-                          ?? new Dictionary<string, NewerMessageRow>(StringComparer.Ordinal);
+        var storedByKey = stored?.Messages.Where(m => m.Attachment is not null).ToDictionary(m => (m.FromMe, m.KeyID))
+                          ?? new Dictionary<(bool, string), NewerMessageRow>();
         var candidates = new List<(long Parent, long Child)>();
 
         using (var command = msgstore.CreateCommand())
@@ -770,7 +804,7 @@ internal static class NewerPlanner
                     rowByID.TryGetValue(id, out var i) && rows[i].Attachment is not null ? rows[i] : null;
 
                 NewerMessageRow? StoredAttachment(long id) =>
-                    msByID.TryGetValue(id, out var m) && m.RawKey is { } key && storedByKey.TryGetValue(key, out var s) ? s : null;
+                    msByID.TryGetValue(id, out var m) && m.RawKey is { } key && storedByKey.TryGetValue((m.FromMe, key), out var s) ? s : null;
 
                 var parentNew = NewAttachment(parent);
                 var childNew = NewAttachment(child);
@@ -820,7 +854,7 @@ internal static class NewerPlanner
         var targets = candidates.GroupBy(c => c.Parent).ToDictionary(g => g.Key, g => g.Select(c => c.Child).Distinct().ToList());
         var parents = candidates.Select(c => c.Parent).ToHashSet();
         var storedCopies = stored?.Messages.Where(m => m.Attachment?.LowQualityCopyOfAttachmentID is not null)
-            .Select(m => m.KeyID).ToHashSet(StringComparer.Ordinal) ?? [];
+            .Select(m => (m.FromMe, m.KeyID)).ToHashSet() ?? [];
 
         foreach (var (parent, children) in targets)
         {
@@ -833,7 +867,8 @@ internal static class NewerPlanner
             var child = children[0];
             var childKey = msByID[child].RawKey;
 
-            if (parents.Contains(child) || targets.ContainsKey(child) || (childKey is not null && storedCopies.Contains(childKey)))
+            if (parents.Contains(child) || targets.ContainsKey(child)
+                || (childKey is not null && storedCopies.Contains((msByID[child].FromMe, childKey))))
             {
                 refused.Add(LinkChain);
                 continue;
@@ -1078,6 +1113,8 @@ internal static class NewerPlanner
         Line($"media-root-sha256\t{c.MediaRootSha256}");
         Line($"hand-off\t{(c.FirstRun ? NewerMessagesDatabase.HandOffWorkspace : NewerMessagesDatabase.HandOffPreviousRun)}");
         Line($"hand-off-key\t{c.HandOffKeyID}");
+        Line($"hand-off-from-me\t{(c.HandOffFromMe ? "1" : "0")}");
+        Line($"workspace-last-day\t{c.WorkspaceLastDay.ToString("yyyy'-'MM'-'dd", CultureInfo.InvariantCulture)}");
         Line($"previous-runs\t{c.PreviousRuns.ToString(CultureInfo.InvariantCulture)}");
         Line($"rows\t{c.Rows.Count.ToString(CultureInfo.InvariantCulture)}");
         Line(ManifestHeader);

@@ -414,6 +414,63 @@ public sealed class NewerTests : IDisposable
     }
 
     [Fact]
+    public void A_later_run_refuses_a_workspace_era_message_now_sorted_after_the_hand_off()
+    {
+        SharedPast();
+        Text("09:20:00", false, "A newer text");
+        PlanAndApply();
+
+        // A renumbered msgstore (restore or migration): a message of the earlier day now sorts last.
+        _d.Msgstore("UPDATE message SET sort_id = 900000 WHERE text_data = 'Earlier one';");
+        Text("07:00:00", true, "Second run text", Next);
+
+        var plan = Plan();
+
+        Assert.Equal(2, plan.Exit);
+        Assert.Contains("1 messages after the hand-off are on or before the workspace's last day, 0 messages before",
+            plan.Err, StringComparison.Ordinal);
+        AssertCountsOnly(plan.Out + plan.Err);
+    }
+
+    [Fact]
+    public void A_later_run_refuses_a_never_imported_message_now_sorted_before_the_hand_off()
+    {
+        SharedPast();
+        Text("09:20:00", false, "A newer text");
+        PlanAndApply();
+
+        var skipped = Text("07:00:00", true, "Sorted too early", Next);
+        _d.Msgstore($"UPDATE message SET sort_id = 1 WHERE _id = {skipped};");
+
+        var plan = Plan();
+
+        Assert.Equal(2, plan.Exit);
+        Assert.Contains("0 messages after the hand-off are on or before the workspace's last day, 1 messages before",
+            plan.Err, StringComparison.Ordinal);
+        AssertCountsOnly(plan.Out + plan.Err);
+    }
+
+    [Fact]
+    public void The_same_key_id_in_both_directions_is_two_messages()
+    {
+        SharedPast();
+        var sent = Text("09:20:00", true, "Sent with a shared key");
+        var received = Text("09:21:00", false, "Received with the same key");
+        _d.Msgstore($"UPDATE message SET key_id = 'SYNTHTEXT{sent}' WHERE _id = {received};");
+
+        var rows = PlanAndApply().Messages;
+
+        Assert.Equal([(true, "SYNTHTEXT" + sent), (false, "SYNTHTEXT" + sent)], rows.Select(r => (r.FromMe, r.KeyID)));
+
+        // The later run finds the last message by direction and key_id together.
+        Text("07:00:00", true, "Second run text", Next);
+        var plan = Plan();
+
+        Assert.True(plan.Exit == 0, plan.Err);
+        Assert.EndsWith("1", Line(plan.Out, "new messages"));
+    }
+
+    [Fact]
     public void Edits_and_deletes_of_imported_messages_are_counted_and_the_archived_version_kept()
     {
         SharedPast();

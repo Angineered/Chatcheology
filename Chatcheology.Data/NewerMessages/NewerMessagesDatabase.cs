@@ -15,9 +15,12 @@ namespace Chatcheology.Data.NewerMessages
     /// from the memories file's), so neither the main workspace nor any other database can be opened as
     /// this file, and this file can never be opened as a workspace.</para>
     /// <para><strong>Append only.</strong> Rows are only ever inserted, by <see cref="NewerMessagesWriter"/>,
-    /// one refresh run per transaction. Nothing updates or deletes a message, an attachment or a run, so
-    /// every identifier and every state stays what it was when it was written (CH-71 D2 and D7: the phone
-    /// keeps stars by sequence number and attachment id).</para>
+    /// one refresh run per transaction. The only update is inside that same transaction: the run's own new
+    /// attachment rows get their low-quality link set after all of them are inserted. No row of an earlier
+    /// run is ever updated, and nothing is deleted, so every identifier and every state stays what it was
+    /// when its run committed (CH-71 D2 and D7: the phone keeps stars by sequence number and attachment id).</para>
+    /// <para><strong>Message identity</strong> is (<c>FromMe</c>, <c>KeyID</c>), as in WhatsApp: the same key_id
+    /// may occur once in each direction.</para>
     /// <para>No Phase 7 table, no decision and no review lives here (D4): an attachment is Restored only by
     /// an exact SHA-256 match with msgstore's <c>file_hash</c>, else Unmatched; never Missing.</para>
     /// </remarks>
@@ -83,6 +86,7 @@ namespace Chatcheology.Data.NewerMessages
                 LocalParticipantID  INTEGER NOT NULL,
                 OtherParticipantID  INTEGER NOT NULL,
                 ChatRowID           INTEGER NOT NULL,
+                WorkspaceLastDay    TEXT NOT NULL,
                 TimeZone            TEXT NOT NULL,
                 CreatedDateTimeUtc  TEXT NOT NULL,
 
@@ -90,6 +94,7 @@ namespace Chatcheology.Data.NewerMessages
                 CHECK (Purpose = '{MarkerPurpose}'),
                 CHECK (FormatVersion = {FormatVersion}),
                 CHECK (LocalParticipantID <> OtherParticipantID),
+                CHECK (length(WorkspaceLastDay) = 10),
                 CHECK (TimeZone = '{TimeZoneName}')
             );
             """,
@@ -114,6 +119,7 @@ namespace Chatcheology.Data.NewerMessages
                 MsgstoreSchemaSha256 TEXT NOT NULL,
                 HandOff              TEXT NOT NULL,
                 HandOffKeyID         TEXT NOT NULL,
+                HandOffFromMe        INTEGER NOT NULL,
                 MediaRootID          INTEGER NULL,
                 Messages             INTEGER NOT NULL,
                 UserMessages         INTEGER NOT NULL,
@@ -123,11 +129,15 @@ namespace Chatcheology.Data.NewerMessages
                 Restored             INTEGER NOT NULL,
                 Unmatched            INTEGER NOT NULL,
                 LastKeyID            TEXT NULL,
+                LastFromMe           INTEGER NULL,
                 LastSortID           INTEGER NULL,
 
                 CHECK (length(ManifestSha256) = 64),
                 CHECK (HandOff IN ('{HandOffWorkspace}', '{HandOffPreviousRun}')),
                 CHECK (length(HandOffKeyID) > 0),
+                CHECK (HandOffFromMe IN (0, 1)),
+                CHECK ((LastKeyID IS NULL) = (LastFromMe IS NULL)),
+                CHECK (LastFromMe IS NULL OR LastFromMe IN (0, 1)),
                 CHECK (Messages = UserMessages + SystemMessages + Placeholders),
                 CHECK (Attachments = Restored + Unmatched),
                 CHECK ((Messages = 0) = (LastKeyID IS NULL)),
@@ -141,7 +151,7 @@ namespace Chatcheology.Data.NewerMessages
             CREATE TABLE NewerMessage (
                 NewerMessageID      INTEGER PRIMARY KEY AUTOINCREMENT,
                 RunID               INTEGER NOT NULL,
-                KeyID               TEXT NOT NULL UNIQUE,
+                KeyID               TEXT NOT NULL,
                 MsgstoreRowID       INTEGER NOT NULL,
                 SortID              INTEGER NOT NULL,
                 FromMe              INTEGER NOT NULL,
@@ -167,6 +177,8 @@ namespace Chatcheology.Data.NewerMessages
                 CHECK (IsForwarded IS NULL OR IsForwarded IN (0, 1)),
                 CHECK (ForwardScore IS NULL OR (IsForwarded = 1 AND ForwardScore >= 0)),
                 CHECK (length(DateTimeLocal) = 19),
+
+                UNIQUE (FromMe, KeyID),
 
                 FOREIGN KEY (RunID) REFERENCES RefreshRun (RunID)
             );
@@ -235,9 +247,10 @@ namespace Chatcheology.Data.NewerMessages
                 """
                 INSERT INTO NewerMessagesInfo (
                     NewerMessagesInfoID, Purpose, FormatVersion, ConversationID, LocalParticipantID,
-                    OtherParticipantID, ChatRowID, TimeZone, CreatedDateTimeUtc)
-                VALUES (1, $purpose, $format, $conversation, $local, $other, $chat, $zone, $created);
+                    OtherParticipantID, ChatRowID, WorkspaceLastDay, TimeZone, CreatedDateTimeUtc)
+                VALUES (1, $purpose, $format, $conversation, $local, $other, $chat, $lastDay, $zone, $created);
                 """;
+            command.Parameters.AddWithValue("$lastDay", FormatDay(info.WorkspaceLastDay));
             command.Parameters.AddWithValue("$purpose", MarkerPurpose);
             command.Parameters.AddWithValue("$format", FormatVersion);
             command.Parameters.AddWithValue("$conversation", info.ConversationID);
@@ -339,6 +352,8 @@ namespace Chatcheology.Data.NewerMessages
                     nameof(databasePath));
             }
         }
+
+        internal static string FormatDay(DateOnly day) => day.ToString("yyyy'-'MM'-'dd", CultureInfo.InvariantCulture);
 
         internal static string FormatUtc(DateTime utc) =>
             utc.ToUniversalTime().ToString("yyyy'-'MM'-'dd'T'HH':'mm':'ss'Z'", CultureInfo.InvariantCulture);
