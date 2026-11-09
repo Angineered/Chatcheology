@@ -586,6 +586,12 @@ namespace Chatcheology.Desktop.ViewModels
                     $"{Text(counts.Missing)} Missing, {Text(counts.Unmatched)} Unmatched · " +
                     $"{Count(counts.MediaFiles, "media file")}" +
                     (counts.Captions > 0 ? $" · {Count(counts.Captions, "caption")}" : string.Empty));
+
+                // CH-71 step 3b: newer messages are in the archive for the phone; this viewer shows the workspace only.
+                if (counts.MsgstoreMessages > 0)
+                {
+                    lines.Add(NewerMessagesLine(counts.MsgstoreMessages));
+                }
             }
             else if (report.Validation is not null)
             {
@@ -799,6 +805,12 @@ namespace Chatcheology.Desktop.ViewModels
         internal static string FolderName(DateTime localTime) =>
             FolderNamePrefix + localTime.ToString("yyyy-MM-dd HH-mm-ss", CultureInfo.InvariantCulture);
 
+        /// <summary>
+        /// The summary line for an archive's newer messages (CH-71 step 3b): the archive carries them for the phone; this
+        /// viewer shows the workspace conversation only.
+        /// </summary>
+        internal static string NewerMessagesLine(int count) => $"{Count(count, "newer message")} (phone only).";
+
         /// <summary>The confirmation: counts and who is "me", and what happens next.</summary>
         internal static string ConfirmationText(ArchiveExportPreview preview, string localParticipantName) =>
             $"""
@@ -808,7 +820,7 @@ namespace Chatcheology.Desktop.ViewModels
             Restored: {Text(preview.Restored)}
             Missing: {Text(preview.Missing)}
             Unmatched: {Text(preview.Unmatched)}
-            Media files: {Text(preview.MediaFiles)} ({Size(preview.MediaBytes)})
+            Media files: {Text(preview.MediaFiles)} ({Size(preview.MediaBytes)}){(preview.NewerMessages > 0 ? $"\nNewer messages: {Text(preview.NewerMessages)} (phone only)" : string.Empty)}
 
             Shown as “me”: {localParticipantName}
 
