@@ -9,7 +9,7 @@ namespace Chatcheology.Tools.MemoryImport.Tests
     internal sealed record FakeTitle(string SetId, string Name, string? Icon = null, string Service = "trophy");
 
     /// <summary>One synthetic trophy in a set: its id, type and, per account user, the earned time (UTC).</summary>
-    internal sealed record FakeTrophy(long Id, string Type = "bronze");
+    internal sealed record FakeTrophy(long Id, string Type = "bronze", string Group = "default");
 
     /// <summary>
     /// A fake PlayStation trophy API behind an <see cref="HttpMessageHandler"/>: no network. It
@@ -25,6 +25,9 @@ namespace Chatcheology.Tools.MemoryImport.Tests
 
         /// <summary>Trophies per set (title definitions).</summary>
         internal Dictionary<string, List<FakeTrophy>> Sets { get; } = new(StringComparer.Ordinal);
+
+        /// <summary>Definitions served for a set instead of <see cref="Sets"/> (to make them disagree).</summary>
+        internal Dictionary<string, List<FakeTrophy>> DefinitionSets { get; } = new(StringComparer.Ordinal);
 
         /// <summary>Earned times per (user, set, trophy id).</summary>
         internal Dictionary<(string User, string Set, long Id), DateTime> Earned { get; } = [];
@@ -129,7 +132,7 @@ namespace Chatcheology.Tools.MemoryImport.Tests
             // npCommunicationIds/{set}/trophyGroups/all/trophies (definitions, no user)
             if (segments is ["npCommunicationIds", var defSet, "trophyGroups", "all", "trophies"])
             {
-                if (!Sets.TryGetValue(defSet, out var trophies))
+                if (!DefinitionSets.TryGetValue(defSet, out var trophies) && !Sets.TryGetValue(defSet, out trophies))
                 {
                     return Reply(HttpStatusCode.NotFound, "{}");
                 }
@@ -146,7 +149,7 @@ namespace Chatcheology.Tools.MemoryImport.Tests
                         ["trophyName"] = trophy.Id == 3 ? null : $"Invented Trophy {trophy.Id}",
                         ["trophyDetail"] = "Invented detail.",
                         ["trophyIconUrl"] = $"https://image.api.playstation.com/zz/{defSet}-{trophy.Id}.png",
-                        ["trophyGroupId"] = "default",
+                        ["trophyGroupId"] = trophy.Group,
                     });
                 }
 

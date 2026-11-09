@@ -79,8 +79,20 @@ namespace Chatcheology.Tools.MemoryImport
         /// <summary>Sets in the input definitions file.</summary>
         public int DefinitionSetsBefore { get; internal set; }
 
-        /// <summary>Sets whose definitions were fetched in this run.</summary>
+        /// <summary>Sets not in the definitions file whose definitions were fetched and added in this run.</summary>
         public int DefinitionSetsFetched { get; internal set; }
+
+        /// <summary>
+        /// Held sets with fewer definitions than PlayStation's totalTrophies (new DLC trophies) whose
+        /// entry was replaced by a larger fetch.
+        /// </summary>
+        public int DefinitionSetsRefreshed { get; internal set; }
+
+        /// <summary>Held sets kept as they were because PlayStation returned fewer definitions than held (never shrunk).</summary>
+        public int DefinitionSetsKeptLarger { get; internal set; }
+
+        /// <summary>Sets still holding fewer definitions than totalTrophies after this run's fetch.</summary>
+        public int DefinitionSetsStillShort { get; internal set; }
 
         /// <summary>Sets in the new definitions file.</summary>
         public int DefinitionSetsNow { get; internal set; }
@@ -113,7 +125,9 @@ namespace Chatcheology.Tools.MemoryImport
     /// script's <see cref="PsnSharedActivityBuilder.TimestampsFormat"/> shape), the title icon for
     /// added games only (a previous-list game keeps its entry as listed, with or without an icon:
     /// psn-build carries a missing one over from the current shared-activity file), and definitions
-    /// for listed sets not yet in the definitions file.
+    /// for every listed set (previous-list or added) that the definitions file is missing or holds
+    /// fewer of than PlayStation's totalTrophies (new DLC trophies). A held set is replaced only by a
+    /// larger fetch, never shrunk.
     /// </summary>
     /// <remarks>
     /// The inputs are never written. Every output file is written beside itself first and then moved
@@ -309,7 +323,8 @@ namespace Chatcheology.Tools.MemoryImport
             counts.IconsNone = listed.Count(game => !game.HasIcon);
 
             var timestampsBytes = FetchTimes(api, listed, accountA, accountB, UserA, UserB, options.TrophyPageSize, outFolder, counts);
-            var definitionsOutBytes = FetchDefinitions(api, listed, inputDefinitions, options.TrophyPageSize, outFolder, utcNow, counts);
+            var definitionsOutBytes = FetchDefinitions(
+                api, listed, inputDefinitions, options.TrophyPageSize, outFolder, utcNow, Totals(timestampsBytes, accountA, accountB), counts);
 
             // The outputs must be accepted as the refresh will read them.
             var build = PsnSharedActivityBuilder.Build([timestampsBytes], gameListBytes, accountA, accountB, null, allowNoIcon: true);
@@ -936,6 +951,7 @@ namespace Chatcheology.Tools.MemoryImport
             int pageSize,
             string outFolder,
             Func<DateTime> utcNow,
+            Dictionary<string, int> totals,
             PsnFetchCounts counts)
         {
             var path = Path.Combine(outFolder, DefinitionsFile);
@@ -961,33 +977,66 @@ namespace Chatcheology.Tools.MemoryImport
                 current = inputDefinitions.DeepClone().AsObject();
             }
 
-            var have = SetIds(current);
+            var sets = current.First(pair => string.Equals(pair.Key, "sets", StringComparison.OrdinalIgnoreCase)).Value!.AsArray();
+            var held = HeldCounts(sets);
+            var seen = new HashSet<string>(StringComparer.Ordinal);
             var needed = new List<SetRef>();
 
+            // Every listed set (previous-list or added) whose definitions are missing, or fewer than the
+            // trophies PlayStation now has in it (new DLC trophies): fetched again in full (all groups).
             foreach (var game in listed)
             {
                 foreach (var set in new[] { game.A, game.B })
                 {
-                    if (have.Add(set.Id))
+                    if (!seen.Add(set.Id))
+                    {
+                        continue;
+                    }
+
+                    if (!held.TryGetValue(set.Id, out var count) || count < totals.GetValueOrDefault(set.Id))
                     {
                         needed.Add(set);
                     }
                 }
             }
 
-            var sets = current.First(pair => string.Equals(pair.Key, "sets", StringComparison.OrdinalIgnoreCase)).Value!.AsArray();
             var number = 0;
 
             foreach (var set in needed)
             {
                 number++;
                 var fetched = FetchSetDefinitions(api, set, $"definitions set {number}", pageSize);
-                counts.DefinitionsFetched += fetched["trophies"]!.AsArray().Count;
-                sets.Add(fetched);
+                var fetchedCount = fetched["trophies"]!.AsArray().Count;
+                var total = totals.GetValueOrDefault(set.Id);
+                counts.DefinitionsFetched += fetchedCount;
+
+                if (!held.TryGetValue(set.Id, out var heldCount))
+                {
+                    sets.Add(fetched);
+                    counts.DefinitionSetsFetched++;
+                    held[set.Id] = fetchedCount;
+                }
+                else if (fetchedCount > heldCount)
+                {
+                    var index = sets.Select((node, i) => (node, i)).First(pair => SetIdOf(pair.node!) == set.Id).i;
+                    sets[index] = fetched;
+                    counts.DefinitionSetsRefreshed++;
+                    held[set.Id] = fetchedCount;
+                }
+                else
+                {
+                    // Never shrink: PlayStation gave no more than is held, so the held entry stays.
+                    counts.DefinitionSetsKeptLarger += fetchedCount < heldCount ? 1 : 0;
+                }
+
+                if (held[set.Id] < total)
+                {
+                    counts.DefinitionSetsStillShort++;
+                }
+
                 RemoveCaseInsensitive(current, "fetchedUtc");
                 current["fetchedUtc"] = utcNow().ToString(UtcFormat, CultureInfo.InvariantCulture);
                 WriteJson(path, current);
-                counts.DefinitionSetsFetched++;
             }
 
             if (!File.Exists(path))
@@ -1091,6 +1140,35 @@ namespace Chatcheology.Tools.MemoryImport
                 ["trophySetVersion"] = version,
                 ["trophies"] = trophies,
             };
+        }
+
+        private static string SetIdOf(JsonNode set) =>
+            (string)set.AsObject().First(pair => string.Equals(pair.Key, "npCommunicationId", StringComparison.OrdinalIgnoreCase)).Value!;
+
+        /// <summary>Definitions held per set (the file has passed the definitions reader).</summary>
+        private static Dictionary<string, int> HeldCounts(JsonArray sets) =>
+            sets.ToDictionary(
+                set => SetIdOf(set!),
+                set => set!.AsObject().First(pair => string.Equals(pair.Key, "trophies", StringComparison.OrdinalIgnoreCase)).Value!.AsArray().Count,
+                StringComparer.Ordinal);
+
+        /// <summary>The largest totalTrophies the timestamps file records per set (either account).</summary>
+        private static Dictionary<string, int> Totals(byte[] timestamps, string accountA, string accountB)
+        {
+            var totals = new Dictionary<string, int>(StringComparer.Ordinal);
+
+            foreach (var game in ParseNode(timestamps)!["games"]!.AsArray())
+            {
+                foreach (var account in new[] { accountA, accountB })
+                {
+                    var set = game!.AsObject().First(pair => string.Equals(pair.Key, account, StringComparison.OrdinalIgnoreCase)).Value!;
+                    var id = (string)set["npCommunicationId"]!;
+                    var total = (int)set["totalTrophies"]!;
+                    totals[id] = Math.Max(total, totals.GetValueOrDefault(id));
+                }
+            }
+
+            return totals;
         }
 
         private static HashSet<string> SetIds(JsonObject definitions)

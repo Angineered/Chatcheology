@@ -26,7 +26,8 @@ on wrongly; ticket CH-74).
       `psn-trophy-definitions.json` (the first time: the October game list and definitions file). Read
       the counts; "to confirm by hand" pairs are in `psn-to-confirm.json` and are not included until you
       add them to the game list (see `tools\MemoryImport\README.md`, psn-fetch). If it stops (token,
-      network, a listed game no longer returned), fix the cause and run the same command again; finished
+      network, HTTP 403 which usually means an account's trophy privacy, a listed game no longer
+      returned), fix the cause and run the same command again; finished
       games are skipped.
    3. In Plan and Apply below give `-PsnTimestamps <PsnOut>\psn-trophy-timestamps.json`,
       `-PsnManifest <PsnOut>\psn-game-list.json`, `-PsnDefinitions <PsnOut>\psn-trophy-definitions.json`,

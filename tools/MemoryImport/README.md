@@ -236,16 +236,24 @@ account that is `me` in the API; the other account is called by its id. The inpu
 3. Only games added this run get an icon, the title list's (account a's, else account b's). A
    previous-list game keeps its entry exactly as listed, with or without an icon: psn-build (the
    refresh's plan, with `-PsnCurrent`) carries a missing icon over from the current shared-activity
-   file, so psn-compare shows no icon change for it. Sets of listed games that are not in the definitions file get their
-   definitions fetched (`npCommunicationIds/{set}/trophyGroups/all/trophies`, no user,
-   `Accept-Language: en-US`, values as returned, missing fields null) and added to a copy of it.
+   file, so psn-compare shows no icon change for it. Every listed set (previous-list or added) that
+   the definitions file is missing, or holds fewer definitions for than the trophy times'
+   `totalTrophies` (new DLC trophies: a DLC is usually its own trophy group, its ids continue the
+   set's), gets its definitions fetched in full, all groups (`npCommunicationIds/{set}/trophyGroups/all/trophies`, no user,
+   `Accept-Language: en-US`, values as returned, missing fields null). A missing set is added to a
+   copy of the file; a short set's entry is replaced in place only when the fetch holds more
+   definitions than the file did (never shrunk: fewer is counted and the held entry kept). Sets
+   still short afterwards are counted and flagged ATTENTION (those trophies stay unnamed).
 4. The outputs are checked with psn-build (without the current file, so icons are allowed missing;
    the count is printed) and the definitions reader before the run is marked finished. An added game
    PlayStation gave no icon is flagged ATTENTION: the plan would refuse it if it has events.
 
 Calls: bearer token, 450 ms pause after each, retries with backoff (5, 10, 20 ... s, at most 90) on
-408, 429, 5xx and network failures, at most 6 attempts; on 401, 403 or an expired-token reply it asks
-for a new token and carries on. The timestamps file is saved after each game and the definitions file
+408, 429, 5xx and network failures, at most 6 attempts; a 429 or 503 with Retry-After (seconds or
+a date) waits that long instead, at most 5 minutes. On 401 or an expired- or invalid-token reply it
+asks for a new token and carries on. A 403 stops the run without asking for a token: with a valid
+token it is usually an account's trophy privacy setting. A token with a non-ASCII character is
+refused at once. The timestamps file is saved after each game and the definitions file
 after each set (written beside, then moved). A rerun with the same arguments into the same `--out`
 continues and skips finished games; a different input or account name is refused. `--out` must be
 new, or this tool's unfinished run (`psn-fetch-state.json`); a finished run is refused.
@@ -258,7 +266,8 @@ a pair from the to-confirm file after checking it: copy its entry (without `reas
 `--previous-list`.
 
 Prints counts only: games on the previous list, added, to confirm, listed now, icons added (added games only), added games and listed games with no icon, games
-fetched and skipped (resumed), trophies earned per account side, definition sets, calls, retries,
+fetched and skipped (resumed), trophies earned per account side, definition sets (given, added, refreshed for new
+trophies, kept because fewer came back, still short, trophies fetched), calls, retries,
 new tokens, and the check build's games, events and games with events and no icon. Exit 0 done; 1
 stopped (missing games, or a failed call: progress saved, run again); 2 usage.
 

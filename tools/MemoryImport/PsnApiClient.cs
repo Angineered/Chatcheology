@@ -22,8 +22,10 @@ namespace Chatcheology.Tools.MemoryImport
     /// <summary>
     /// The PlayStation trophy API calls psn-fetch makes, with the old fetch script's behaviour: a
     /// bearer token, a pause after each call, retries with backoff on 408, 429 and 5xx (and on a
-    /// network failure), and a new token asked for on 401, 403 or an expired-token reply. At most
-    /// <see cref="MaxAttempts"/> attempts per call.
+    /// network failure; a 429 or 503 Retry-After is honoured up to <see cref="MaxRetryAfter"/>), and
+    /// a new token asked for on 401 or an expired- or invalid-token reply. A 403 stops the run: with a
+    /// valid token it is usually the account's trophy privacy. At most <see cref="MaxAttempts"/>
+    /// attempts per call.
     /// </summary>
     /// <remarks>
     /// No message from this class quotes a URL (it can hold the other account's id), the token or a
@@ -40,6 +42,9 @@ namespace Chatcheology.Tools.MemoryImport
         /// <summary>The pause after each successful call.</summary>
         public static readonly TimeSpan Pause = TimeSpan.FromMilliseconds(450);
 
+        /// <summary>The longest Retry-After wait honoured.</summary>
+        public static readonly TimeSpan MaxRetryAfter = TimeSpan.FromMinutes(5);
+
         private static readonly HashSet<HttpStatusCode> Retryable =
         [
             HttpStatusCode.RequestTimeout,
@@ -54,6 +59,7 @@ namespace Chatcheology.Tools.MemoryImport
         private readonly IPsnSecretPrompt _prompt;
         private readonly Action<TimeSpan> _sleep;
         private readonly TextWriter _output;
+        private readonly Func<DateTimeOffset> _utcNow;
         private string? _token;
 
         /// <summary>Makes a client.</summary>
@@ -61,7 +67,9 @@ namespace Chatcheology.Tools.MemoryImport
         /// <param name="prompt">Where tokens come from.</param>
         /// <param name="sleep">Waits (pauses and backoff); a no-op in tests.</param>
         /// <param name="output">Where retry and token notices go (counts only).</param>
-        public PsnApiClient(HttpMessageHandler handler, IPsnSecretPrompt prompt, Action<TimeSpan> sleep, TextWriter output)
+        /// <param name="utcNow">The clock for a Retry-After given as a date; the system clock when null.</param>
+        public PsnApiClient(
+            HttpMessageHandler handler, IPsnSecretPrompt prompt, Action<TimeSpan> sleep, TextWriter output, Func<DateTimeOffset>? utcNow = null)
         {
             ArgumentNullException.ThrowIfNull(handler);
             ArgumentNullException.ThrowIfNull(prompt);
@@ -75,6 +83,7 @@ namespace Chatcheology.Tools.MemoryImport
             _prompt = prompt;
             _sleep = sleep;
             _output = output;
+            _utcNow = utcNow ?? (() => DateTimeOffset.UtcNow);
         }
 
         /// <summary>Calls made (each attempt counts).</summary>
@@ -148,7 +157,7 @@ namespace Chatcheology.Tools.MemoryImport
 
                     var status = (int)response.StatusCode;
 
-                    if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden
+                    if (response.StatusCode == HttpStatusCode.Unauthorized
                         || body.Contains("Expired token", StringComparison.OrdinalIgnoreCase)
                         || body.Contains("Invalid access token", StringComparison.OrdinalIgnoreCase))
                     {
@@ -166,6 +175,15 @@ namespace Chatcheology.Tools.MemoryImport
                         continue;
                     }
 
+                    if (response.StatusCode == HttpStatusCode.Forbidden)
+                    {
+                        // A valid token refused access: usually the account's trophy privacy, not the token.
+                        throw new InvalidOperationException(
+                            $"PlayStation refused access to {what} (HTTP 403). This is usually the account's trophy " +
+                            "privacy setting (trophies must be visible to the other account), not the token. " +
+                            "Progress has been saved; fix it and run the same command again to continue.");
+                    }
+
                     if (Retryable.Contains(response.StatusCode))
                     {
                         if (attempt == MaxAttempts)
@@ -173,7 +191,7 @@ namespace Chatcheology.Tools.MemoryImport
                             break;
                         }
 
-                        Backoff(attempt, $"HTTP {status}");
+                        Backoff(attempt, $"HTTP {status}", RetryAfter(response));
                         continue;
                     }
 
@@ -198,9 +216,36 @@ namespace Chatcheology.Tools.MemoryImport
             return reader.ReadToEnd();
         }
 
-        private void Backoff(int attempt, string reason)
+        /// <summary>
+        /// The wait a 429 or 503 asks for in Retry-After (seconds or an HTTP date), capped at
+        /// <see cref="MaxRetryAfter"/>; null when absent, unreadable or for another status.
+        /// </summary>
+        private TimeSpan? RetryAfter(HttpResponseMessage response)
         {
-            var seconds = Math.Min(90, 5 * Math.Pow(2, attempt - 1));
+            if (response.StatusCode is not (HttpStatusCode.TooManyRequests or HttpStatusCode.ServiceUnavailable)
+                || response.Headers.RetryAfter is not { } header)
+            {
+                return null;
+            }
+
+            TimeSpan? wait = header.Delta ?? (header.Date is { } date ? date - _utcNow() : null);
+
+            if (wait is null)
+            {
+                return null;
+            }
+
+            if (wait < TimeSpan.Zero)
+            {
+                wait = TimeSpan.Zero;
+            }
+
+            return wait > MaxRetryAfter ? MaxRetryAfter : wait;
+        }
+
+        private void Backoff(int attempt, string reason, TimeSpan? retryAfter = null)
+        {
+            var seconds = retryAfter?.TotalSeconds ?? Math.Min(90, 5 * Math.Pow(2, attempt - 1));
             Retries++;
             _output.WriteLine(string.Create(
                 CultureInfo.InvariantCulture,
@@ -215,6 +260,12 @@ namespace Chatcheology.Tools.MemoryImport
             if (string.IsNullOrEmpty(token) || token.Any(char.IsWhiteSpace) || token.Any(char.IsControl))
             {
                 throw new InvalidOperationException("No usable token was given. Nothing more has been fetched; run again with a new token.");
+            }
+
+            if (!token.All(char.IsAscii))
+            {
+                throw new InvalidOperationException(
+                    "The token has a character that is not plain ASCII (a stray paste?). Nothing more has been fetched; run again with a new token.");
             }
 
             return token;

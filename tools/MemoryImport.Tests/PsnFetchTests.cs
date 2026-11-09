@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.Http.Headers;
 using System.Security.Cryptography;
 using System.Text.Json.Nodes;
 using Chatcheology.Data.Memories.Psn;
@@ -181,10 +182,10 @@ namespace Chatcheology.Tools.MemoryImport.Tests
         private PsnFetchOptions Options(int titlePage = 800, int trophyPage = 100) =>
             new(PreviousList, Definitions, AccountA, AccountB, AccountA, Out) { TitlePageSize = titlePage, TrophyPageSize = trophyPage };
 
-        private (PsnFetchResult Result, PsnApiClient Api) Fetch(FakePrompt prompt, PsnFetchOptions? options = null)
+        private (PsnFetchResult Result, PsnApiClient Api) Fetch(FakePrompt prompt, PsnFetchOptions? options = null, Func<DateTimeOffset>? clock = null)
         {
             using var output = new StringWriter();
-            var api = new PsnApiClient(Server, prompt, _sleeps.Add, output);
+            var api = new PsnApiClient(Server, prompt, _sleeps.Add, output, clock);
             var result = PsnTrophyFetcher.Run(options ?? Options(), api, prompt, () => Now);
             AssertNoSecret(output.ToString());
             return (result, api);
@@ -257,7 +258,9 @@ namespace Chatcheology.Tools.MemoryImport.Tests
             Assert.Contains("listed now: 3", output, StringComparison.Ordinal);
             Assert.Contains("trophies earned, account a: 4", output, StringComparison.Ordinal);
             Assert.Contains("trophies earned, account b: 4", output, StringComparison.Ordinal);
-            Assert.Contains("sets fetched: 1 (5 trophies)", output, StringComparison.Ordinal);
+            Assert.Contains("sets added: 1", output, StringComparison.Ordinal);
+            Assert.Contains("sets refreshed for new trophies (DLC): 0", output, StringComparison.Ordinal);
+            Assert.Contains("trophies fetched: 5", output, StringComparison.Ordinal);
             Assert.Contains("ATTENTION: 1 pair(s) to confirm", output, StringComparison.Ordinal);
 
             // The inputs are never written.
@@ -599,6 +602,178 @@ namespace Chatcheology.Tools.MemoryImport.Tests
             Assert.Contains(TimeSpan.FromSeconds(5), _sleeps);
             Assert.Contains(TimeSpan.FromSeconds(10), _sleeps);
             Assert.Contains(PsnApiClient.Pause, _sleeps);
+        }
+
+        [Fact]
+        public void Forbidden403_StopsWithAPrivacyMessage_WithoutAskingForANewToken_AndARerunContinues()
+        {
+            Server.Override = (request, _) =>
+                request.RequestUri!.AbsolutePath.Contains($"/users/{Partner}/npCommunicationIds/{RacerB}/", StringComparison.Ordinal)
+                    ? FakePsnServer.Reply(HttpStatusCode.Forbidden, "{}")
+                    : null;
+            var prompt = new FakePrompt(Partner, Token, NewToken);
+
+            var exception = Assert.Throws<InvalidOperationException>(() => Fetch(prompt));
+
+            Assert.Contains("HTTP 403", exception.Message, StringComparison.Ordinal);
+            Assert.Contains("privacy", exception.Message, StringComparison.Ordinal);
+            Assert.Contains("run the same command again", exception.Message, StringComparison.Ordinal);
+            Assert.DoesNotContain(Partner, exception.Message, StringComparison.Ordinal);
+            Assert.Equal(1, prompt.TokensAsked);
+            Assert.Single(RequestsTo($"/npCommunicationIds/{RacerB}/"));
+            Assert.Single(ReadOut(PsnTrophyFetcher.TimestampsFile)["games"]!.AsArray());
+
+            Server.Override = null;
+            var (result, _) = Fetch(new FakePrompt(Partner, Token));
+            Assert.True(result.Completed);
+            Assert.Equal(1, result.Counts.GamesAlreadySaved);
+        }
+
+        [Fact]
+        public void Token_NotAscii_IsRefusedBeforeAnyCall()
+        {
+            var exception = Assert.Throws<InvalidOperationException>(() => Fetch(new FakePrompt(Partner, "zzToken\u00E9Value")));
+
+            Assert.Contains("ASCII", exception.Message, StringComparison.Ordinal);
+            Assert.Empty(Server.Requests);
+        }
+
+        [Theory]
+        [InlineData(HttpStatusCode.TooManyRequests, 42, 42)]
+        [InlineData(HttpStatusCode.ServiceUnavailable, 42, 42)]
+        [InlineData(HttpStatusCode.TooManyRequests, 3600, 300)]
+        public void RetryAfter_InSeconds_IsHonoured_AndCapped(HttpStatusCode status, int retryAfter, int expected)
+        {
+            var failed = false;
+            Server.Override = (request, _) =>
+            {
+                if (failed || !request.RequestUri!.AbsolutePath.Contains("/trophyGroups/", StringComparison.Ordinal))
+                {
+                    return null;
+                }
+
+                failed = true;
+                var reply = FakePsnServer.Reply(status, "{}");
+                reply.Headers.RetryAfter = new RetryConditionHeaderValue(TimeSpan.FromSeconds(retryAfter));
+                return reply;
+            };
+
+            var (result, api) = Fetch(new FakePrompt(Partner, Token));
+
+            Assert.True(result.Completed);
+            Assert.Equal(1, api.Retries);
+            Assert.Contains(TimeSpan.FromSeconds(expected), _sleeps);
+            Assert.DoesNotContain(TimeSpan.FromSeconds(5), _sleeps);
+        }
+
+        [Fact]
+        public void RetryAfter_AsAnHttpDate_IsHonouredAgainstTheClock()
+        {
+            var clock = new DateTimeOffset(2026, 11, 9, 8, 0, 0, TimeSpan.Zero);
+            var failed = false;
+            Server.Override = (request, _) =>
+            {
+                if (failed || !request.RequestUri!.AbsolutePath.Contains("/trophyGroups/", StringComparison.Ordinal))
+                {
+                    return null;
+                }
+
+                failed = true;
+                var reply = FakePsnServer.Reply(HttpStatusCode.TooManyRequests, "{}");
+                reply.Headers.RetryAfter = new RetryConditionHeaderValue(clock.AddSeconds(120));
+                return reply;
+            };
+
+            var (result, _) = Fetch(new FakePrompt(Partner, Token), clock: () => clock);
+
+            Assert.True(result.Completed);
+            Assert.Contains(TimeSpan.FromSeconds(120), _sleeps);
+        }
+
+        [Fact]
+        public void Dlc_ListedSetWithFewerDefinitionsThanTrophies_IsRefreshed_AndEnrichNamesTheNewTrophy()
+        {
+            // A DLC trophy group added to a previous-list game: id 6 in group 001, earned by both.
+            Server.Sets[Quest].Add(new FakeTrophy(6, "gold", "001"));
+            Server.AddEarned("me", Quest, 6, Utc(1, 12, 0));
+            Server.AddEarned(Partner, Quest, 6, Utc(1, 12, 0, 20));
+
+            var (result, _) = Fetch(new FakePrompt(Partner, Token));
+
+            Assert.True(result.Completed);
+            Assert.Equal(1, result.Counts.DefinitionSetsRefreshed);
+            Assert.Equal(1, result.Counts.DefinitionSetsFetched);
+            Assert.Equal(0, result.Counts.DefinitionSetsKeptLarger);
+            Assert.Equal(0, result.Counts.DefinitionSetsStillShort);
+
+            // The earned DLC trophy is in the timestamps (trophyGroups/all).
+            var questTimes = ReadOut(PsnTrophyFetcher.TimestampsFile)["games"]![0]!;
+            Assert.Equal(6, (int)questTimes[AccountA]!["totalTrophies"]!);
+            Assert.Contains(questTimes[AccountA]!["trophies"]!.AsArray(), t => (long)t!["trophyId"]! == 6);
+
+            // The set's entry is replaced in place, with every group.
+            var sets = ReadOut(PsnTrophyFetcher.DefinitionsFile)["sets"]!.AsArray();
+            Assert.Equal([Quest, RacerA, RacerB, Border], sets.Select(s => (string)s!["npCommunicationId"]!).ToArray());
+            var quest = sets[0]!["trophies"]!.AsArray();
+            Assert.Equal(6, quest.Count);
+            Assert.Equal("001", (string)quest[5]!["trophyGroupId"]!);
+            Assert.Equal("Invented Trophy 6", (string)quest[5]!["trophyName"]!);
+
+            // End to end: psn-build (as the plan), import, enrich: the DLC trophy gets its name.
+            var timestamps = File.ReadAllBytes(Path.Combine(Out, PsnTrophyFetcher.TimestampsFile));
+            var built = PsnSharedActivityBuilder.Build(
+                [timestamps], File.ReadAllBytes(Path.Combine(Out, PsnTrophyFetcher.GameListFile)), AccountA, AccountB, CurrentFile(timestamps));
+            var memories = Path.Combine(_root, "memories.db");
+            Chatcheology.Data.Memories.MemoriesDatabase.Create(memories, Now);
+            new PsnImporter().Import(memories, PsnSharedActivityReader.Parse(built.Json, AccountA, AccountB, AccountA));
+            var enriched = PsnTrophyEnricher.Enrich(memories, PsnTrophyDefinitionsReader.Read(Path.Combine(Out, PsnTrophyFetcher.DefinitionsFile)));
+
+            Assert.Equal(0, enriched.ItemsWithoutDefinition);
+            Assert.Equal(0, enriched.ItemsTypeMismatch);
+
+            using (var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={memories};Mode=ReadOnly;Pooling=False"))
+            {
+                connection.Open();
+                using var command = connection.CreateCommand();
+                command.CommandText = "SELECT Name, GroupId FROM ItemDefinition WHERE SetId = $set AND ItemId = '6';";
+                command.Parameters.AddWithValue("$set", Quest);
+                using var reader = command.ExecuteReader();
+                Assert.True(reader.Read());
+                Assert.Equal("Invented Trophy 6", reader.GetString(0));
+                Assert.Equal("001", reader.GetString(1));
+            }
+
+            // The DLC set was fetched once, in full.
+            Assert.Single(Server.Requests, r => r.Url.StartsWith($"npCommunicationIds/{Quest}/", StringComparison.Ordinal));
+        }
+
+        [Fact]
+        public void Dlc_FewerDefinitionsReturnedThanHeld_KeepsTheHeldSet_AndCountsIt()
+        {
+            Server.Sets[Quest].Add(new FakeTrophy(6, "gold", "001"));
+            Server.DefinitionSets[Quest] = [new(1), new(2), new(3, "gold"), new(4)];
+            var before = JsonNode.Parse(File.ReadAllText(Definitions))!["sets"]![0]!.DeepClone();
+
+            var (result, _) = Fetch(new FakePrompt(Partner, Token));
+
+            Assert.True(result.Completed);
+            Assert.Equal(0, result.Counts.DefinitionSetsRefreshed);
+            Assert.Equal(1, result.Counts.DefinitionSetsKeptLarger);
+            Assert.Equal(1, result.Counts.DefinitionSetsStillShort);
+            Assert.True(JsonNode.DeepEquals(before, ReadOut(PsnTrophyFetcher.DefinitionsFile)["sets"]![0]));
+        }
+
+        [Fact]
+        public void Dlc_StillShort_IsFlaggedOnScreen()
+        {
+            Server.Sets[Quest].Add(new FakeTrophy(6, "gold", "001"));
+            Server.DefinitionSets[Quest] = [new(1), new(2), new(3, "gold"), new(4), new(5, "silver")];
+
+            var (code, output, error) = RunCommand(new FakePrompt(Partner, Token), CommandArgs());
+
+            Assert.True(code == MemoryImportCommand.Success, error);
+            Assert.Contains("sets still short of their trophy total: 1", output, StringComparison.Ordinal);
+            Assert.Contains("ATTENTION: 1 set(s) still have fewer definitions", output, StringComparison.Ordinal);
         }
 
         [Fact]

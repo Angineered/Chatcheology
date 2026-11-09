@@ -288,7 +288,11 @@ namespace Chatcheology.Tools.MemoryImport
             output.WriteLine($"  trophies earned, account b: {c.TrophiesB}");
             output.WriteLine("Trophy definitions:");
             output.WriteLine($"  sets in the given file: {c.DefinitionSetsBefore}");
-            output.WriteLine($"  sets fetched: {c.DefinitionSetsFetched} ({c.DefinitionsFetched} trophies)");
+            output.WriteLine($"  sets added: {c.DefinitionSetsFetched}");
+            output.WriteLine($"  sets refreshed for new trophies (DLC): {c.DefinitionSetsRefreshed}");
+            output.WriteLine($"  sets kept because PlayStation returned fewer than held: {c.DefinitionSetsKeptLarger}");
+            output.WriteLine($"  sets still short of their trophy total: {c.DefinitionSetsStillShort}");
+            output.WriteLine($"  trophies fetched: {c.DefinitionsFetched}");
             output.WriteLine($"  sets in the new file: {c.DefinitionSetsNow}");
             output.WriteLine($"Calls: {api.Attempts}, retries: {api.Retries}, new tokens: {api.TokenRenewals}");
             output.WriteLine($"Check build (no -PsnCurrent): games {c.CheckGames}, events {c.CheckEvents}, games with events and no icon in the list {c.CheckGamesWithEventsAndNoIcon}");
@@ -296,6 +300,11 @@ namespace Chatcheology.Tools.MemoryImport
             if (c.ToConfirm > 0)
             {
                 output.WriteLine($"ATTENTION: {c.ToConfirm} pair(s) to confirm by hand; they are not in the game list.");
+            }
+
+            if (c.DefinitionSetsStillShort > 0)
+            {
+                output.WriteLine($"ATTENTION: {c.DefinitionSetsStillShort} set(s) still have fewer definitions than trophies; those trophies stay unnamed.");
             }
 
             if (c.AddedWithoutIcon > 0)
