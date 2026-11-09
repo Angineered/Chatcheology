@@ -658,6 +658,12 @@ internal static class NewerPlanner
         : m.MediaCaption is { } c && TextProber.Normalise(c).Length > 0 ? c
         : null;
 
+    /// <summary>
+    /// True when <paramref name="full"/> is strictly beneath the media root <paramref name="rootFull"/>. A drive root
+    /// (<c>F:\</c>) keeps its separator after trimming, so it is a media root like any other folder (CH-71 step 5).
+    /// </summary>
+    internal static bool IsBeneathRoot(string full, string rootFull) => Chatcheology.Archive.ArchivePaths.IsBeneath(full, rootFull);
+
     /// <summary>D4: Restored only when the file at file_path under the root has the SHA-256 msgstore records; else Unmatched.</summary>
     private static NewerAttachmentRow AttachmentOf(MsRow m, string rootFull, Tally unmatched)
     {
@@ -692,7 +698,7 @@ internal static class NewerPlanner
         {
             var full = Path.GetFullPath(Path.Combine(rootFull, relative.Replace('/', Path.DirectorySeparatorChar)));
 
-            if (!full.StartsWith(rootFull + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) || !File.Exists(full))
+            if (!IsBeneathRoot(full, rootFull) || !File.Exists(full))
             {
                 reason = NoFile;
             }

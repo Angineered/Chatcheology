@@ -409,6 +409,55 @@ namespace Chatcheology.Data.Tests.ArchiveExport
         }
 
         [Fact]
+        public void A_placeholder_whose_text_is_not_a_fixed_wording_refuses_the_export()
+        {
+            BuildWorkspace();
+            FirstRun();
+
+            // A write the import never makes: a placeholder carrying other text (here invented), which the phone would
+            // show muted as if it were a fixed wording.
+            using (var connection = new SqliteConnection($"Data Source={NewerPath};Pooling=False"))
+            {
+                connection.Open();
+                using var command = connection.CreateCommand();
+                command.CommandText = "UPDATE NewerMessage SET Text = 'Invented poll question' WHERE Kind = 'Placeholder';";
+                Assert.Equal(1, command.ExecuteNonQuery());
+            }
+
+            var refusal = Assert.Throws<ArchiveExportRefusedException>(() => Export(_fixture.Output()));
+            Assert.Contains("1 row(s) of the newer-messages file break its own rules", refusal.Message, StringComparison.Ordinal);
+            Assert.DoesNotContain("Invented poll question", refusal.Message, StringComparison.Ordinal);
+            Assert.Empty(_fixture.ExportsContent());
+
+            // Every fixed wording is accepted.
+            foreach (var wording in NewerPlaceholderWordings.All)
+            {
+                using (var connection = new SqliteConnection($"Data Source={NewerPath};Pooling=False"))
+                {
+                    connection.Open();
+                    using var command = connection.CreateCommand();
+                    command.CommandText = "UPDATE NewerMessage SET Text = $text WHERE Kind = 'Placeholder';";
+                    command.Parameters.AddWithValue("$text", wording);
+                    command.ExecuteNonQuery();
+                }
+
+                SqliteConnection.ClearAllPools();
+                Assert.Equal(6, new ArchiveExporter().Preview(_fixture.DatabasePath, MatchingTestWorkspace.ConversationID, Local).NewerMessages);
+            }
+        }
+
+        [Theory]
+        [InlineData(@"F:\", "Media/WhatsApp Images/IMG-1.jpg", @"F:\Media\WhatsApp Images\IMG-1.jpg")]
+        [InlineData(@"F:\Phone\WhatsApp", "Media/a.jpg", @"F:\Phone\WhatsApp\Media\a.jpg")]
+        [InlineData(@"F:\Phone\WhatsApp\", "Media/a.jpg", @"F:\Phone\WhatsApp\Media\a.jpg")]
+        [InlineData(@"F:\", "Media/../../a.jpg", null)]
+        [InlineData(@"F:\", "G:/a.jpg", null)]
+        public void A_drive_root_media_folder_holds_its_restored_files(string root, string relative, string? expected)
+        {
+            Assert.Equal(expected, NewerMessagesArchiveSource.FullPathUnder(root, relative));
+        }
+
+        [Fact]
         public void A_restored_file_gone_from_the_media_folder_refuses_before_writing()
         {
             BuildWorkspace();
