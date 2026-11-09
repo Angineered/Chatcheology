@@ -7,8 +7,8 @@ namespace Chatcheology.Tools.MemoryImport
 {
     /// <summary>
     /// The memories import tool: <c>psn-dry-run</c> (the default), <c>psn-import</c>,
-    /// <c>psn-enrich-dry-run</c>, <c>psn-enrich</c>, <c>fetch-images</c>, <c>psn-build</c> and
-    /// <c>psn-compare</c>. See the README beside this file for usage.
+    /// <c>psn-enrich-dry-run</c>, <c>psn-enrich</c>, <c>fetch-images</c>, <c>psn-build</c>,
+    /// <c>psn-compare</c> and <c>psn-fetch</c>. See the README beside this file for usage.
     /// </summary>
     /// <remarks>
     /// Privacy rule for output: counts and dates only. Never a game title, account prefix, URL,
@@ -42,8 +42,25 @@ namespace Chatcheology.Tools.MemoryImport
             TextWriter output,
             TextWriter error,
             Func<DateTime> utcNow,
-            Func<IMemoryImageSource> imageSource)
+            Func<IMemoryImageSource> imageSource) =>
+            Run(args, output, error, utcNow, imageSource, PsnFetchEnvironment.Console);
+
+        /// <summary>Runs the tool.</summary>
+        /// <param name="args">The command line.</param>
+        /// <param name="output">Where results go.</param>
+        /// <param name="error">Where refusals and usage errors go.</param>
+        /// <param name="utcNow">The clock, for the memories file's creation timestamp.</param>
+        /// <param name="imageSource">Makes the image downloader; only called by <c>fetch-images</c>.</param>
+        /// <param name="psnFetch">Makes the PlayStation connection and secret prompt; only called by <c>psn-fetch</c>.</param>
+        public static int Run(
+            string[] args,
+            TextWriter output,
+            TextWriter error,
+            Func<DateTime> utcNow,
+            Func<IMemoryImageSource> imageSource,
+            Func<PsnFetchEnvironment> psnFetch)
         {
+            ArgumentNullException.ThrowIfNull(psnFetch);
             ArgumentNullException.ThrowIfNull(args);
             ArgumentNullException.ThrowIfNull(output);
             ArgumentNullException.ThrowIfNull(error);
@@ -79,6 +96,7 @@ namespace Chatcheology.Tools.MemoryImport
                     "fetch-images" => RunFetchImages(parsed, output, imageSource),
                     "psn-build" => RunBuild(parsed, output),
                     "psn-compare" => RunCompare(parsed, output),
+                    "psn-fetch" => RunFetch(parsed, output, utcNow, psnFetch),
                     _ => RunDryRun(parsed, output),
                 };
             }
@@ -235,6 +253,56 @@ namespace Chatcheology.Tools.MemoryImport
             {
                 throw new InvalidOperationException($"The output file could not be written ({exception.GetType().Name}).");
             }
+        }
+
+        private static int RunFetch(ParsedArguments parsed, TextWriter output, Func<DateTime> utcNow, Func<PsnFetchEnvironment> psnFetch)
+        {
+            var environment = psnFetch();
+            using var api = new PsnApiClient(environment.Handler, environment.Prompt, environment.Sleep, output);
+            var options = new PsnFetchOptions(
+                parsed.PreviousList!, parsed.DefinitionsFile!, parsed.AccountA!, parsed.AccountB!, parsed.Local!, parsed.Out!);
+            var result = PsnTrophyFetcher.Run(options, api, environment.Prompt, utcNow);
+            var c = result.Counts;
+
+            if (!result.Completed)
+            {
+                output.WriteLine($"Stopped: listed games no longer returned by PlayStation: account a {c.MissingSideA}, account b {c.MissingSideB}.");
+                output.WriteLine($"Details are in {PsnTrophyFetcher.MissingFile} in the out folder. No trophies were fetched.");
+                output.WriteLine("Check those games, correct the game list if needed, and run again.");
+                return Failed;
+            }
+
+            output.WriteLine("PSN fetch done.");
+            output.WriteLine("Game list:");
+            output.WriteLine($"  on the previous list: {c.ListedBefore}");
+            output.WriteLine($"  added (one trophy set on both accounts): {c.Added}");
+            output.WriteLine($"  to confirm by hand (not added; see {PsnTrophyFetcher.ToConfirmFile}): {c.ToConfirm}");
+            output.WriteLine($"  listed now: {c.ListedNow}");
+            output.WriteLine($"  icons added: {c.IconsAdded}");
+            output.WriteLine($"  listed games with no icon: {c.IconsNone}");
+            output.WriteLine("Trophy times:");
+            output.WriteLine($"  games fetched in this run: {c.GamesFetched}");
+            output.WriteLine($"  games saved by an earlier run (skipped): {c.GamesAlreadySaved}");
+            output.WriteLine($"  trophies earned, account a: {c.TrophiesA}");
+            output.WriteLine($"  trophies earned, account b: {c.TrophiesB}");
+            output.WriteLine("Trophy definitions:");
+            output.WriteLine($"  sets in the given file: {c.DefinitionSetsBefore}");
+            output.WriteLine($"  sets fetched: {c.DefinitionSetsFetched} ({c.DefinitionsFetched} trophies)");
+            output.WriteLine($"  sets in the new file: {c.DefinitionSetsNow}");
+            output.WriteLine($"Calls: {api.Attempts}, retries: {api.Retries}, new tokens: {api.TokenRenewals}");
+            output.WriteLine($"Check build: games {c.CheckGames}, events {c.CheckEvents}, games with events and no icon {c.CheckGamesWithEventsAndNoIcon}");
+
+            if (c.ToConfirm > 0)
+            {
+                output.WriteLine($"ATTENTION: {c.ToConfirm} pair(s) to confirm by hand; they are not in the game list.");
+            }
+
+            if (c.CheckGamesWithEventsAndNoIcon > 0)
+            {
+                output.WriteLine("ATTENTION: games with events have no icon; the refresh plan refuses them unless -PsnCurrent carries their icons.");
+            }
+
+            return Success;
         }
 
         private static int RunCompare(ParsedArguments parsed, TextWriter output)
@@ -481,10 +549,14 @@ namespace Chatcheology.Tools.MemoryImport
             output.WriteLine("  psn-build --timestamps <file> [--timestamps <file> ...] --manifest <file> --account-a <name> --account-b <name>");
             output.WriteLine("            (--out <file> [--overwrite] | --dry-run) [--icons-from <shared-activity-file>] [--allow-no-icon]");
             output.WriteLine("  psn-compare <old-file> <new-file> --local <prefix> --other <prefix> --pair-a <prefix>");
+            output.WriteLine("  psn-fetch --previous-list <game list> --definitions <definitions file> --account-a <name> --account-b <name>");
+            output.WriteLine("            --local <a or b name> --out <new folder>");
             output.WriteLine();
             output.WriteLine("psn-build: --account-a is the account whose trophy set is first in every game key; the account names");
             output.WriteLine("are the account field names in the inputs and become the prefixes in the built file.");
             output.WriteLine("psn-compare exits 0 when the files are the same and 3 when they differ.");
+            output.WriteLine("psn-fetch asks for the token and the other account's id with hidden input; neither is saved.");
+            output.WriteLine("A rerun into the same --out folder continues an unfinished psn-fetch.");
             output.WriteLine("Prefixes are the account field prefixes in the PSN file (case-insensitive).");
             output.WriteLine("--pair-a names which of --local/--other is side a of the matching pairs (first set in gameKey).");
             output.WriteLine("Output is counts and dates only.");
@@ -538,6 +610,10 @@ namespace Chatcheology.Tools.MemoryImport
 
             internal bool AllowNoIcon { get; private set; }
 
+            internal string? PreviousList { get; private set; }
+
+            internal string? DefinitionsFile { get; private set; }
+
             private bool BuildOptionGiven =>
                 Timestamps.Count > 0 || Manifest is not null || AccountA is not null || AccountB is not null
                 || Out is not null || IconsFrom is not null || Overwrite || DryRun || AllowNoIcon;
@@ -550,7 +626,7 @@ namespace Chatcheology.Tools.MemoryImport
                 var gapGiven = false;
                 var maxBytesGiven = false;
 
-                if (args.Length > 0 && args[0] is "psn-dry-run" or "psn-import" or "psn-enrich-dry-run" or "psn-enrich" or "fetch-images" or "psn-build" or "psn-compare")
+                if (args.Length > 0 && args[0] is "psn-dry-run" or "psn-import" or "psn-enrich-dry-run" or "psn-enrich" or "fetch-images" or "psn-build" or "psn-compare" or "psn-fetch")
                 {
                     parsed.Command = args[0];
                     index = 1;
@@ -665,6 +741,14 @@ namespace Chatcheology.Tools.MemoryImport
                             parsed.AllowNoIcon = true;
                             break;
 
+                        case "--previous-list":
+                            parsed.PreviousList = NextValue(argument);
+                            break;
+
+                        case "--definitions":
+                            parsed.DefinitionsFile = NextValue(argument);
+                            break;
+
                         default:
                             if (argument.StartsWith("--", StringComparison.Ordinal))
                             {
@@ -691,6 +775,31 @@ namespace Chatcheology.Tools.MemoryImport
                 if (parsed.Help)
                 {
                     return parsed;
+                }
+
+                if (parsed.Command == "psn-fetch")
+                {
+                    if (parsed.PsnFile is not null || parsed.WorkspaceFolder is not null || parsed.Other is not null
+                        || parsed.PairA is not null || collectionGiven || gapGiven || parsed.Create || maxBytesGiven
+                        || parsed.Timestamps.Count > 0 || parsed.Manifest is not null || parsed.IconsFrom is not null
+                        || parsed.Overwrite || parsed.DryRun || parsed.AllowNoIcon)
+                    {
+                        throw new UsageException(
+                            "psn-fetch takes --previous-list, --definitions, --account-a, --account-b, --local and --out only.");
+                    }
+
+                    if (parsed.PreviousList is null || parsed.DefinitionsFile is null || parsed.AccountA is null
+                        || parsed.AccountB is null || parsed.Local is null || parsed.Out is null)
+                    {
+                        throw new UsageException("psn-fetch needs --previous-list, --definitions, --account-a, --account-b, --local and --out.");
+                    }
+
+                    return parsed;
+                }
+
+                if (parsed.PreviousList is not null || parsed.DefinitionsFile is not null)
+                {
+                    throw new UsageException("--previous-list and --definitions belong to psn-fetch only.");
                 }
 
                 if (parsed.Command == "psn-build")

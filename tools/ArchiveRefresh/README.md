@@ -12,8 +12,25 @@ folders without a trailing backslash when the path contains a space (PowerShell 
 on wrongly; ticket CH-74).
 
 1. Decrypt the msgstore with your own key (outside the project); copy the phone's WhatsApp folder (the
-   one holding `Media\`). If PSN is included, run the fetch script as usual
-   (`.temp\psn\Fetch-Shared-PSN-Trophies.ps1`) and keep the game list and trophy definitions file.
+   one holding `Media\`).
+   If PSN is included:
+   1. In Postman run Request 1, then Request 2, for a fresh token (and keep `partnerAccountId` from the
+      collection's Variables to hand).
+   2. Fetch (asks for the other account's id and the token, hidden; never saved):
+
+      ```powershell
+      .\tools\ArchiveRefresh\Run-Refresh.ps1 -Step PsnFetch -PsnManifest <last game list> -PsnDefinitions <last definitions file> -PsnAccountA <name> -PsnAccountB <name> -PsnLocal <a or b name> -PsnOut <new private folder>
+      ```
+
+      The last game list and definitions file are last month's `psn-game-list.json` and
+      `psn-trophy-definitions.json` (the first time: the October game list and definitions file). Read
+      the counts; "to confirm by hand" pairs are in `psn-to-confirm.json` and are not included until you
+      add them to the game list (see `tools\MemoryImport\README.md`, psn-fetch). If it stops (token,
+      network, a listed game no longer returned), fix the cause and run the same command again; finished
+      games are skipped.
+   3. In Plan and Apply below give `-PsnTimestamps <PsnOut>\psn-trophy-timestamps.json`,
+      `-PsnManifest <PsnOut>\psn-game-list.json`, `-PsnDefinitions <PsnOut>\psn-trophy-definitions.json`,
+      and `-PsnCurrent` the `psn-shared-activity.json` in the previous plan folder.
 2. Plan (read-only; writes only a new private plan folder outside the repository):
 
    ```powershell
@@ -36,7 +53,8 @@ on wrongly; ticket CH-74).
 PSN parameters (all or none): `-PsnTimestamps <file>[,<file>]`, `-PsnManifest <game list>`,
 `-PsnAccountA <name>`, `-PsnAccountB <name>` (account a's set first in every key), `-PsnLocal <a or b name>`,
 `-PsnCurrent <current shared-activity file>`, `-PsnDefinitions <definitions file>`. Next month, give
-`-PsnCurrent` the `psn-shared-activity.json` in this month's plan folder.
+`-PsnCurrent` the `psn-shared-activity.json` in this month's plan folder, and PsnFetch this month's
+`psn-game-list.json` and `psn-trophy-definitions.json`.
 
 ## What plan does
 
