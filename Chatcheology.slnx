@@ -10,6 +10,8 @@
   <Project Path="Chatcheology.Desktop/Chatcheology.Desktop.csproj" />
   <Project Path="Chatcheology.Mobile.Tests/Chatcheology.Mobile.Tests.csproj" />
   <Project Path="Chatcheology.Mobile/Chatcheology.Mobile.csproj" />
+  <Project Path="tools/ArchiveRefresh.Tests/ArchiveRefresh.Tests.csproj" />
+  <Project Path="tools/ArchiveRefresh/ArchiveRefresh.csproj" />
   <Project Path="tools/MemoryImport.Tests/MemoryImport.Tests.csproj" />
   <Project Path="tools/MemoryImport/MemoryImport.csproj" />
   <Project Path="tools/MsgstoreImport.Tests/MsgstoreImport.Tests.csproj" />
