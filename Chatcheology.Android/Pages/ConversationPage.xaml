@@ -9,7 +9,9 @@
      MessageText, AttachmentCardView); a starred message, or one with a starred photo, shows a small
      star beside its time (CH-38). Colours come in light and dark pairs (CH-41). Memory rows (CH-42)
      are centred lavender cards (a PSN period, a personal memory) or a muted italic line ("different
-     times"), never bubbles; a tap opens their details, and they have no long press. -->
+     times"), never bubbles; a tap opens their details, and they have no long press. A newer message the
+     archive cannot show yet (CH-71 step 3b: a poll, a location, a call...) is its fixed wording, muted and in
+     italics, in its sender's bubble (NotShownText); a WhatsApp system row is a System line as before. -->
 <ContentPage xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
              xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
              xmlns:conv="clr-namespace:Chatcheology.Mobile.Conversation;assembly=Chatcheology.Mobile"
@@ -54,6 +56,8 @@
                             </BindableLayout.ItemTemplate>
                         </VerticalStackLayout>
                         <controls:MessageText />
+                        <Label Text="{Binding NotShownText}" IsVisible="{Binding HasNotShownText}" FontSize="14"
+                               FontAttributes="Italic" TextColor="{AppThemeBinding Light={StaticResource MutedTextLight}, Dark={StaticResource MutedTextDark}}" />
                         <HorizontalStackLayout HorizontalOptions="End" Spacing="4">
                             <Label Text="★" FontSize="11" IsVisible="{Binding ShowsStar}"
                                    TextColor="{AppThemeBinding Light={StaticResource StarLight}, Dark={StaticResource StarDark}}" />
@@ -88,6 +92,8 @@
                             </BindableLayout.ItemTemplate>
                         </VerticalStackLayout>
                         <controls:MessageText />
+                        <Label Text="{Binding NotShownText}" IsVisible="{Binding HasNotShownText}" FontSize="14"
+                               FontAttributes="Italic" TextColor="{AppThemeBinding Light={StaticResource MutedTextLight}, Dark={StaticResource MutedTextDark}}" />
                         <HorizontalStackLayout HorizontalOptions="End" Spacing="4">
                             <Label Text="★" FontSize="11" IsVisible="{Binding ShowsStar}"
                                    TextColor="{AppThemeBinding Light={StaticResource StarLight}, Dark={StaticResource StarDark}}" />

@@ -3,7 +3,7 @@ namespace Chatcheology.Mobile.Synthetic
     /// <summary>
     /// The synthetic archives a Debug build of the Android app installs from its start screen, in one place so
     /// the tests check exactly what the buttons write: the current archive format (version 4, CH-71), with the
-    /// invented yearly memories, a few picture captions (CH-71) and, for the memories button, the invented memory
+    /// invented yearly memories, a few picture captions (CH-71), newer messages on the standard one (CH-71 step 3b) and, for the memories button, the invented memory
     /// layers (CH-42). Gifted noted dates
     /// (version 2) stay a test fixture (<see cref="SyntheticArchiveOptions.NotedDates"/>). Each option carries its own
     /// invented archive id (CH-71 step 2), so installing one after another is never taken for a refresh.
@@ -12,7 +12,7 @@ namespace Chatcheology.Mobile.Synthetic
     {
         /// <summary>"Install synthetic archive": every card and label the screens show, and the yearly memories.</summary>
         internal static readonly SyntheticArchiveOptions Standard = new(
-            Audio: 2, Documents: 1, BrokenImages: 1, LowQualityCopies: 3, Forwarded: 30, Links: 20, YearlyMemories: true, Captions: 4,
+            Audio: 2, Documents: 1, BrokenImages: 1, LowQualityCopies: 3, Forwarded: 30, Links: 20, YearlyMemories: true, Captions: 4, NewerMessages: true,
             ArchiveId: "3f1c9b20-6d4e-4a57-8e12-c0b7a5d9e461");
 
         /// <summary>

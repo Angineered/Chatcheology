@@ -63,7 +63,9 @@ namespace Chatcheology.Mobile.Conversation
 
                 if (messages.Contains(sequence))
                 {
-                    var snippet = row.HasText ? Snippet(row.Text) : row.ShownAttachments.FirstOrDefault()?.Heading ?? string.Empty;
+                    var snippet = row.HasText ? Snippet(row.Text)
+                        : row.HasNotShownText ? row.NotShownText
+                        : row.ShownAttachments.FirstOrDefault()?.Heading ?? string.Empty;
                     var thumbnail = row.ShownAttachments.FirstOrDefault(card => card.Kind == AttachmentCardKind.Image);
 
                     entries.Add(new StarredEntry(sequence, date, row.TimeText, row.SenderText, snippet, thumbnail, IsPhoto: false));
