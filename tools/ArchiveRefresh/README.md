@@ -19,16 +19,21 @@ on wrongly; ticket CH-74).
    2. Fetch (asks for the other account's id and the token, hidden; never saved):
 
       ```powershell
-      .\tools\ArchiveRefresh\Run-Refresh.ps1 -Step PsnFetch -PsnManifest <last game list> -PsnDefinitions <last definitions file> -PsnAccountA <name> -PsnAccountB <name> -PsnLocal <a or b name> -PsnOut <new private folder>
+      .\tools\ArchiveRefresh\Run-Refresh.ps1 -Step PsnFetch -PsnManifest <last game list> -PsnDefinitions <last definitions file> -PsnDecisions <your decisions csv> -PsnAccountA <name> -PsnAccountB <name> -PsnLocal <a or b name> -PsnOut <new private folder>
       ```
 
       The last game list and definitions file are last month's `psn-game-list.json` and
-      `psn-trophy-definitions.json` (the first time: the October game list and definitions file). Read
-      the counts; "to confirm by hand" pairs are in `psn-to-confirm.json` and are not included until you
-      add them to the game list (see `tools\MemoryImport\README.md`, psn-fetch). If it stops (token,
-      network, HTTP 403 which usually means an account's trophy privacy, a listed game no longer
-      returned), fix the cause and run the same command again; finished
-      games are skipped.
+      `psn-trophy-definitions.json` (the first time: the October game list and definitions file).
+      The decisions csv is your one decisions file (columns `game_title`, `status` = together,
+      uncertain or excluded, and one `<name>_trophy_set_ids` column per account; see
+      `tools\MemoryImport\README.md`, psn-fetch). A game is added only when a row marks it together.
+      Read the counts. If "awaiting review" is above 0, open `psn-to-review.csv` in the PsnOut folder
+      (newest first), copy the rows you decide into your decisions file with a status, and if you want
+      them in this month, run PsnFetch again into a new PsnOut folder (same game list). If it stops
+      (token, network, HTTP 403 which usually means an account's trophy privacy, a listed game no
+      longer returned), fix the cause and run the same command again; finished games are skipped. If
+      it stops on decisions (rows that disagree, or a listed game marked excluded or uncertain),
+      correct the decisions file and run it into a new PsnOut folder.
    3. In Plan and Apply below give `-PsnTimestamps <PsnOut>\psn-trophy-timestamps.json`,
       `-PsnManifest <PsnOut>\psn-game-list.json`, `-PsnDefinitions <PsnOut>\psn-trophy-definitions.json`,
       and `-PsnCurrent` the `psn-shared-activity.json` in the previous plan folder.

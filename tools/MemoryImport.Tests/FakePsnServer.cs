@@ -6,7 +6,7 @@ using System.Text.Json.Nodes;
 namespace Chatcheology.Tools.MemoryImport.Tests
 {
     /// <summary>One synthetic trophy title on an account's list. Every value is invented.</summary>
-    internal sealed record FakeTitle(string SetId, string Name, string? Icon = null, string Service = "trophy");
+    internal sealed record FakeTitle(string SetId, string Name, string? Icon = null, string Service = "trophy", string? LastUpdated = null);
 
     /// <summary>One synthetic trophy in a set: its id, type and, per account user, the earned time (UTC).</summary>
     internal sealed record FakeTrophy(long Id, string Type = "bronze", string Group = "default");
@@ -95,6 +95,7 @@ namespace Chatcheology.Tools.MemoryImport.Tests
                         ["trophyTitleName"] = title.Name,
                         ["trophyTitleIconUrl"] = title.Icon,
                         ["trophyTitlePlatform"] = title.Service == "trophy2" ? "PS5" : "PS4",
+                        ["lastUpdatedDateTime"] = title.LastUpdated,
                     });
                 }
 

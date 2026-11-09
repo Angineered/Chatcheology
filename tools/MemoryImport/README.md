@@ -209,7 +209,7 @@ a file is refused.
 `psn-fetch` (CH-71 PSN pass; replaces `.temp\psn\Fetch-Shared-PSN-Trophies.ps1` and its fixed list):
 
 ```
-psn-fetch --previous-list <last game list> --definitions <current definitions file>
+psn-fetch --previous-list <last game list> --definitions <current definitions file> --decisions <decisions csv>
           --account-a <A> --account-b <B> --local <A or B> --out <new folder>
 ```
 
@@ -218,17 +218,33 @@ numeric id (`partnerAccountId` in the Postman collection) and the access token (
 and 2) with hidden input; neither is ever in an argument, a file or the output. `--local` is the
 account that is `me` in the API; the other account is called by its id. The inputs are only read.
 
+The decisions file is Angie's one hand-kept CSV of which shared titles were played together
+(UTF-8, a byte order mark is fine): a header row with `game_title`, `status` (together, uncertain or
+excluded), `<A in lower case>_trophy_set_ids` and `<B in lower case>_trophy_set_ids` (column names
+match in any case; a missing one is refused; other columns are ignored), then one row per game. A
+set-id cell may hold several ids separated by `;` (for example the PS3 and PS4 versions). A row
+covers a pair when account a's set is in its a cell and account b's set is in its b cell.
+
 1. Game list, fresh every run, from both accounts' trophy titles (`users/{me|id}/trophyTitles`,
    paged by `totalItemCount`; fields used: `npCommunicationId`, `npServiceName`, `trophyTitleName`,
-   `trophyTitleIconUrl`):
+   `trophyTitleIconUrl`, `lastUpdatedDateTime`). psn-fetch never adds a game on its own judgement:
+   one set on both accounts is not "played together".
    - every game on the previous list stays, exactly as listed (pairs with different sets included);
-   - a trophy set on both accounts that is not listed is added (`sameTrophySet` true);
-   - the same title on both accounts with different sets is **not** added: it goes to
-     `psn-to-confirm.json` and is counted. Titles compare exactly after removing the trade mark
-     signs, Unicode compatibility form, one space for any run of white space, and upper case; no
-     fuzzy matching. A set on both accounts that a listed pair already uses goes there too;
-   - a listed game whose set PlayStation no longer returns for an account stops the run before any
-     trophy is fetched; `psn-missing-games.json` names them, the screen shows counts.
+   - a candidate is a pair not on the list that is either one set on both accounts, or the same title
+     with different sets. Titles compare exactly after removing the trade mark signs, Unicode
+     compatibility form, one space for any run of white space, and upper case; no fuzzy matching.
+     Different-set pairs are only formed between sets that are on one account each and in no listed
+     game (a game whose versions both accounts own is covered by its same-set pairs);
+   - a candidate covered by a `together` row is added (`sameTrophySet` from its two sets); by an
+     `excluded` or `uncertain` row it is not added and counted; with no row it is not added and goes
+     to `psn-to-review.csv`: the decisions file's columns (status empty) plus each account's
+     `<name>_last_updated` date from the title list, newest first;
+   - a `together` row that covers no listed game and no candidate is counted and written to
+     `psn-together-not-returned.csv`; the run carries on;
+   - the run stops before any trophy is fetched, with counts on screen and details in the out folder,
+     when a listed game's set is no longer returned for an account (`psn-missing-games.json`), when
+     rows with different statuses cover one candidate, or when an `excluded` or `uncertain` row
+     covers a previous-list game (`psn-decision-conflicts.json`).
 2. Trophy times for every listed game, both accounts, as the old script fetched them
    (`users/{me|id}/npCommunicationIds/{set}/trophyGroups/all/trophies?npServiceName=...&limit=100&offset=n`,
    paged by `totalItemCount`, incomplete paging refused; earned trophies only), written as
@@ -255,21 +271,22 @@ asks for a new token and carries on. A 403 stops the run without asking for a to
 token it is usually an account's trophy privacy setting. A token with a non-ASCII character is
 refused at once. The timestamps file is saved after each game and the definitions file
 after each set (written beside, then moved). A rerun with the same arguments into the same `--out`
-continues and skips finished games; a different input or account name is refused. `--out` must be
+continues and skips finished games; a different input (including the decisions file) or account name is refused. `--out` must be
 new, or this tool's unfinished run (`psn-fetch-state.json`); a finished run is refused.
 
 Out folder: `psn-trophy-timestamps.json` (`-PsnTimestamps`), `psn-game-list.json` (`-PsnManifest`,
 and next month's `--previous-list`), `psn-trophy-definitions.json` (`-PsnDefinitions`, and next
-month's `--definitions`), `psn-to-confirm.json` (possibly empty), `psn-fetch-state.json`. To include
-a pair from the to-confirm file after checking it: copy its entry (without `reason` and
-`gameOnAccountB`) into the game list and run psn-fetch again into a new folder with that list as
-`--previous-list`.
+month's `--definitions`), `psn-to-review.csv` and `psn-together-not-returned.csv` (possibly with
+the header only), `psn-fetch-state.json`. To decide a candidate: copy its row from
+`psn-to-review.csv` into the decisions file and fill in the status (the date columns may stay or
+go); the next run picks it up. The decisions file is never written by the tool.
 
-Prints counts only: games on the previous list, added, to confirm, listed now, icons added (added games only), added games and listed games with no icon, games
+Prints counts only: games on the previous list, added from decisions, not added (excluded,
+uncertain, awaiting review, with an ATTENTION line), together rows not returned, listed now, icons added (added games only), added games and listed games with no icon, games
 fetched and skipped (resumed), trophies earned per account side, definition sets (given, added, refreshed for new
 trophies, kept because fewer came back, still short, trophies fetched), calls, retries,
 new tokens, and the check build's games, events and games with events and no icon. Exit 0 done; 1
-stopped (missing games, or a failed call: progress saved, run again); 2 usage.
+stopped (missing games, decision conflicts, or a failed call: progress saved, run again); 2 usage.
 
 ### Monthly PSN refresh (Angie)
 
@@ -278,7 +295,7 @@ From the repository folder. `<A>` and `<B>` are the two account field names in t
 `psn-import` command.
 
 1. Fetch with `psn-fetch` (above; `tools\ArchiveRefresh\Run-Refresh.ps1 -Step PsnFetch` runs it). Its
-   game list is made fresh each run, so a game shared since the last list is picked up. With psn-build
+   game list is made fresh each run; a game is added only from a together row in the decisions file. With psn-build
    directly, a game in only one of the timestamps and the manifest is counted as "manifest games with
    no timestamps" or "timestamp games not in the manifest", is not built, and `psn-compare` lists it as
    a difference.
