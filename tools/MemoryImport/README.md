@@ -206,18 +206,82 @@ events in both with the same level whose trophies (role, set, id, type, UTC time
 account) differ. Exit code 0 only when every one of these matches, 3 when anything differs, 1 when
 a file is refused.
 
+`psn-fetch` (CH-71 PSN pass; replaces `.temp\psn\Fetch-Shared-PSN-Trophies.ps1` and its fixed list):
+
+```
+psn-fetch --previous-list <last game list> --definitions <current definitions file>
+          --account-a <A> --account-b <B> --local <A or B> --out <new folder>
+```
+
+Makes this month's three PSN inputs for the refresh in `--out`. It asks for the other account's
+numeric id (`partnerAccountId` in the Postman collection) and the access token (Postman Requests 1
+and 2) with hidden input; neither is ever in an argument, a file or the output. `--local` is the
+account that is `me` in the API; the other account is called by its id. The inputs are only read.
+
+1. Game list, fresh every run, from both accounts' trophy titles (`users/{me|id}/trophyTitles`,
+   paged by `totalItemCount`; fields used: `npCommunicationId`, `npServiceName`, `trophyTitleName`,
+   `trophyTitleIconUrl`):
+   - every game on the previous list stays, exactly as listed (pairs with different sets included);
+   - a trophy set on both accounts that is not listed is added (`sameTrophySet` true);
+   - the same title on both accounts with different sets is **not** added: it goes to
+     `psn-to-confirm.json` and is counted. Titles compare exactly after removing the trade mark
+     signs, Unicode compatibility form, one space for any run of white space, and upper case; no
+     fuzzy matching. A set on both accounts that a listed pair already uses goes there too;
+   - a listed game whose set PlayStation no longer returns for an account stops the run before any
+     trophy is fetched; `psn-missing-games.json` names them, the screen shows counts.
+2. Trophy times for every listed game, both accounts, as the old script fetched them
+   (`users/{me|id}/npCommunicationIds/{set}/trophyGroups/all/trophies?npServiceName=...&limit=100&offset=n`,
+   paged by `totalItemCount`, incomplete paging refused; earned trophies only), written as
+   `chatcheology-psn-trophy-batch-v1`.
+3. Only games added this run get an icon, the title list's (account a's, else account b's). A
+   previous-list game keeps its entry exactly as listed, with or without an icon: psn-build (the
+   refresh's plan, with `-PsnCurrent`) carries a missing icon over from the current shared-activity
+   file, so psn-compare shows no icon change for it. Every listed set (previous-list or added) that
+   the definitions file is missing, or holds fewer definitions for than the trophy times'
+   `totalTrophies` (new DLC trophies: a DLC is usually its own trophy group, its ids continue the
+   set's), gets its definitions fetched in full, all groups (`npCommunicationIds/{set}/trophyGroups/all/trophies`, no user,
+   `Accept-Language: en-US`, values as returned, missing fields null). A missing set is added to a
+   copy of the file; a short set's entry is replaced in place only when the fetch holds more
+   definitions than the file did (never shrunk: fewer is counted and the held entry kept). Sets
+   still short afterwards are counted and flagged ATTENTION (those trophies stay unnamed).
+4. The outputs are checked with psn-build (without the current file, so icons are allowed missing;
+   the count is printed) and the definitions reader before the run is marked finished. An added game
+   PlayStation gave no icon is flagged ATTENTION: the plan would refuse it if it has events.
+
+Calls: bearer token, 450 ms pause after each, retries with backoff (5, 10, 20 ... s, at most 90) on
+408, 429, 5xx and network failures, at most 6 attempts; a 429 or 503 with Retry-After (seconds or
+a date) waits that long instead, at most 5 minutes. On 401 or an expired- or invalid-token reply it
+asks for a new token and carries on. A 403 stops the run without asking for a token: with a valid
+token it is usually an account's trophy privacy setting. A token with a non-ASCII character is
+refused at once. The timestamps file is saved after each game and the definitions file
+after each set (written beside, then moved). A rerun with the same arguments into the same `--out`
+continues and skips finished games; a different input or account name is refused. `--out` must be
+new, or this tool's unfinished run (`psn-fetch-state.json`); a finished run is refused.
+
+Out folder: `psn-trophy-timestamps.json` (`-PsnTimestamps`), `psn-game-list.json` (`-PsnManifest`,
+and next month's `--previous-list`), `psn-trophy-definitions.json` (`-PsnDefinitions`, and next
+month's `--definitions`), `psn-to-confirm.json` (possibly empty), `psn-fetch-state.json`. To include
+a pair from the to-confirm file after checking it: copy its entry (without `reason` and
+`gameOnAccountB`) into the game list and run psn-fetch again into a new folder with that list as
+`--previous-list`.
+
+Prints counts only: games on the previous list, added, to confirm, listed now, icons added (added games only), added games and listed games with no icon, games
+fetched and skipped (resumed), trophies earned per account side, definition sets (given, added, refreshed for new
+trophies, kept because fewer came back, still short, trophies fetched), calls, retries,
+new tokens, and the check build's games, events and games with events and no icon. Exit 0 done; 1
+stopped (missing games, or a failed call: progress saved, run again); 2 usage.
+
 ### Monthly PSN refresh (Angie)
 
 From the repository folder. `<A>` and `<B>` are the two account field names in the fetch output
 (account a's set first in every key); `<local>`/`<other>`/`<A>` are the prefixes of the current
 `psn-import` command.
 
-1. Fetch as today (needs her token): `.temp\psn\Fetch-Shared-PSN-Trophies.ps1`, giving
-   `PSN-Shared-Trophy-Timestamps.json`. A game the script does not fetch (such as the 68th game,
-   merged from older responses) needs both its own timestamp file in the same format, passed as a
-   second `--timestamps`, and its own entry in the manifest. Without the timestamp file it is counted
-   as "manifest games with no timestamps"; without the manifest entry, as "timestamp games not in the
-   manifest". Either way it is not built, and `psn-compare` lists it as a difference.
+1. Fetch with `psn-fetch` (above; `tools\ArchiveRefresh\Run-Refresh.ps1 -Step PsnFetch` runs it). Its
+   game list is made fresh each run, so a game shared since the last list is picked up. With psn-build
+   directly, a game in only one of the timestamps and the manifest is counted as "manifest games with
+   no timestamps" or "timestamp games not in the manifest", is not built, and `psn-compare` lists it as
+   a difference.
 2. Build a new file, never over the current one:
    `dotnet run --project tools\MemoryImport\MemoryImport.csproj -- psn-build --timestamps <timestamps.json>
    --manifest <manifest.json> --account-a <A> --account-b <B> --icons-from <current-file.json> --out <new-file.json>`
