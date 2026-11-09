@@ -1,10 +1,11 @@
 using System.Globalization;
 using System.Text;
+using System.Text.RegularExpressions;
 
 namespace Chatcheology.Tools.MemoryImport
 {
     /// <summary>One row of Angie's decisions file.</summary>
-    /// <param name="Row">The data row number (1 is the first row after the header).</param>
+    /// <param name="Row">The spreadsheet line the row starts on (the header is line 1).</param>
     /// <param name="Title">The game title as written (for the out-folder files only).</param>
     /// <param name="Status"><see cref="PsnDecisionsFile.Together"/>, <see cref="PsnDecisionsFile.Uncertain"/> or <see cref="PsnDecisionsFile.Excluded"/>.</param>
     /// <param name="SetsA">Account a's trophy set ids in the row.</param>
@@ -25,7 +26,7 @@ namespace Chatcheology.Tools.MemoryImport
     /// follow RFC 4180 (commas, quotes doubled, line breaks). Blank lines are skipped.
     /// </summary>
     /// <remarks>Messages never quote a value from the file or an account name: row numbers and column roles only.</remarks>
-    public static class PsnDecisionsFile
+    public static partial class PsnDecisionsFile
     {
         /// <summary>Played together: the game is added.</summary>
         public const string Together = "together";
@@ -75,7 +76,7 @@ namespace Chatcheology.Tools.MemoryImport
                 throw new FormatException("The decisions file has no header row.");
             }
 
-            var header = records[0].Select(name => name.Trim()).ToList();
+            var header = records[0].Fields.Select(name => name.Trim()).ToList();
             var title = Column(header, TitleColumn, "the game_title column");
             var status = Column(header, StatusColumn, "the status column");
             var setsA = Column(header, SetColumn(accountA), "account a's trophy set id column (<account a in lower case>_trophy_set_ids)");
@@ -84,24 +85,23 @@ namespace Chatcheology.Tools.MemoryImport
 
             for (var index = 1; index < records.Count; index++)
             {
-                var record = records[index];
+                var (record, line) = records[index];
 
                 if (record.All(string.IsNullOrWhiteSpace))
                 {
                     continue;
                 }
 
-                var row = decisions.Count + 1;
+                var where = $"Decisions file line {line.ToString(CultureInfo.InvariantCulture)}";
                 string Cell(int column) => column < record.Count ? record[column] : string.Empty;
                 var rowStatus = Cell(status).Trim().ToLowerInvariant();
 
                 if (rowStatus is not (Together or Uncertain or Excluded))
                 {
-                    throw new FormatException(
-                        $"Decisions row {row.ToString(CultureInfo.InvariantCulture)}: the status is not together, uncertain or excluded.");
+                    throw new FormatException($"{where}: the status is not together, uncertain or excluded.");
                 }
 
-                decisions.Add(new PsnDecision(row, Cell(title).Trim(), rowStatus, Ids(Cell(setsA)), Ids(Cell(setsB))));
+                decisions.Add(new PsnDecision(line, Cell(title).Trim(), rowStatus, Ids(Cell(setsA), where, "a"), Ids(Cell(setsB), where, "b")));
             }
 
             return decisions;
@@ -126,8 +126,22 @@ namespace Chatcheology.Tools.MemoryImport
                 ? "\"" + value.Replace("\"", "\"\"", StringComparison.Ordinal) + "\""
                 : value;
 
-        private static HashSet<string> Ids(string cell) =>
-            cell.Split(';').Select(id => id.Trim()).Where(id => id.Length > 0).ToHashSet(StringComparer.Ordinal);
+        /// <summary>The ids in a cell: split on ';', trimmed, upper case; each must be NPWRnnnnn_nn.</summary>
+        private static HashSet<string> Ids(string cell, string where, string side)
+        {
+            var ids = cell.Split(';').Select(id => id.Trim().ToUpperInvariant()).Where(id => id.Length > 0).ToHashSet(StringComparer.Ordinal);
+
+            if (ids.Any(id => !SetIdPattern().IsMatch(id)))
+            {
+                throw new FormatException(
+                    $"{where}: account {side}'s trophy set ids are not all NPWRnnnnn_nn (separate several with ';'). Nothing has been fetched.");
+            }
+
+            return ids;
+        }
+
+        [GeneratedRegex("^NPWR[0-9]{5}_[0-9]{2}$")]
+        private static partial Regex SetIdPattern();
 
         private static int Column(List<string> header, string name, string what)
         {
@@ -144,10 +158,12 @@ namespace Chatcheology.Tools.MemoryImport
         }
 
         /// <summary>RFC 4180 records: comma separated, double-quoted fields with "" for a quote, CRLF or LF.</summary>
-        private static List<List<string>> ReadRecords(string text)
+        private static List<(List<string> Fields, int Line)> ReadRecords(string text)
         {
-            var records = new List<List<string>>();
+            var records = new List<(List<string> Fields, int Line)>();
             var record = new List<string>();
+            var line = 1;
+            var recordLine = 1;
             var field = new StringBuilder();
             var quoted = false;
             var fieldStarted = false;
@@ -174,6 +190,11 @@ namespace Chatcheology.Tools.MemoryImport
                     }
                     else
                     {
+                        if (ch == '\n' || (ch == '\r' && (i + 1 >= text.Length || text[i + 1] != '\n')))
+                        {
+                            line++;
+                        }
+
                         field.Append(ch);
                     }
 
@@ -189,7 +210,7 @@ namespace Chatcheology.Tools.MemoryImport
 
                     case '"':
                         throw new FormatException(
-                            $"Decisions file record {records.Count.ToString(CultureInfo.InvariantCulture)}: a quote inside an unquoted field.");
+                            $"Decisions file line {line.ToString(CultureInfo.InvariantCulture)}: a quote inside an unquoted field.");
 
                     case ',':
                         record.Add(field.ToString());
@@ -203,7 +224,9 @@ namespace Chatcheology.Tools.MemoryImport
 
                     case '\r' or '\n':
                         record.Add(field.ToString());
-                        records.Add(record);
+                        records.Add((record, recordLine));
+                        line++;
+                        recordLine = line;
                         record = [];
                         field.Clear();
                         fieldStarted = false;
@@ -214,7 +237,7 @@ namespace Chatcheology.Tools.MemoryImport
                         if (afterQuote)
                         {
                             throw new FormatException(
-                                $"Decisions file record {records.Count.ToString(CultureInfo.InvariantCulture)}: text after a closing quote.");
+                                $"Decisions file line {line.ToString(CultureInfo.InvariantCulture)}: text after a closing quote.");
                         }
 
                         field.Append(ch);
@@ -231,7 +254,7 @@ namespace Chatcheology.Tools.MemoryImport
             if (field.Length > 0 || fieldStarted || record.Count > 0)
             {
                 record.Add(field.ToString());
-                records.Add(record);
+                records.Add((record, recordLine));
             }
 
             return records;

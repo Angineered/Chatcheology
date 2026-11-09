@@ -218,12 +218,15 @@ numeric id (`partnerAccountId` in the Postman collection) and the access token (
 and 2) with hidden input; neither is ever in an argument, a file or the output. `--local` is the
 account that is `me` in the API; the other account is called by its id. The inputs are only read.
 
-The decisions file is Angie's one hand-kept CSV of which shared titles were played together
-(UTF-8, a byte order mark is fine): a header row with `game_title`, `status` (together, uncertain or
-excluded), `<A in lower case>_trophy_set_ids` and `<B in lower case>_trophy_set_ids` (column names
-match in any case; a missing one is refused; other columns are ignored), then one row per game. A
-set-id cell may hold several ids separated by `;` (for example the PS3 and PS4 versions). A row
-covers a pair when account a's set is in its a cell and account b's set is in its b cell.
+The decisions file is Angie's one hand-kept CSV of which shared titles were played together. It
+must be comma-separated UTF-8 (in Excel: Save As "CSV UTF-8 (Comma delimited)"; a byte order mark is
+fine). A header row with `game_title`, `status` (together, uncertain or excluded),
+`<A in lower case>_trophy_set_ids` and `<B in lower case>_trophy_set_ids` (column names match in any
+case; a missing one is refused; other columns are ignored), then one row per game. A set-id cell may
+hold several ids separated by `;` (for example the PS3 and PS4 versions); ids are trimmed and
+upper-cased, and an id that is not `NPWRnnnnn_nn` refuses the file. A row covers a pair when account
+a's set is in its a cell and account b's set is in its b cell. Row numbers in messages and out-folder
+files are spreadsheet lines (the header is line 1).
 
 1. Game list, fresh every run, from both accounts' trophy titles (`users/{me|id}/trophyTitles`,
    paged by `totalItemCount`; fields used: `npCommunicationId`, `npServiceName`, `trophyTitleName`,
@@ -235,12 +238,24 @@ covers a pair when account a's set is in its a cell and account b's set is in it
      compatibility form, one space for any run of white space, and upper case; no fuzzy matching.
      Different-set pairs are only formed between sets that are on one account each and in no listed
      game (a game whose versions both accounts own is covered by its same-set pairs);
-   - a candidate covered by a `together` row is added (`sameTrophySet` from its two sets); by an
-     `excluded` or `uncertain` row it is not added and counted; with no row it is not added and goes
-     to `psn-to-review.csv`: the decisions file's columns (status empty) plus each account's
-     `<name>_last_updated` date from the title list, newest first;
-   - a `together` row that covers no listed game and no candidate is counted and written to
-     `psn-together-not-returned.csv`; the run carries on;
+   - a candidate covered by a `together` row is added (`sameTrophySet` from its two sets), unless a
+     set would then be in two games: a trophy set is in at most one game. A together pair whose set
+     is already in a listed game, or that shares a set with another together pair, is not added
+     (none of the sharing pairs is) and goes to `psn-to-review.csv` with a reason (`set already in
+     another game`, `row pairs several sets`, `set in more than one together pair`), counted with
+     ATTENTION. A same-set pair whose set a listed pair uses is still a candidate; it just cannot be
+     added while that set is taken;
+   - by an `excluded` or `uncertain` row a candidate is not added and counted; with no row it is not
+     added and goes to `psn-to-review.csv` (reason `no decisions row`);
+   - `psn-to-review.csv` has the decisions file's columns (status empty), a `reason` column and each
+     account's `<name>_last_updated` date from the title list, newest first;
+   - each pair of a `together` row (every a id with every b id) that PlayStation returns on both
+     accounts but that is neither a listed game nor a candidate goes to `psn-to-review.csv` with
+     reason `together row pair not offered` and is never added (not reported when both of its sets
+     are already in games, as the cross pairs of a game whose two versions are both added);
+   - `psn-together-not-returned.csv` (`decisions_line`, the decisions columns, `problem`) lists
+     together rows with no pair returned on both accounts, and each id of a together row that is not
+     returned for its account; counted, the run carries on;
    - the run stops before any trophy is fetched, with counts on screen and details in the out folder,
      when a listed game's set is no longer returned for an account (`psn-missing-games.json`), when
      rows with different statuses cover one candidate, or when an `excluded` or `uncertain` row
@@ -277,9 +292,10 @@ new, or this tool's unfinished run (`psn-fetch-state.json`); a finished run is r
 Out folder: `psn-trophy-timestamps.json` (`-PsnTimestamps`), `psn-game-list.json` (`-PsnManifest`,
 and next month's `--previous-list`), `psn-trophy-definitions.json` (`-PsnDefinitions`, and next
 month's `--definitions`), `psn-to-review.csv` and `psn-together-not-returned.csv` (possibly with
-the header only), `psn-fetch-state.json`. To decide a candidate: copy its row from
-`psn-to-review.csv` into the decisions file and fill in the status (the date columns may stay or
-go); the next run picks it up. The decisions file is never written by the tool.
+the header only), `psn-fetch-state.json`. To decide a candidate: fill in its status in
+`psn-to-review.csv` first (together, uncertain or excluded; a row without one refuses the decisions
+file), then copy the row into the decisions file with its cells in that file's column order (the
+reason and date columns may stay or go); the next run picks it up. The decisions file is never written by the tool.
 
 Prints counts only: games on the previous list, added from decisions, not added (excluded,
 uncertain, awaiting review, with an ATTENTION line), together rows not returned, listed now, icons added (added games only), added games and listed games with no icon, games

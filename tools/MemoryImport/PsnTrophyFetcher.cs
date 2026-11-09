@@ -51,8 +51,17 @@ namespace Chatcheology.Tools.MemoryImport
         /// <summary>Candidates not added: no decisions row; written to the to-review file.</summary>
         public int AwaitingReview { get; internal set; }
 
-        /// <summary>Together rows none of whose pairs PlayStation returns (listed in the out folder; not a stop).</summary>
+        /// <summary>Together rows with no pair PlayStation returns on both accounts (listed in the out folder; not a stop).</summary>
         public int TogetherNotReturned { get; internal set; }
+
+        /// <summary>Ids in together rows PlayStation does not return for their account (listed; not a stop).</summary>
+        public int TogetherIdsNotReturned { get; internal set; }
+
+        /// <summary>Together pairs not added because a set would be in two games (to review).</summary>
+        public int TogetherBlocked { get; internal set; }
+
+        /// <summary>Together-row pairs returned on both accounts but offered as no candidate (to review).</summary>
+        public int NotOffered { get; internal set; }
 
         /// <summary>Candidates matched by decisions rows with different statuses (a stop).</summary>
         public int DecisionConflicts { get; internal set; }
@@ -192,6 +201,31 @@ namespace Chatcheology.Tools.MemoryImport
 
         /// <summary>Marks the folder as this tool's run and holds its phase.</summary>
         public const string StateFile = "psn-fetch-state.json";
+
+        /// <summary>To-review reason: no decisions row covers the candidate.</summary>
+        public const string ReasonNoRow = "no decisions row";
+
+        /// <summary>To-review reason: a together pair whose set is already in a listed game.</summary>
+        public const string ReasonSetInGame = "set already in another game";
+
+        /// <summary>To-review reason: one together row gives several pairs that share a set.</summary>
+        public const string ReasonRowPairsSeveral = "row pairs several sets";
+
+        /// <summary>To-review reason: together pairs from different rows share a set.</summary>
+        public const string ReasonSetInSeveralPairs = "set in more than one together pair";
+
+        /// <summary>To-review reason: a together row's pair PlayStation returns that was not a candidate.</summary>
+        public const string ReasonNotOffered = "together row pair not offered";
+
+        /// <summary>Together-not-returned problem: no pair of the row is returned on both accounts.</summary>
+        public const string ProblemNoPair = "no pair returned on both accounts";
+
+        /// <summary>Together-not-returned problem: one id is not returned for its account.</summary>
+        public const string ProblemIdNotReturned = "id not returned for this account";
+
+        private const string ReasonColumn = "reason";
+        private const string LineColumn = "decisions_line";
+        private const string ProblemColumn = "problem";
 
         /// <summary>Conflict kind: decisions rows with different statuses match one candidate.</summary>
         public const string ConflictRows = "rows-with-different-statuses";
@@ -483,6 +517,12 @@ namespace Chatcheology.Tools.MemoryImport
                     return PhaseListing;
 
                 case PhaseListed:
+                    if (digests.Keys.Any(name => state[name] is null))
+                    {
+                        throw new InvalidOperationException(
+                            "The out folder's unfinished run was made by an earlier version of psn-fetch. Use a new out folder. Nothing has been written.");
+                    }
+
                     foreach (var (name, value) in digests)
                     {
                         if ((string?)state[name] != value)
@@ -498,6 +538,9 @@ namespace Chatcheology.Tools.MemoryImport
                     counts.NotAddedUncertain = (int?)state["notAddedUncertain"] ?? 0;
                     counts.AwaitingReview = (int?)state["awaitingReview"] ?? 0;
                     counts.TogetherNotReturned = (int?)state["togetherNotReturned"] ?? 0;
+                    counts.TogetherIdsNotReturned = (int?)state["togetherIdsNotReturned"] ?? 0;
+                    counts.TogetherBlocked = (int?)state["togetherBlocked"] ?? 0;
+                    counts.NotOffered = (int?)state["notOffered"] ?? 0;
                     counts.IconsAdded = (int?)state["iconsAdded"] ?? 0;
                     counts.AddedWithoutIcon = (int?)state["addedWithoutIcon"] ?? 0;
                     return PhaseListed;
@@ -526,6 +569,9 @@ namespace Chatcheology.Tools.MemoryImport
             state["notAddedUncertain"] = counts.NotAddedUncertain;
             state["awaitingReview"] = counts.AwaitingReview;
             state["togetherNotReturned"] = counts.TogetherNotReturned;
+            state["togetherIdsNotReturned"] = counts.TogetherIdsNotReturned;
+            state["togetherBlocked"] = counts.TogetherBlocked;
+            state["notOffered"] = counts.NotOffered;
             state["iconsAdded"] = counts.IconsAdded;
             state["addedWithoutIcon"] = counts.AddedWithoutIcon;
             WriteJson(path, state);
@@ -617,7 +663,8 @@ namespace Chatcheology.Tools.MemoryImport
             }
 
             var added = new List<JsonObject>();
-            var review = new List<Candidate>();
+            var review = new List<(Candidate Candidate, string Reason)>();
+            var together = new List<(Candidate Candidate, List<PsnDecision> Rows)>();
 
             foreach (var candidate in candidates)
             {
@@ -627,7 +674,7 @@ namespace Chatcheology.Tools.MemoryImport
                 switch (statuses.Count)
                 {
                     case 0:
-                        review.Add(candidate);
+                        review.Add((candidate, ReasonNoRow));
                         counts.AwaitingReview++;
                         break;
 
@@ -640,7 +687,7 @@ namespace Chatcheology.Tools.MemoryImport
                         switch (statuses[0])
                         {
                             case PsnDecisionsFile.Together:
-                                added.Add(Entry(candidate.A, candidate.B, accountA, accountB));
+                                together.Add((candidate, rows));
                                 break;
                             case PsnDecisionsFile.Excluded:
                                 counts.NotAddedExcluded++;
@@ -654,14 +701,98 @@ namespace Chatcheology.Tools.MemoryImport
                 }
             }
 
-            // Together rows that became no game (listed or candidate): reported, not a stop.
-            var pairs = previous.Select(game => (game.A.Id, game.B.Id))
-                .Concat(candidates.Select(candidate => (candidate.A.SetId, candidate.B.SetId)))
-                .ToList();
-            var notReturned = decisions
-                .Where(d => d.Status == PsnDecisionsFile.Together && !pairs.Any(pair => d.Matches(pair.Item1, pair.Item2)))
-                .ToList();
-            counts.TogetherNotReturned = notReturned.Count;
+            // One trophy set, one game: a together pair whose set is already in a listed game, or that
+            // shares a set with another together pair, is not added (none of the sharing pairs is).
+            static bool SharesSet(Candidate x, Candidate y) =>
+                x.A.SetId == y.A.SetId || x.A.SetId == y.B.SetId || x.B.SetId == y.A.SetId || x.B.SetId == y.B.SetId;
+
+            foreach (var (candidate, rows) in together)
+            {
+                string? reason = null;
+
+                if (listedSets.Contains(candidate.A.SetId) || listedSets.Contains(candidate.B.SetId))
+                {
+                    reason = ReasonSetInGame;
+                }
+                else
+                {
+                    var sharing = together.Where(other => !ReferenceEquals(other.Candidate, candidate) && SharesSet(other.Candidate, candidate)).ToList();
+
+                    if (sharing.Count > 0)
+                    {
+                        reason = sharing.Any(other => other.Rows.Any(row => rows.Any(own => ReferenceEquals(own, row))))
+                            ? ReasonRowPairsSeveral
+                            : ReasonSetInSeveralPairs;
+                    }
+                }
+
+                if (reason is null)
+                {
+                    added.Add(Entry(candidate.A, candidate.B, accountA, accountB));
+                }
+                else
+                {
+                    review.Add((candidate, reason));
+                    counts.TogetherBlocked++;
+                }
+            }
+
+            // Together rows: pairs PlayStation returns on both accounts that were offered as neither a
+            // listed game nor a candidate (to review, never added, unless both sets are already in a
+            // game, as the cross pairs of a game whose two versions are both added); ids not returned
+            // for their account; rows with no pair returned at all. None of these stops the run.
+            var offered = keys.Concat(candidates.Select(candidate => candidate.Key)).ToHashSet(StringComparer.Ordinal);
+            var inGames = listedSets
+                .Concat(added.SelectMany(entry => new[] { ((string)entry["key"]!).Split('|')[0], ((string)entry["key"]!).Split('|')[1] }))
+                .ToHashSet(StringComparer.Ordinal);
+            var notOffered = new HashSet<string>(StringComparer.Ordinal);
+            var notReturned = new List<IReadOnlyList<string>>();
+            var setA = PsnDecisionsFile.SetColumn(accountA);
+            var setB = PsnDecisionsFile.SetColumn(accountB);
+
+            foreach (var row in decisions.Where(d => d.Status == PsnDecisionsFile.Together))
+            {
+                var line = row.Row.ToString(CultureInfo.InvariantCulture);
+                var anyReturned = false;
+
+                foreach (var sa in row.SetsA.Order(StringComparer.Ordinal))
+                {
+                    foreach (var sb in row.SetsB.Order(StringComparer.Ordinal))
+                    {
+                        if (!titlesA.ContainsKey(sa) || !titlesB.ContainsKey(sb))
+                        {
+                            continue;
+                        }
+
+                        anyReturned = true;
+                        var key = $"{sa}|{sb}";
+
+                        if (!offered.Contains(key) && !(inGames.Contains(sa) && inGames.Contains(sb)) && notOffered.Add(key))
+                        {
+                            review.Add((new Candidate(titlesA[sa], titlesB[sb]), ReasonNotOffered));
+                            counts.NotOffered++;
+                        }
+                    }
+                }
+
+                if (!anyReturned)
+                {
+                    counts.TogetherNotReturned++;
+                    notReturned.Add([line, row.Title, row.Status, Joined(row.SetsA), Joined(row.SetsB), ProblemNoPair]);
+                }
+
+                foreach (var sa in row.SetsA.Where(id => !titlesA.ContainsKey(id)).Order(StringComparer.Ordinal))
+                {
+                    counts.TogetherIdsNotReturned++;
+                    notReturned.Add([line, row.Title, row.Status, sa, "", ProblemIdNotReturned]);
+                }
+
+                foreach (var sb in row.SetsB.Where(id => !titlesB.ContainsKey(id)).Order(StringComparer.Ordinal))
+                {
+                    counts.TogetherIdsNotReturned++;
+                    notReturned.Add([line, row.Title, row.Status, "", sb, ProblemIdNotReturned]);
+                }
+            }
 
             if (missing.Count > 0)
             {
@@ -720,23 +851,24 @@ namespace Chatcheology.Tools.MemoryImport
             RemoveCaseInsensitive(root, "games");
             root["games"] = games;
 
-            var setA = PsnDecisionsFile.SetColumn(accountA);
-            var setB = PsnDecisionsFile.SetColumn(accountB);
             WriteBytes(Path.Combine(outFolder, ToReviewFile), PsnDecisionsFile.Write(
-                [PsnDecisionsFile.TitleColumn, PsnDecisionsFile.StatusColumn, setA, setB,
+                [PsnDecisionsFile.TitleColumn, PsnDecisionsFile.StatusColumn, setA, setB, ReasonColumn,
                  PsnDecisionsFile.LastUpdatedColumn(accountA), PsnDecisionsFile.LastUpdatedColumn(accountB)],
                 review
-                    .OrderByDescending(c => new[] { c.A.LastUpdated ?? "", c.B.LastUpdated ?? "" }.Max(StringComparer.Ordinal), StringComparer.Ordinal)
-                    .ThenBy(c => c.A.Name, StringComparer.Ordinal)
-                    .ThenBy(c => c.Key, StringComparer.Ordinal)
-                    .Select(c => (IReadOnlyList<string>)[c.A.Name, "", c.A.SetId, c.B.SetId, c.A.LastUpdated ?? "", c.B.LastUpdated ?? ""])));
+                    .OrderByDescending(r => new[] { r.Candidate.A.LastUpdated ?? "", r.Candidate.B.LastUpdated ?? "" }.Max(StringComparer.Ordinal), StringComparer.Ordinal)
+                    .ThenBy(r => r.Candidate.A.Name, StringComparer.Ordinal)
+                    .ThenBy(r => r.Candidate.Key, StringComparer.Ordinal)
+                    .Select(r => (IReadOnlyList<string>)
+                        [r.Candidate.A.Name, "", r.Candidate.A.SetId, r.Candidate.B.SetId, r.Reason,
+                         r.Candidate.A.LastUpdated ?? "", r.Candidate.B.LastUpdated ?? ""])));
             WriteBytes(Path.Combine(outFolder, TogetherNotReturnedFile), PsnDecisionsFile.Write(
-                [PsnDecisionsFile.TitleColumn, PsnDecisionsFile.StatusColumn, setA, setB],
-                notReturned.Select(d => (IReadOnlyList<string>)
-                    [d.Title, d.Status, string.Join("; ", d.SetsA.Order(StringComparer.Ordinal)), string.Join("; ", d.SetsB.Order(StringComparer.Ordinal))])));
+                [LineColumn, PsnDecisionsFile.TitleColumn, PsnDecisionsFile.StatusColumn, setA, setB, ProblemColumn],
+                notReturned));
             WriteJson(Path.Combine(outFolder, GameListFile), root);
             return true;
         }
+
+        private static string Joined(IReadOnlySet<string> ids) => string.Join("; ", ids.Order(StringComparer.Ordinal));
 
         private static JsonObject Conflict(string kind, string key, string title, List<PsnDecision> rows)
         {
@@ -754,7 +886,7 @@ namespace Chatcheology.Tools.MemoryImport
                 ["kind"] = kind,
                 ["key"] = key,
                 ["game"] = title,
-                ["decisionRows"] = rowNumbers,
+                ["decisionLines"] = rowNumbers,
                 ["statuses"] = statuses,
             };
         }

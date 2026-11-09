@@ -15,13 +15,13 @@ namespace Chatcheology.Tools.MemoryImport.Tests
         private const string Token = "zzTokenOneSecretValue123";
         private const string NewToken = "zzTokenTwoSecretValue456";
 
-        private const string Quest = "ZZSET00001_00";
-        private const string RacerA = "ZZSET00002_00";
-        private const string RacerB = "ZZSET00003_00";
-        private const string Border = "ZZSET00004_00";
-        private const string TwinA = "ZZSET00005_00";
-        private const string TwinB = "ZZSET00006_00";
-        private const string Solo = "ZZSET00007_00";
+        private const string Quest = "NPWR90001_00";
+        private const string RacerA = "NPWR90002_00";
+        private const string RacerB = "NPWR90003_00";
+        private const string Border = "NPWR90004_00";
+        private const string TwinA = "NPWR90005_00";
+        private const string TwinB = "NPWR90006_00";
+        private const string Solo = "NPWR90007_00";
 
         private const string QuestListIcon = "https://image.api.playstation.com/zz/quest-list.png";
         private const string QuestTitleIcon = "https://image.api.playstation.com/zz/quest-title.png";
@@ -237,7 +237,7 @@ namespace Chatcheology.Tools.MemoryImport.Tests
             {
                 AssertNoSecret(text);
 
-                foreach (var other in new[] { "ZZSET", "Invented", AccountA, AccountB, "https", "zzlist", "zzdefinitions", _root })
+                foreach (var other in new[] { "NPWR9", "Invented", AccountA, AccountB, "https", "zzlist", "zzdefinitions", _root })
                 {
                     Assert.DoesNotContain(other, text, StringComparison.OrdinalIgnoreCase);
                 }
@@ -314,8 +314,8 @@ namespace Chatcheology.Tools.MemoryImport.Tests
 
             // To review: the same title with different sets and no decisions row, never added.
             var review = ReadReview();
-            Assert.Equal(["game_title", "status", "alpha_trophy_set_ids", "beta_trophy_set_ids", "alpha_last_updated", "beta_last_updated"], review[0]);
-            Assert.Equal(["Invented Twin\u2122", "", TwinA, TwinB, "", ""], Assert.Single(review.Skip(1)));
+            Assert.Equal(["game_title", "status", "alpha_trophy_set_ids", "beta_trophy_set_ids", "reason", "alpha_last_updated", "beta_last_updated"], review[0]);
+            Assert.Equal(["Invented Twin\u2122", "", TwinA, TwinB, PsnTrophyFetcher.ReasonNoRow, "", ""], Assert.Single(review.Skip(1)));
             Assert.Equal(decisionsHash, Hash(Decisions));
 
             // Timestamps: the old script's shape, every listed game.
@@ -497,12 +497,12 @@ namespace Chatcheology.Tools.MemoryImport.Tests
         [Fact]
         public void Decisions_ExcludedAndUncertain_AreNotAdded_AndCountedApart()
         {
-            Server.Titles["me"].Add(new FakeTitle("ZZSET00008_00", "Invented Maybe"));
-            Server.Titles[Partner].Add(new FakeTitle("ZZSET00008_00", "Invented Maybe"));
-            Server.Sets["ZZSET00008_00"] = [new(1)];
+            Server.Titles["me"].Add(new FakeTitle("NPWR90008_00", "Invented Maybe"));
+            Server.Titles[Partner].Add(new FakeTitle("NPWR90008_00", "Invented Maybe"));
+            Server.Sets["NPWR90008_00"] = [new(1)];
             Decisions = WriteDecisions(
                 Decision("Invented Border", PsnDecisionsFile.Excluded, Border, Border),
-                Decision("Invented Maybe", PsnDecisionsFile.Uncertain, "ZZSET00008_00", "ZZSET00008_00"));
+                Decision("Invented Maybe", PsnDecisionsFile.Uncertain, "NPWR90008_00", "NPWR90008_00"));
 
             var (result, _) = Fetch(new FakePrompt(Partner, Token));
 
@@ -512,7 +512,7 @@ namespace Chatcheology.Tools.MemoryImport.Tests
             Assert.Equal(1, result.Counts.NotAddedUncertain);
             Assert.Equal(1, result.Counts.AwaitingReview);
             Assert.Equal(2, result.Counts.ListedNow);
-            Assert.DoesNotContain(ReadReview(), row => row[2] == Border || row[2] == "ZZSET00008_00");
+            Assert.DoesNotContain(ReadReview(), row => row[2] == Border || row[2] == "NPWR90008_00");
 
             // Nothing is fetched for games that were not added.
             Assert.Empty(RequestsTo(Border));
@@ -521,10 +521,10 @@ namespace Chatcheology.Tools.MemoryImport.Tests
         [Fact]
         public void Decisions_NoRow_GoesToReview_NewestFirst_WithTheTitleListDates()
         {
-            Server.Titles["me"].Add(new FakeTitle("ZZSET00009_00", "Invented Older", null, "trophy", "2020-01-02T03:04:05Z"));
-            Server.Titles[Partner].Add(new FakeTitle("ZZSET00009_00", "Invented Older", null, "trophy", "2021-06-07T22:00:00Z"));
-            Server.Titles["me"].Add(new FakeTitle("ZZSET00010_00", "Invented Newer", null, "trophy", "2026-10-30T23:30:00+00:00"));
-            Server.Titles[Partner].Add(new FakeTitle("ZZSET00010_00", "Invented Newer"));
+            Server.Titles["me"].Add(new FakeTitle("NPWR90009_00", "Invented Older", null, "trophy", "2020-01-02T03:04:05Z"));
+            Server.Titles[Partner].Add(new FakeTitle("NPWR90009_00", "Invented Older", null, "trophy", "2021-06-07T22:00:00Z"));
+            Server.Titles["me"].Add(new FakeTitle("NPWR90010_00", "Invented Newer", null, "trophy", "2026-10-30T23:30:00+00:00"));
+            Server.Titles[Partner].Add(new FakeTitle("NPWR90010_00", "Invented Newer"));
             Decisions = WriteDecisions();
 
             var (result, _) = Fetch(new FakePrompt(Partner, Token));
@@ -533,8 +533,8 @@ namespace Chatcheology.Tools.MemoryImport.Tests
             Assert.Equal(0, result.Counts.Added);
             Assert.Equal(4, result.Counts.AwaitingReview);
             var rows = ReadReview().Skip(1).ToList();
-            Assert.Equal(["Invented Newer", "", "ZZSET00010_00", "ZZSET00010_00", "2026-10-30", ""], rows[0]);
-            Assert.Equal(["Invented Older", "", "ZZSET00009_00", "ZZSET00009_00", "2020-01-02", "2021-06-07"], rows[1]);
+            Assert.Equal(["Invented Newer", "", "NPWR90010_00", "NPWR90010_00", PsnTrophyFetcher.ReasonNoRow, "2026-10-30", ""], rows[0]);
+            Assert.Equal(["Invented Older", "", "NPWR90009_00", "NPWR90009_00", PsnTrophyFetcher.ReasonNoRow, "2020-01-02", "2021-06-07"], rows[1]);
             Assert.Equal(new[] { Border, TwinA }, rows.Skip(2).Select(row => row[2]).Order(StringComparer.Ordinal).ToArray());
             Assert.All(rows, row => Assert.Equal("", row[1]));
         }
@@ -545,7 +545,7 @@ namespace Chatcheology.Tools.MemoryImport.Tests
             // Twin: a different-set pair marked together in a row whose cells list two versions each.
             Decisions = WriteDecisions(
                 Decision("Invented Border", PsnDecisionsFile.Together, Border, Border),
-                Decision("Invented Twin, both versions", PsnDecisionsFile.Together, $" ZZSET00099_00 ; {TwinA}", $"{TwinB};ZZSET00098_00 "));
+                Decision("Invented Twin, both versions", PsnDecisionsFile.Together, $" NPWR90099_00 ; {TwinA}", $"{TwinB};NPWR90098_00 "));
 
             var (result, _) = Fetch(new FakePrompt(Partner, Token));
 
@@ -553,6 +553,8 @@ namespace Chatcheology.Tools.MemoryImport.Tests
             Assert.Equal(2, result.Counts.Added);
             Assert.Equal(0, result.Counts.AwaitingReview);
             Assert.Equal(0, result.Counts.TogetherNotReturned);
+            Assert.Equal(2, result.Counts.TogetherIdsNotReturned);
+            Assert.Equal(0, result.Counts.TogetherBlocked);
             var twin = ReadOut(PsnTrophyFetcher.GameListFile)["games"]!.AsArray().Single(g => (string)g!["key"]! == $"{TwinA}|{TwinB}")!;
             Assert.False((bool)twin["sameTrophySet"]!);
             Assert.Equal("trophy2", (string)twin[AccountA]!["npServiceName"]!);
@@ -565,15 +567,23 @@ namespace Chatcheology.Tools.MemoryImport.Tests
         {
             Decisions = WriteDecisions(
                 Decision("Invented Border", PsnDecisionsFile.Together, Border, Border),
-                Decision("Invented Gone", PsnDecisionsFile.Together, "ZZSET00097_00", "ZZSET00097_00"));
+                Decision("Invented Gone", PsnDecisionsFile.Together, "NPWR90097_00", "NPWR90097_00"));
 
             var (result, _) = Fetch(new FakePrompt(Partner, Token));
 
             Assert.True(result.Completed);
             Assert.Equal(1, result.Counts.Added);
             Assert.Equal(1, result.Counts.TogetherNotReturned);
+            Assert.Equal(2, result.Counts.TogetherIdsNotReturned);
             var rows = ReadReview(PsnTrophyFetcher.TogetherNotReturnedFile);
-            Assert.Equal(["Invented Gone", "together", "ZZSET00097_00", "ZZSET00097_00"], Assert.Single(rows.Skip(1)));
+            Assert.Equal(["decisions_line", "game_title", "status", "alpha_trophy_set_ids", "beta_trophy_set_ids", "problem"], rows[0]);
+            Assert.Equal(
+                [
+                    ["3", "Invented Gone", "together", "NPWR90097_00", "NPWR90097_00", PsnTrophyFetcher.ProblemNoPair],
+                    ["3", "Invented Gone", "together", "NPWR90097_00", "", PsnTrophyFetcher.ProblemIdNotReturned],
+                    ["3", "Invented Gone", "together", "", "NPWR90097_00", PsnTrophyFetcher.ProblemIdNotReturned],
+                ],
+                rows.Skip(1).ToList());
         }
 
         [Fact]
@@ -581,7 +591,7 @@ namespace Chatcheology.Tools.MemoryImport.Tests
         {
             Decisions = WriteDecisions(
                 Decision("Invented Border", PsnDecisionsFile.Together, Border, Border),
-                Decision("Invented Border again", PsnDecisionsFile.Excluded, $"{Border};ZZSET00096_00", Border));
+                Decision("Invented Border again", PsnDecisionsFile.Excluded, $"{Border};NPWR90096_00", Border));
 
             var (code, output, _) = RunCommand(new FakePrompt(Partner, Token), CommandArgs());
 
@@ -593,7 +603,7 @@ namespace Chatcheology.Tools.MemoryImport.Tests
             var conflict = Assert.Single(ReadOut(PsnTrophyFetcher.ConflictsFile)["conflicts"]!.AsArray())!;
             Assert.Equal(PsnTrophyFetcher.ConflictRows, (string)conflict["kind"]!);
             Assert.Equal($"{Border}|{Border}", (string)conflict["key"]!);
-            Assert.Equal([1, 2], conflict["decisionRows"]!.AsArray().Select(n => (int)n!).ToArray());
+            Assert.Equal([2, 3], conflict["decisionLines"]!.AsArray().Select(n => (int)n!).ToArray());
         }
 
         [Fact]
@@ -640,7 +650,7 @@ namespace Chatcheology.Tools.MemoryImport.Tests
         [InlineData("game_title,status,alpha_trophy_set_ids\r\n", "account b's trophy set id column")]
         [InlineData("game_title,alpha_trophy_set_ids,beta_trophy_set_ids\r\n", "the status column")]
         [InlineData("status,alpha_trophy_set_ids,beta_trophy_set_ids\r\n", "the game_title column")]
-        [InlineData("game_title,status,alpha_trophy_set_ids,beta_trophy_set_ids\r\nInvented,maybe,ZZSET00001_00,ZZSET00001_00\r\n", "row 1: the status")]
+        [InlineData("game_title,status,alpha_trophy_set_ids,beta_trophy_set_ids\r\nInvented,maybe,NPWR90001_00,NPWR90001_00\r\n", "line 2: the status")]
         public void Decisions_MissingColumnOrUnknownStatus_IsRefused_BeforeAnyCall(string text, string expected)
         {
             Decisions = WriteDecisionsText(text);
@@ -651,6 +661,191 @@ namespace Chatcheology.Tools.MemoryImport.Tests
             Assert.Contains(expected, error, StringComparison.Ordinal);
             Assert.Empty(Server.Requests);
             Assert.False(Directory.Exists(Out));
+        }
+
+        private List<string[]> ReviewRowsWith(string reason) => ReadReview().Skip(1).Where(row => row[4] == reason).ToList();
+
+        private void AddTitle(string set, string name, bool onA, bool onB)
+        {
+            if (onA)
+            {
+                Server.Titles["me"].Add(new FakeTitle(set, name));
+            }
+
+            if (onB)
+            {
+                Server.Titles[Partner].Add(new FakeTitle(set, name));
+            }
+
+            Server.Sets[set] = [new(1)];
+        }
+
+        [Fact]
+        public void OneSetOneGame_TogetherPairWithASetOfAListedGame_IsNotAdded()
+        {
+            // Racer is listed as RacerA|RacerB; account b also has RacerA, and a together row covers both pairs.
+            Server.Titles[Partner].Add(new FakeTitle(RacerA, "Invented Racer", null, "trophy2"));
+            Decisions = WriteDecisions(
+                Decision("Invented Border", PsnDecisionsFile.Together, Border, Border),
+                Decision("Invented Racer", PsnDecisionsFile.Together, RacerA, $"{RacerB};{RacerA}"));
+
+            var (code, output, error) = RunCommand(new FakePrompt(Partner, Token), CommandArgs());
+
+            Assert.True(code == MemoryImportCommand.Success, error);
+            Assert.Contains("a set would be in two games (to review): 1", output, StringComparison.Ordinal);
+            Assert.Contains("ATTENTION: 1 together pair(s) not added", output, StringComparison.Ordinal);
+            var games = ReadOut(PsnTrophyFetcher.GameListFile)["games"]!.AsArray().Select(g => (string)g!["key"]!).ToList();
+            Assert.Equal([$"{Quest}|{Quest}", $"{RacerA}|{RacerB}", $"{Border}|{Border}"], games);
+            var row = Assert.Single(ReviewRowsWith(PsnTrophyFetcher.ReasonSetInGame));
+            Assert.Equal([RacerA, RacerA], row[2..4]);
+        }
+
+        [Fact]
+        public void OneSetOneGame_OneRowGivingPairsThatShareSets_AddsNone()
+        {
+            // a: P;Q and b: R;S, all four returned, one title: four different-set pairs from one row.
+            AddTitle("NPWR90021_00", "Invented Pair", onA: true, onB: false);
+            AddTitle("NPWR90022_00", "Invented Pair", onA: true, onB: false);
+            AddTitle("NPWR90023_00", "Invented Pair", onA: false, onB: true);
+            AddTitle("NPWR90024_00", "Invented Pair", onA: false, onB: true);
+            Decisions = WriteDecisions(
+                Decision("Invented Border", PsnDecisionsFile.Together, Border, Border),
+                Decision("Invented Pair", PsnDecisionsFile.Together, "NPWR90021_00;NPWR90022_00", "NPWR90023_00;NPWR90024_00"));
+
+            var (result, _) = Fetch(new FakePrompt(Partner, Token));
+
+            Assert.True(result.Completed);
+            Assert.Equal(1, result.Counts.Added);
+            Assert.Equal(4, result.Counts.TogetherBlocked);
+            Assert.Equal(4, ReviewRowsWith(PsnTrophyFetcher.ReasonRowPairsSeveral).Count);
+            Assert.DoesNotContain(ReadOut(PsnTrophyFetcher.GameListFile)["games"]!.AsArray(), g => ((string)g!["key"]!).Contains("NPWR9002", StringComparison.Ordinal));
+        }
+
+        [Fact]
+        public void OneSetOneGame_TwoRowsSharingASet_AddNeither()
+        {
+            AddTitle("NPWR90031_00", "Invented Split", onA: true, onB: false);
+            AddTitle("NPWR90032_00", "Invented Split", onA: false, onB: true);
+            AddTitle("NPWR90033_00", "Invented Split", onA: false, onB: true);
+            Decisions = WriteDecisions(
+                Decision("Invented Split one", PsnDecisionsFile.Together, "NPWR90031_00", "NPWR90032_00"),
+                Decision("Invented Split two", PsnDecisionsFile.Together, "NPWR90031_00", "NPWR90033_00"));
+
+            var (result, _) = Fetch(new FakePrompt(Partner, Token));
+
+            Assert.True(result.Completed);
+            Assert.Equal(0, result.Counts.Added);
+            Assert.Equal(2, ReviewRowsWith(PsnTrophyFetcher.ReasonSetInSeveralPairs).Count);
+        }
+
+        [Fact]
+        public void BothVersionsOwnedByBoth_SameSetPairsAdded_CrossPairsNeitherAddedNorReported()
+        {
+            AddTitle("NPWR90041_00", "Invented Versions", onA: true, onB: true);
+            AddTitle("NPWR90042_00", "Invented Versions", onA: true, onB: true);
+            Decisions = WriteDecisions(
+                Decision("Invented Border", PsnDecisionsFile.Together, Border, Border),
+                Decision("Invented Versions", PsnDecisionsFile.Together, "NPWR90041_00;NPWR90042_00", "NPWR90041_00;NPWR90042_00"));
+
+            var (result, _) = Fetch(new FakePrompt(Partner, Token));
+
+            Assert.True(result.Completed);
+            Assert.Equal(3, result.Counts.Added);
+            Assert.Equal(0, result.Counts.TogetherBlocked);
+            Assert.Equal(0, result.Counts.NotOffered);
+            var keys = ReadOut(PsnTrophyFetcher.GameListFile)["games"]!.AsArray().Select(g => (string)g!["key"]!).ToList();
+            Assert.Contains("NPWR90041_00|NPWR90041_00", keys);
+            Assert.Contains("NPWR90042_00|NPWR90042_00", keys);
+        }
+
+        [Fact]
+        public void TogetherRowPairNotOffered_GoesToReview_NeverAdded()
+        {
+            // Solo (account a only) and TwinB (account b only) have different titles: never a candidate.
+            Decisions = WriteDecisions(
+                Decision("Invented Border", PsnDecisionsFile.Together, Border, Border),
+                Decision("Invented Odd pair", PsnDecisionsFile.Together, Solo, TwinB));
+
+            var (code, output, error) = RunCommand(new FakePrompt(Partner, Token), CommandArgs());
+
+            Assert.True(code == MemoryImportCommand.Success, error);
+            Assert.Contains("pairs not offered as candidates (to review): 1", output, StringComparison.Ordinal);
+            Assert.Contains("ATTENTION: 1 together-row pair(s) were not offered", output, StringComparison.Ordinal);
+            var row = Assert.Single(ReviewRowsWith(PsnTrophyFetcher.ReasonNotOffered));
+            Assert.Equal([Solo, TwinB], row[2..4]);
+            Assert.DoesNotContain(ReadOut(PsnTrophyFetcher.GameListFile)["games"]!.AsArray(), g => (string)g!["key"]! == $"{Solo}|{TwinB}");
+        }
+
+        [Fact]
+        public void TogetherRowPartlyReturned_ListsTheMissingId_AndCarriesOn()
+        {
+            Decisions = WriteDecisions(Decision("Invented Border", PsnDecisionsFile.Together, $"{Border};NPWR90055_00", Border));
+
+            var (result, _) = Fetch(new FakePrompt(Partner, Token));
+
+            Assert.True(result.Completed);
+            Assert.Equal(1, result.Counts.Added);
+            Assert.Equal(0, result.Counts.TogetherNotReturned);
+            Assert.Equal(1, result.Counts.TogetherIdsNotReturned);
+            Assert.Equal(["2", "Invented Border", "together", "NPWR90055_00", "", PsnTrophyFetcher.ProblemIdNotReturned],
+                Assert.Single(ReadReview(PsnTrophyFetcher.TogetherNotReturnedFile).Skip(1)));
+        }
+
+        [Fact]
+        public void Decisions_SetIds_AreTrimmedAndUpperCased()
+        {
+            Decisions = WriteDecisions(Decision("Invented Border", PsnDecisionsFile.Together, " " + Border.ToLowerInvariant() + " ", Border.ToLowerInvariant()));
+
+            var (result, _) = Fetch(new FakePrompt(Partner, Token));
+
+            Assert.True(result.Completed);
+            Assert.Equal(1, result.Counts.Added);
+        }
+
+        [Theory]
+        [InlineData("NPWR1234_00")]
+        [InlineData("CUSA12345_00")]
+        [InlineData("NPWR12345-00")]
+        public void Decisions_SetIdNotNpwr_IsRefused_WithTheSpreadsheetLine(string id)
+        {
+            Decisions = WriteDecisions(
+                Decision("Invented Border", PsnDecisionsFile.Together, Border, Border),
+                Decision("Invented Bad", PsnDecisionsFile.Excluded, Border, $"{Border};{id}"));
+
+            var (code, _, error) = RunCommand(new FakePrompt(Partner, Token), CommandArgs());
+
+            Assert.Equal(MemoryImportCommand.Failed, code);
+            Assert.Contains("line 3: account b's trophy set ids are not all NPWRnnnnn_nn", error, StringComparison.Ordinal);
+            Assert.Empty(Server.Requests);
+        }
+
+        [Fact]
+        public void Decisions_RowNumbers_AreSpreadsheetLines_EvenAfterAQuotedLineBreak()
+        {
+            var path = WriteDecisionsText(
+                "game_title,status,alpha_trophy_set_ids,beta_trophy_set_ids\r\n" +
+                $"\"Invented\r\nTwo lines\",together,{Quest},{Quest}\r\n" +
+                "\r\n" +
+                $"Invented After,excluded,{Border},{Border}\n");
+
+            var rows = PsnDecisionsFile.Parse(File.ReadAllBytes(path), AccountA, AccountB);
+
+            Assert.Equal([2, 5], rows.Select(row => row.Row).ToArray());
+            Assert.Equal("Invented\r\nTwo lines", rows[0].Title);
+        }
+
+        [Fact]
+        public void OutFolder_FromAnEarlierVersion_IsRefused_AsANewFolderNeeded()
+        {
+            Directory.CreateDirectory(Out);
+            File.WriteAllText(
+                Path.Combine(Out, PsnTrophyFetcher.StateFile),
+                $"{{\"format\":\"{PsnTrophyFetcher.StateFormat}\",\"phase\":\"listed\",\"previousListSha256\":\"00\",\"definitionsSha256\":\"00\",\"accountsSha256\":\"00\"}}");
+
+            var exception = Assert.Throws<InvalidOperationException>(() => Fetch(new FakePrompt(Partner, Token)));
+
+            Assert.Contains("earlier version of psn-fetch. Use a new out folder", exception.Message, StringComparison.Ordinal);
+            Assert.Empty(Server.Requests);
         }
 
         [Fact]

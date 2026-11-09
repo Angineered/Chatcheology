@@ -28,7 +28,8 @@ on wrongly; ticket CH-74).
       uncertain or excluded, and one `<name>_trophy_set_ids` column per account; see
       `tools\MemoryImport\README.md`, psn-fetch). A game is added only when a row marks it together.
       Read the counts. If "awaiting review" is above 0, open `psn-to-review.csv` in the PsnOut folder
-      (newest first), copy the rows you decide into your decisions file with a status, and if you want
+      (newest first), fill in the status of the rows you decide, copy them into your decisions file (comma-separated UTF-8;
+      in Excel "CSV UTF-8"), and if you want
       them in this month, run PsnFetch again into a new PsnOut folder (same game list). If it stops
       (token, network, HTTP 403 which usually means an account's trophy privacy, a listed game no
       longer returned), fix the cause and run the same command again; finished games are skipped. If

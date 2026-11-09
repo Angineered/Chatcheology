@@ -291,7 +291,10 @@ namespace Chatcheology.Tools.MemoryImport
             output.WriteLine($"  not added, excluded: {c.NotAddedExcluded}");
             output.WriteLine($"  not added, uncertain: {c.NotAddedUncertain}");
             output.WriteLine($"  not added, awaiting review (no decisions row; see {PsnTrophyFetcher.ToReviewFile}): {c.AwaitingReview}");
-            output.WriteLine($"  together rows PlayStation returns no pair for (see {PsnTrophyFetcher.TogetherNotReturnedFile}): {c.TogetherNotReturned}");
+            output.WriteLine($"  not added, together but a set would be in two games (to review): {c.TogetherBlocked}");
+            output.WriteLine($"  together-row pairs not offered as candidates (to review): {c.NotOffered}");
+            output.WriteLine($"  together rows with no pair returned on both accounts (see {PsnTrophyFetcher.TogetherNotReturnedFile}): {c.TogetherNotReturned}");
+            output.WriteLine($"  ids in together rows not returned for their account (same file): {c.TogetherIdsNotReturned}");
             output.WriteLine($"  listed now: {c.ListedNow}");
             output.WriteLine($"  icons added (added games only): {c.IconsAdded}");
             output.WriteLine($"  added games with no icon: {c.AddedWithoutIcon}");
@@ -317,6 +320,24 @@ namespace Chatcheology.Tools.MemoryImport
                 output.WriteLine(
                     $"ATTENTION: {c.AwaitingReview} candidate(s) await review; they are not in the game list. " +
                     $"Copy the rows you decide from {PsnTrophyFetcher.ToReviewFile} into your decisions file with a status.");
+            }
+
+            if (c.TogetherBlocked > 0)
+            {
+                output.WriteLine(
+                    $"ATTENTION: {c.TogetherBlocked} together pair(s) not added: a trophy set may be in only one game. " +
+                    $"See the reason column in {PsnTrophyFetcher.ToReviewFile} and correct the decisions rows.");
+            }
+
+            if (c.NotOffered > 0)
+            {
+                output.WriteLine(
+                    $"ATTENTION: {c.NotOffered} together-row pair(s) were not offered as candidates and are not added; see {PsnTrophyFetcher.ToReviewFile}.");
+            }
+
+            if (c.TogetherNotReturned + c.TogetherIdsNotReturned > 0)
+            {
+                output.WriteLine($"ATTENTION: together rows or ids PlayStation does not return; see {PsnTrophyFetcher.TogetherNotReturnedFile}.");
             }
 
             if (c.DefinitionSetsStillShort > 0)
