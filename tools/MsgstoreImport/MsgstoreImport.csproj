@@ -19,6 +19,8 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="MsgstoreImport.Tests" />
+    <!-- CH-71 step 5: the archive refresh runs the newer-messages and caption-facts steps in process. -->
+    <InternalsVisibleTo Include="ArchiveRefresh" />
   </ItemGroup>
 
   <ItemGroup>

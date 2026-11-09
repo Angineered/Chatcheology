@@ -152,7 +152,8 @@ namespace Chatcheology.Data.ArchiveExport
                                  && !string.IsNullOrEmpty(message.Text) && message.Caption is null,
                              NewerMessagesDatabase.KindPlaceholder =>
                                  message.SenderParticipantID is not null && message.Attachment is null
-                                 && !string.IsNullOrEmpty(message.Text) && message.Caption is null,
+                                 && message.Text is { } wording && NewerPlaceholderWordings.All.Contains(wording)
+                                 && message.Caption is null,
                              _ => false,
                          }
                          && (message.Caption is null || message.Caption.Length > 0)
@@ -256,7 +257,8 @@ namespace Chatcheology.Data.ArchiveExport
         }
 
         /// <summary>The full path of <paramref name="relativePath"/> under <paramref name="root"/>, or null when it would leave it.</summary>
-        private static string? FullPathUnder(string root, string relativePath)
+        /// <remarks>A drive root (<c>F:\</c>) is a media root like any other folder (CH-71 step 5).</remarks>
+        internal static string? FullPathUnder(string root, string relativePath)
         {
             try
             {
@@ -270,7 +272,7 @@ namespace Chatcheology.Data.ArchiveExport
 
                 var full = Path.GetFullPath(Path.Combine(rootFull, relativePath.Replace('/', Path.DirectorySeparatorChar)));
 
-                return full.StartsWith(rootFull + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) ? full : null;
+                return ArchivePaths.IsBeneath(full, rootFull) ? full : null;
             }
             catch (Exception exception) when (exception is ArgumentException or NotSupportedException or PathTooLongException)
             {

@@ -92,13 +92,33 @@ namespace Chatcheology.Archive
     public static class ArchivePaths
     {
         /// <summary>True when <paramref name="path"/> is <paramref name="folder"/> or beneath it.</summary>
+        /// <remarks>
+        /// A drive root (<c>F:\</c>) or the file system root keeps its separator after trimming, so the prefix a path
+        /// beneath it must start with is the root itself, not the root plus another separator (CH-71 step 5).
+        /// </remarks>
         public static bool IsWithin(string path, string folder)
         {
             var root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(folder));
             var full = Path.TrimEndingDirectorySeparator(Path.GetFullPath(path));
 
             return full.Equals(root, StringComparison.OrdinalIgnoreCase)
-                   || full.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
+                   || full.StartsWith(PrefixOf(root), StringComparison.OrdinalIgnoreCase);
         }
+
+        /// <summary>
+        /// True when <paramref name="path"/> is strictly beneath <paramref name="folder"/> (not the folder itself).
+        /// </summary>
+        public static bool IsBeneath(string path, string folder)
+        {
+            var root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(folder));
+            var full = Path.TrimEndingDirectorySeparator(Path.GetFullPath(path));
+
+            return !full.Equals(root, StringComparison.OrdinalIgnoreCase)
+                   && full.StartsWith(PrefixOf(root), StringComparison.OrdinalIgnoreCase);
+        }
+
+        /// <summary>The text every path beneath <paramref name="trimmedRoot"/> starts with: the root and one separator.</summary>
+        private static string PrefixOf(string trimmedRoot) =>
+            Path.EndsInDirectorySeparator(trimmedRoot) ? trimmedRoot : trimmedRoot + Path.DirectorySeparatorChar;
     }
 }

@@ -20,4 +20,25 @@ public sealed class NewerWordingTests
         // Every kind a msgstore type maps to has a wording the phone knows.
         Assert.All(NewerKinds.PlaceholderTypes.Values, kind => Assert.Contains(NewerKinds.Wording(kind), MessageRow.NotShownWordings));
     }
+
+    [Fact]
+    public void The_archive_export_accepts_exactly_the_placeholder_wordings_the_import_writes()
+    {
+        var written = NewerKinds.PlaceholderKindsInOrder.Select(NewerKinds.Wording).ToHashSet(StringComparer.Ordinal);
+
+        Assert.True(written.SetEquals(Chatcheology.Data.ArchiveExport.NewerPlaceholderWordings.All));
+        Assert.DoesNotContain(NewerKinds.SystemWording, Chatcheology.Data.ArchiveExport.NewerPlaceholderWordings.All);
+    }
+
+    [Theory]
+    [InlineData(@"F:\", @"F:\Media\WhatsApp Images\IMG-1.jpg", true)]
+    [InlineData(@"F:\", @"F:\", false)]
+    [InlineData(@"F:\Phone", @"F:\Phone\Media\a.jpg", true)]
+    [InlineData(@"F:\Phone", @"F:\PhoneOther\Media\a.jpg", false)]
+    [InlineData(@"F:\Phone", @"F:\Phone", false)]
+    [InlineData(@"F:\", @"G:\Media\a.jpg", false)]
+    public void A_drive_root_media_folder_contains_its_files(string root, string full, bool beneath)
+    {
+        Assert.Equal(beneath, NewerPlanner.IsBeneathRoot(full, Path.TrimEndingDirectorySeparator(root)));
+    }
 }

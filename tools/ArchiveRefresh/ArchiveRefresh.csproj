@@ -1,0 +1,34 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- The monthly archive refresh (CH-71 step 5, D9). It runs the existing library code of MsgstoreImport
+       (newer messages, caption facts), MemoryImport (PSN build, compare, import, enrich) and Chatcheology.Data
+       (archive export, validator, comparer) in process: plan (read-only, one combined SHA-256), then apply with
+       that SHA-256 (backup first, then each step in order). Built and tested on synthetic data only; every real
+       path and id is a command-line value. Output is counts only. -->
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>ArchiveRefresh</AssemblyName>
+    <RootNamespace>ArchiveRefresh</RootNamespace>
+    <!-- Not invariant (unlike MsgstoreImport): the PSN reader and builder look up the IANA zone
+         Africa/Johannesburg, which needs ICU on Windows, as MemoryImport does. MsgstoreImport's text
+         normalisation calls Windows' NormalizeString directly and its string work is ordinal, so it gives
+         the same rows in either mode. -->
+    <InvariantGlobalization>false</InvariantGlobalization>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="ArchiveRefresh.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\MsgstoreImport\MsgstoreImport.csproj" />
+    <ProjectReference Include="..\MemoryImport\MemoryImport.csproj" />
+    <ProjectReference Include="..\..\Chatcheology.Core\Chatcheology.Core.csproj" />
+    <ProjectReference Include="..\..\Chatcheology.Data\Chatcheology.Data.csproj" />
+  </ItemGroup>
+
+</Project>
