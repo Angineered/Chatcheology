@@ -389,6 +389,52 @@ attachment would now get a row the manifest lacks, the whole batch is refused an
 with the batch tag. A rerun records nothing and counts every row as "already done". `undo-batch`
 deletes this batch's rows only.
 
+## Newer messages (CH-71 step 3a)
+
+`newer plan` and `newer apply` bring messages newer than the main workspace into `newer-messages.db`, a
+separate file beside the workspace (fixed name, its own schema and marker; the workspace is only read).
+The archive export and the phone read it from step 3b on.
+
+```powershell
+& $tool newer plan --msgstore <MSGSTORE.DB> --workspace <WORKSPACE.DB> --conversation <ConversationID> --chat <chat _id> --local-participant <ParticipantID> --media-root <WHATSAPP FOLDER COPY> --manifest-out <PRIVATE FOLDER>\newer-manifest.tsv
+```
+
+```powershell
+& $tool newer apply --msgstore <MSGSTORE.DB> --workspace <WORKSPACE.DB> --media-root <WHATSAPP FOLDER COPY> --manifest <PRIVATE FOLDER>\newer-manifest.tsv --manifest-sha256 <SHA-256> --i-have-a-backup
+```
+
+- **Hand-off, first run.** Every msgstore message of the chat with a readable time is put on its local
+  day (Africa/Johannesburg) in `sort_id`, then `_id`, order; every workspace message on its stored day.
+  Each day before the workspace's last day must have the same count on both sides. On the last day the
+  msgstore's messages must start with exactly the workspace's: same direction at each place; a workspace
+  text message faces the same text after the CH-22 normalisation (the export's edited marker removed);
+  a workspace attachment faces a msgstore media record; anything else is compared by direction only,
+  but a media record never faces workspace text. Everything after that point is new. Otherwise the
+  plan refuses with counts only.
+- **Later runs.** The last imported key_id must be found exactly once in the chat; the new messages are
+  those after it. Messages are only ever added at the end; nothing already imported changes. Edits and
+  deletions made on the phone since are counted (the archived version is kept).
+- **Kinds.** Text (type 0) is kept exactly as the msgstore holds it. Media types 1, 2, 3, 9, 13 and 20
+  with a media record become a message with one attachment (caption as in `caption-facts`: the text
+  column, else `media_caption`). Polls (66), locations (5, 16), contact cards (4, 14), calls (90),
+  view-once (42, 43, 82) and deleted-for-everyone (15) become a fixed placeholder such as
+  "Poll (not shown in this archive)"; system rows (7) "System message (not shown in this archive)";
+  any other type "Message type not shown in this archive", counted by its number. Never the item's
+  content. Reactions (`message_add_on`) and quotes (`message_quoted`) are counted only. The type
+  numbers beyond 1 and 9 are the published reverse-engineered meanings, not yet confirmed on the real
+  msgstore: check the plan's "by msgstore message_type" list against the phone before applying.
+- **Media.** `--media-root` is a fresh copy of the phone's WhatsApp folder (the one holding `Media\`),
+  which msgstore's `file_path` is relative to. An attachment is Restored only when that file exists
+  and its SHA-256 equals the base64-decoded `file_hash`; otherwise Unmatched (never Missing, never by
+  name or size), counted by reason. The folder is registered in `newer-messages.db`; keep it.
+- **Forwarded** from `message_forwarded` (score kept); no forwarding table means "not known".
+  **Low-quality copies** (association type 12): same minute and direction, the smaller file is the copy;
+  recorded on this run's new rows only.
+- **Apply** recomputes the whole plan and refuses unless the manifest it would write is byte-identical
+  (so a changed msgstore, workspace, file or media folder means "plan again"). One transaction; the
+  first run creates the file. Rerunning an applied manifest writes nothing. The manifest holds ids and
+  SHA-256 digests only; the media folder only as a digest of its path.
+
 ## Undo
 
 To undo one attachment, use the viewer's Revoke as usual.
