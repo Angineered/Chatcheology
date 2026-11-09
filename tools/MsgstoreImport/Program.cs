@@ -23,9 +23,16 @@ internal static class ImportTool
     /// <returns>0 done and reconciled; 1 stopped, failed or not reconciled; 2 refused.</returns>
     internal static int Run(string[] args, TextWriter stdout, TextWriter stderr)
     {
+        if (args is ["newer", .. var rest])
+        {
+            return NewerTool.Run(rest, stdout, stderr);
+        }
+
         if (args is ["-h" or "--help" or "/?"])
         {
             stdout.WriteLine(Options.Usage);
+            stdout.WriteLine();
+            stdout.WriteLine(NewerOptions.Usage);
 
             return 0;
         }
