@@ -107,7 +107,7 @@ internal sealed class SyntheticData : IDisposable
     }
 
     /// <summary>A workspace message with no attachment (text), on <paramref name="date"/> or <see cref="Day"/>.</summary>
-    internal long AddWorkspaceMessage(string time, bool outgoing, DateOnly? date = null, bool media = false)
+    internal long AddWorkspaceMessage(string time, bool outgoing, DateOnly? date = null, bool media = false, string? content = null)
     {
         _sequence++;
         var sender = outgoing ? LocalParticipantID : OtherParticipantID;
@@ -119,7 +119,7 @@ internal sealed class SyntheticData : IDisposable
                 ConversationID, ImportSourceID, SequenceNumber, MessageDateTimeLocal,
                 SenderParticipantID, MessageType, MessageContent, RawContent, SourceLineStart, SourceLineEnd)
             VALUES ({ConversationID}, 1, {_sequence}, '{day:yyyy-MM-dd}T{time}', {sender}, 'User',
-                    '{(media ? "<Media omitted>" : "synthetic text")}', 'raw', {_sequence}, {_sequence});
+                    '{(media ? "<Media omitted>" : (content ?? "synthetic text").Replace("'", "''", StringComparison.Ordinal))}', 'raw', {_sequence}, {_sequence});
             """);
 
         return WorkspaceScalar("SELECT MAX(MessageID) FROM Message;");
