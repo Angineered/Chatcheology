@@ -393,7 +393,12 @@ deletes this batch's rows only.
 
 `newer plan` and `newer apply` bring messages newer than the main workspace into `newer-messages.db`, a
 separate file beside the workspace (fixed name, its own schema and marker; the workspace is only read).
-The archive export and the phone read it from step 3b on.
+The archive export (desktop) reads it from step 3b on: its messages follow the workspace's as `Source =
+Msgstore`, numbered so earlier messages never move (the phone keeps stars across the refresh); a placeholder is
+a user message carrying only its fixed wording (the phone shows it muted, never as the sender's text), a system
+row a system line. Restored files are copied from the registered media folder and hashed again; a missing,
+changed or damaged file stops the export. Keep `newer-messages.db` and the media folder copy with the workspace
+backup. The desktop viewer shows the workspace only ("N newer messages (phone only)").
 
 ```powershell
 & $tool newer plan --msgstore <MSGSTORE.DB> --workspace <WORKSPACE.DB> --conversation <ConversationID> --chat <chat _id> --local-participant <ParticipantID> --media-root <WHATSAPP FOLDER COPY> --manifest-out <PRIVATE FOLDER>\newer-manifest.tsv
