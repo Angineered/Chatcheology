@@ -3,6 +3,7 @@ using Android.Graphics;
 using Android.Views;
 using Android.Widget;
 using Chatcheology.Mobile.Conversation;
+using Chatcheology.Mobile.Presentation;
 using Microsoft.Maui.Handlers;
 using Microsoft.Maui.Platform;
 using AndroidView = Android.Views.View;
@@ -63,7 +64,10 @@ namespace Chatcheology.Android.Controls
                 [DecodedImage.PathProperty.PropertyName] = MapPath,
             };
 
-        private ImageView? _image;
+        // Every decoded picture's decodes, a few at a time, newest first (CH-66 scroll follow-up).
+        private static readonly DecodeQueue Decodes = new(DecodeQueue.WorkersFor(Environment.ProcessorCount));
+
+        private PictureView? _image;
         private TextView? _failed;
         private FrameLayout? _frame;
         private bool _subscribed;
@@ -79,7 +83,7 @@ namespace Chatcheology.Android.Controls
             var context = Context;
             var frame = new FrameLayout(context);
 
-            _image = new ImageView(context);
+            _image = new PictureView(context);
             _image.SetScaleType(ImageView.ScaleType.CenterCrop);
             frame.AddView(_image, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, ViewGroup.LayoutParams.MatchParent));
 
@@ -117,7 +121,7 @@ namespace Chatcheology.Android.Controls
 
             if (IsAlive(_image))
             {
-                _image!.SetImageBitmap(null);
+                _image!.SetPicture(null);
             }
 
             base.DisconnectHandler(platformView);
@@ -193,7 +197,7 @@ namespace Chatcheology.Android.Controls
             var generation = ++_generation;
             VirtualView.HasFailed = false;
 
-            _image?.SetImageBitmap(null);
+            _image?.SetPicture(null);
 
             // Invisible, not gone: it keeps its measured place, so showing it needs no new layout pass,
             // which a fixed-size cell (the gallery's) would not give it.
@@ -214,39 +218,112 @@ namespace Chatcheology.Android.Controls
             var frame = PlatformView;
             var videoKey = VirtualView.VideoKey;
 
-            Task.Run(() => videoKey is null
-                    ? ImageDecoding.DecodeToCover(path, width, height)
-                    : VideoFrames.FrameToCover(path, videoKey, width, height)).ContinueWith(
-                decoded =>
+            // Decoded before and still cached (a cell scrolled back to): drawn now, with no worker trip and
+            // no empty frame in between (CH-66 scroll follow-up). A picture's thumbnail only; a video's frame
+            // is cached under its stored frame, not this path.
+            if (videoKey is null && ImageDecoding.CachedCover(path, width, height) is { } cached)
+            {
+                _image?.SetPicture(cached);
+                return;
+            }
+
+            Decodes.Post(() =>
+            {
+                // Bound again or disconnected before its turn: the decode is no longer wanted.
+                if (generation != Volatile.Read(ref _generation))
                 {
-                    var bitmap = decoded.IsCompletedSuccessfully ? decoded.Result : null;
+                    return;
+                }
 
-                    frame.Post(() =>
+                Bitmap? bitmap;
+
+                try
+                {
+                    bitmap = videoKey is null
+                        ? ImageDecoding.DecodeToCover(path, width, height)
+                        : VideoFrames.FrameToCover(path, videoKey, width, height);
+                }
+                catch (Exception)
+                {
+                    bitmap = null;
+                }
+
+                frame.Post(() =>
+                {
+                    if (generation != _generation || ((IElementHandler)this).VirtualView is null)
                     {
-                        if (generation != _generation || ((IElementHandler)this).VirtualView is null)
+                        return;
+                    }
+
+                    if (bitmap is not null)
+                    {
+                        _image?.SetPicture(bitmap);
+                    }
+                    else
+                    {
+                        VirtualView.HasFailed = true;
+
+                        if (_failed is not null && videoKey is null)
                         {
-                            return;
+                            _failed.Text = VirtualView.FailedText;
+                            _failed.Visibility = ViewStates.Visible;
                         }
 
-                        if (bitmap is not null)
-                        {
-                            _image?.SetImageBitmap(bitmap);
-                        }
-                        else
-                        {
-                            VirtualView.HasFailed = true;
+                        VirtualView.RaiseFailed();
+                    }
+                });
+            });
+        }
+    }
 
-                            if (_failed is not null && videoKey is null)
-                            {
-                                _failed.Text = VirtualView.FailedText;
-                                _failed.Visibility = ViewStates.Visible;
-                            }
+    /// <summary>
+    /// The picture of a <see cref="DecodedImage"/>: an image view that fills its frame, so a new picture never
+    /// changes its size, and setting one asks for a redraw only, not a new layout (CH-66 scroll follow-up).
+    /// </summary>
+    /// <remarks>
+    /// A plain image view asks its parents for a new layout whenever its picture's size changes, which is every
+    /// time a thumbnail arrives (from none to one). In a scrolling list that request reaches the list itself,
+    /// which then lays out and re-measures every row on screen in the next frame; with thumbnails arriving as
+    /// the reader scrolls, that was most frames. The frame's own size comes from the page (the requested size),
+    /// never from the picture, so the request changed nothing. Before the view's first layout the request is
+    /// passed on as usual.
+    /// </remarks>
+    internal sealed class PictureView : ImageView
+    {
+        private bool _settingPicture;
 
-                            VirtualView.RaiseFailed();
-                        }
-                    });
-                },
-                TaskScheduler.Default);
+        public PictureView(Context context)
+            : base(context)
+        {
+        }
+
+        // Used by Android when it re-creates the managed side of an existing view.
+        private PictureView(IntPtr handle, global::Android.Runtime.JniHandleOwnership transfer)
+            : base(handle, transfer)
+        {
+        }
+
+        /// <summary>Shows <paramref name="bitmap"/> (or nothing) with a redraw only, once the view has its size.</summary>
+        internal void SetPicture(Bitmap? bitmap)
+        {
+            _settingPicture = IsLaidOut && Width > 0 && Height > 0;
+
+            try
+            {
+                SetImageBitmap(bitmap);
+            }
+            finally
+            {
+                _settingPicture = false;
+            }
+        }
+
+        public override void RequestLayout()
+        {
+            if (!_settingPicture)
+            {
+                base.RequestLayout();
+            }
         }
     }
 }

@@ -22,7 +22,7 @@ namespace Chatcheology.Android
         /// </summary>
         internal static Bitmap? DecodeToCover(string path, int targetWidth, int targetHeight)
         {
-            var key = $"{targetWidth}x{targetHeight}:{path}";
+            var key = CoverKey(path, targetWidth, targetHeight);
 
             if (Cache.Get(key) is Bitmap cached)
             {
@@ -36,12 +36,13 @@ namespace Chatcheology.Android
                 return null;
             }
 
-            // Still more than half again too large: scale to just cover the target.
-            var scale = Math.Max((double)targetWidth / bitmap.Width, (double)targetHeight / bitmap.Height);
+            // Only the part the box shows is kept (CH-66 scroll follow-up), so more thumbnails fit the cache;
+            // still more than half again too large, it is also scaled to just cover the target.
+            var crop = ImageSampling.CoverCropOf(bitmap.Width, bitmap.Height, targetWidth, targetHeight);
 
-            if (scale < 0.67)
+            if (!crop.IsWhole(bitmap.Width, bitmap.Height))
             {
-                bitmap = Scale(bitmap, (int)Math.Round(bitmap.Width * scale), (int)Math.Round(bitmap.Height * scale));
+                bitmap = Crop(bitmap, crop);
             }
 
             if (bitmap is not null)
@@ -51,6 +52,16 @@ namespace Chatcheology.Android
 
             return bitmap;
         }
+
+        /// <summary>
+        /// The thumbnail <see cref="DecodeToCover"/> made for these arguments when it is still in the cache, else
+        /// <see langword="null"/>. Reads memory only, so it may be called on the UI thread: a cell scrolled back to
+        /// is drawn at once instead of after a trip through a worker.
+        /// </summary>
+        internal static Bitmap? CachedCover(string path, int targetWidth, int targetHeight) =>
+            Cache.Get(CoverKey(path, targetWidth, targetHeight)) as Bitmap;
+
+        private static string CoverKey(string path, int targetWidth, int targetHeight) => $"{targetWidth}x{targetHeight}:{path}";
 
         /// <summary>
         /// The picture at <paramref name="path"/> for the full-screen viewer: reduced while decoding to no
@@ -81,7 +92,7 @@ namespace Chatcheology.Android
         {
             try
             {
-                var bounds = new BitmapFactory.Options { InJustDecodeBounds = true };
+                using var bounds = new BitmapFactory.Options { InJustDecodeBounds = true };
                 BitmapFactory.DecodeFile(path, bounds);
 
                 if (bounds.OutWidth <= 0 || bounds.OutHeight <= 0)
@@ -108,7 +119,7 @@ namespace Chatcheology.Android
 
             try
             {
-                var bounds = new BitmapFactory.Options { InJustDecodeBounds = true };
+                using var bounds = new BitmapFactory.Options { InJustDecodeBounds = true };
                 BitmapFactory.DecodeFile(path, bounds);
 
                 if (bounds.OutWidth <= 0 || bounds.OutHeight <= 0)
@@ -121,7 +132,8 @@ namespace Chatcheology.Android
                 // The reduction is chosen for the shape the picture is shown at, not the one it is stored at.
                 var (width, height) = orientation.UprightSize(bounds.OutWidth, bounds.OutHeight);
 
-                bitmap = BitmapFactory.DecodeFile(path, new BitmapFactory.Options { InSampleSize = sample(width, height) });
+                using var options = new BitmapFactory.Options { InSampleSize = sample(width, height) };
+                bitmap = BitmapFactory.DecodeFile(path, options);
             }
             catch (Java.Lang.Throwable)
             {
@@ -177,6 +189,32 @@ namespace Chatcheology.Android
                 }
 
                 return turned;
+            }
+            catch (Java.Lang.Throwable)
+            {
+                return bitmap;
+            }
+        }
+
+        /// <summary>
+        /// The part of the bitmap <paramref name="crop"/> names, at its scale; the original is released. When that
+        /// fails the bitmap is kept whole: the view's centre crop shows the same part.
+        /// </summary>
+        private static Bitmap Crop(Bitmap bitmap, CoverCrop crop)
+        {
+            try
+            {
+                using var matrix = new Matrix();
+                matrix.SetScale((float)crop.Scale, (float)crop.Scale);
+
+                var part = Bitmap.CreateBitmap(bitmap, crop.X, crop.Y, crop.Width, crop.Height, matrix, filter: true);
+
+                if (!ReferenceEquals(part, bitmap))
+                {
+                    bitmap.Recycle();
+                }
+
+                return part;
             }
             catch (Java.Lang.Throwable)
             {

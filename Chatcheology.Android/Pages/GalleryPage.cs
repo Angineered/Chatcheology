@@ -1,4 +1,3 @@
-using System.Collections.ObjectModel;
 using System.Diagnostics;
 using Chatcheology.Android.Controls;
 using Chatcheology.Mobile.Conversation;
@@ -38,7 +37,7 @@ namespace Chatcheology.Android.Pages
         // The batches shown, in order, and their photos; changed only on the UI thread.
         private readonly List<GalleryBatch> _batches = [];
         private readonly List<AttachmentCard> _photos = [];
-        private ObservableCollection<GalleryRow>? _rows;
+        private GalleryRowList? _rows;
         private bool _complete;
         private bool _started;
         private bool _closed;
@@ -218,10 +217,8 @@ namespace Chatcheology.Android.Pages
                 return;
             }
 
-            foreach (var row in batch.Rows(Columns))
-            {
-                _rows.Add(row);
-            }
+            // One range insert below the rows shown, not one change per row (CH-66 scroll follow-up).
+            _rows.AddRange(batch.Rows(Columns));
         }
 
         /// <summary>Binds every row shown so far afresh (first batch, or a new cell size).</summary>
@@ -229,7 +226,7 @@ namespace Chatcheology.Android.Pages
         {
             if (_photos.Count > 0 && _cellSize > 0)
             {
-                _rows = new ObservableCollection<GalleryRow>(_batches.SelectMany(batch => batch.Rows(Columns)));
+                _rows = new GalleryRowList(_batches.SelectMany(batch => batch.Rows(Columns)));
                 _list.ItemsSource = _rows;
             }
         }

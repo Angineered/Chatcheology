@@ -66,6 +66,27 @@ namespace Chatcheology.Mobile.Presentation
             return (Math.Max(1, (int)Math.Round(width * scale)), Math.Max(1, (int)Math.Round(height * scale)));
         }
 
+        /// <summary>
+        /// The part of a <paramref name="width"/> by <paramref name="height"/> picture a box of
+        /// <paramref name="boxWidth"/> by <paramref name="boxHeight"/> shows when the picture is scaled to cover it
+        /// and centred (as a centre-crop image view draws it), and the scale to keep it at: 1 unless the picture
+        /// is still more than half again too large (below 0.67), as the thumbnails were scaled before.
+        /// </summary>
+        /// <remarks>
+        /// A thumbnail kept as only this part looks the same in its box and takes less memory, so more of them fit
+        /// the cache (CH-66 scroll follow-up): a panorama keeps a square instead of its whole width.
+        /// </remarks>
+        public static CoverCrop CoverCropOf(int width, int height, int boxWidth, int boxHeight)
+        {
+            Check(width, height, boxWidth, boxHeight);
+
+            var cover = Math.Max((double)boxWidth / width, (double)boxHeight / height);
+            var cropWidth = Math.Clamp((int)Math.Round(boxWidth / cover), 1, width);
+            var cropHeight = Math.Clamp((int)Math.Round(boxHeight / cover), 1, height);
+
+            return new CoverCrop((width - cropWidth) / 2, (height - cropHeight) / 2, cropWidth, cropHeight, cover < 0.67 ? cover : 1);
+        }
+
         private static void Check(int width, int height, int boxWidth, int boxHeight)
         {
             ArgumentOutOfRangeException.ThrowIfNegativeOrZero(width);
@@ -73,5 +94,17 @@ namespace Chatcheology.Mobile.Presentation
             ArgumentOutOfRangeException.ThrowIfNegativeOrZero(boxWidth);
             ArgumentOutOfRangeException.ThrowIfNegativeOrZero(boxHeight);
         }
+    }
+
+    /// <summary>The part of a picture a cover box shows (<see cref="ImageSampling.CoverCropOf"/>), in the picture's pixels.</summary>
+    /// <param name="X">Left edge.</param>
+    /// <param name="Y">Top edge.</param>
+    /// <param name="Width">Width of the part.</param>
+    /// <param name="Height">Height of the part.</param>
+    /// <param name="Scale">The scale to keep the part at; 1 keeps its pixels.</param>
+    public readonly record struct CoverCrop(int X, int Y, int Width, int Height, double Scale)
+    {
+        /// <summary>Whether this is the whole <paramref name="width"/> by <paramref name="height"/> picture, unscaled.</summary>
+        public bool IsWhole(int width, int height) => X == 0 && Y == 0 && Width == width && Height == height && Scale == 1;
     }
 }
