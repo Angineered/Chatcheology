@@ -26,5 +26,12 @@ namespace Chatcheology.Mobile.Synthetic
         internal static readonly SyntheticArchiveOptions WithMemories = new(
             Audio: 1, Documents: 1, LowQualityCopies: 2, Forwarded: 10, Links: 10, Memories: true, YearlyMemories: true, Captions: 3,
             ArchiveId: "c5e7a1d3-92f0-4b68-b4a1-6d8e3f2c7b05");
+
+        /// <summary>
+        /// "Install synthetic archive (heavy photo month)" (CH-66 scroll follow-up): 1,500 photos in 25 days of one
+        /// month, for checking the Photos gallery's scrolling with a very heavy month; with the yearly memories.
+        /// </summary>
+        internal static readonly SyntheticArchiveOptions HeavyPhotoMonth = new(
+            Messages: 4000, Days: 25, Images: 1500, YearlyMemories: true, Captions: 3, ArchiveId: "5b9e2f47-c3a1-4d86-9f0b-7e2a6c4d1b38");
     }
 }
