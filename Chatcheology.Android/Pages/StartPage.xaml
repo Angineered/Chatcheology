@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8" ?>
 <!-- The start screen: the installed archives (last opened first) or a note that there are none, and
-     "Import archive…". Debug builds add development tools below. -->
+     "Import archive…": the main button with no archive installed, otherwise a smaller entry under "More" (CH-78).
+     Debug builds add development tools below. -->
 <ContentPage xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
              xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
              x:Class="Chatcheology.Android.Pages.StartPage"
@@ -9,10 +10,12 @@
         <VerticalStackLayout Padding="16" Spacing="12">
             <Label x:Name="Summary" FontSize="16" />
             <VerticalStackLayout x:Name="Archives" Spacing="10" />
-            <Button x:Name="ImportButton" Text="Import archive…" Clicked="OnImportClicked"
-                    BackgroundColor="{AppThemeBinding Light={StaticResource PrimaryLight}, Dark={StaticResource PrimaryDark}}" TextColor="White" />
-            <Label FontSize="13" TextColor="{AppThemeBinding Light={StaticResource MutedTextLight}, Dark={StaticResource MutedTextDark}}"
-                   Text="Copy the archive folder to the phone first. Put an empty file named .nomedia in that folder, so the gallery does not show the archive's photos. The app copies the archive into its own storage; afterwards you may delete the folder you copied." />
+            <VerticalStackLayout x:Name="MainImport" Spacing="12">
+                <Button x:Name="ImportButton" Text="Import archive…" Clicked="OnImportClicked"
+                        BackgroundColor="{AppThemeBinding Light={StaticResource PrimaryLight}, Dark={StaticResource PrimaryDark}}" TextColor="White" />
+                <Label x:Name="ImportHelp" FontSize="13" TextColor="{AppThemeBinding Light={StaticResource MutedTextLight}, Dark={StaticResource MutedTextDark}}" />
+            </VerticalStackLayout>
+            <ContentView x:Name="MoreImportHost" />
             <Label x:Name="Status" FontSize="14" TextColor="{AppThemeBinding Light={StaticResource MutedTextLight}, Dark={StaticResource MutedTextDark}}" />
             <VerticalStackLayout x:Name="DevelopmentTools" Spacing="8" />
         </VerticalStackLayout>

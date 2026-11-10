@@ -707,6 +707,33 @@ namespace Chatcheology.Mobile.Conversation
             }
         }
 
+        /// <summary>
+        /// The Notify me switch's state (CH-78) for this archive's noted dates and yearly memories, read from the settings
+        /// now, with <paramref name="remindersOn"/> (the My memories reminders switch, read by the caller off the UI thread,
+        /// or <see langword="null"/>).
+        /// </summary>
+        public Notifications.NotifyMeState NotifyMeState(bool? remindersOn) =>
+            new(NotedDateListings, YearlyMemoryListings, remindersOn);
+
+        /// <summary>
+        /// Writes the archive's part of a Notify me change (CH-78): the noted-date and yearly-memory mutes, through the
+        /// same settings as their own switches. The reminders part belongs to the own store and is written by the caller.
+        /// </summary>
+        public void ApplyNotifyMe(Notifications.NotifyMeChanges changes)
+        {
+            ArgumentNullException.ThrowIfNull(changes);
+
+            foreach (var id in changes.NotedDateIDs)
+            {
+                SetNotedDateMuted(id, !changes.On);
+            }
+
+            foreach (var id in changes.YearlyEntryIDs)
+            {
+                SetYearlyMemoryMuted(id, !changes.On);
+            }
+        }
+
         /// <summary>Whether On this day is on for this archive (Settings).</summary>
         public bool OnThisDayEnabled
         {
