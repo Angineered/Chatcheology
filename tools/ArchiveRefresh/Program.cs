@@ -1,3 +1,4 @@
+using ArchiveRefresh.PhonePull;
 using Microsoft.Data.Sqlite;
 
 namespace ArchiveRefresh;
@@ -13,6 +14,11 @@ internal static class RefreshTool
     /// <returns>0 done (apply: the archive passed every check); 1 failed or the archive did not pass; 2 refused or stopped.</returns>
     internal static int Run(string[] args, TextWriter stdout, TextWriter stderr, RefreshHooks hooks)
     {
+        if (args is ["pull", ..])
+        {
+            return PullTool.Run(args, stdout, stderr, null);
+        }
+
         if (args is ["-h" or "--help" or "/?"] or ["plan" or "apply", "-h" or "--help" or "/?"])
         {
             stdout.WriteLine(RefreshOptions.Usage);

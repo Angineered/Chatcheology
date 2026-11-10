@@ -1,5 +1,8 @@
 # CH-71: the monthly archive refresh (Angie runs this; counts only on screen).
 # Run from the repo folder, one step at a time, in this order. Close the desktop viewer first.
+#   .\tools\ArchiveRefresh\Run-Refresh.ps1 -Step Pull -Destination <new folder> [-Previous <last month's destination>] [-Serial <id>]
+#       (phone connected by USB, unlocked, USB debugging allowed; back up the chats in WhatsApp first. Read-only on the phone.
+#        With -Previous only new and changed files come from the phone. A stopped pull: run the same command again.)
 #   .\tools\ArchiveRefresh\Run-Refresh.ps1 -Step PsnFetch -PsnManifest <last game list> -PsnDefinitions <definitions file> -PsnDecisions <your decisions csv> -PsnAccountA <name> -PsnAccountB <name> -PsnLocal <a or b name> -PsnOut <new folder>
 #       (only when PSN is included; needs a fresh Postman token; asks for it and the other account's id, hidden)
 #   .\tools\ArchiveRefresh\Run-Refresh.ps1 -Step Plan   -Workspace <workspace.db> -Msgstore <msgstore.db> -MediaRoot <WhatsApp folder copy> -Conversation <id> -Chat <chat _id> -LocalParticipant <id> -ExpectRestored <n> -ExpectMissing <n> -PlanFolder <new private folder> [PSN parameters]
@@ -13,7 +16,7 @@
 # PsnFetch adds a game only when your decisions csv marks it together; new candidates go to psn-to-review.csv in -PsnOut.
 # A stopped Apply: fix the cause and run the same Apply again; finished steps are skipped.
 param(
-    [Parameter(Mandatory = $true)][ValidateSet('PsnFetch', 'Plan', 'Apply', 'Images', 'Copy')][string]$Step,
+    [Parameter(Mandatory = $true)][ValidateSet('Pull', 'PsnFetch', 'Plan', 'Apply', 'Images', 'Copy')][string]$Step,
     [string]$Workspace,
     [string]$Msgstore,
     [string]$MediaRoot,
@@ -34,7 +37,10 @@ param(
     [string]$PsnCurrent,
     [string]$PsnDefinitions,
     [string]$PsnOut,
-    [string]$PsnDecisions
+    [string]$PsnDecisions,
+    [string]$Destination,
+    [string]$Previous,
+    [string]$Serial
 )
 
 $ErrorActionPreference = 'Stop'
@@ -65,6 +71,24 @@ function Input-Args {
 $tool = "tools\ArchiveRefresh\bin\Release\net10.0\ArchiveRefresh.exe"
 
 switch ($Step) {
+    'Pull' {
+        if (-not $Destination) { throw "Give -Destination (a new folder; with -Previous, best on the same drive as the previous copy)." }
+        if ($Previous -and -not (Test-Path -LiteralPath (Join-Path $Previous 'WhatsApp') -PathType Container)) {
+            throw "Previous copy not found (it must hold the WhatsApp folder)."
+        }
+        $adb = 'C:\Program Files (x86)\Android\android-sdk\platform-tools\adb.exe'
+        if (-not (Test-Path -LiteralPath $adb -PathType Leaf)) { throw "adb not found at $adb" }
+        $a = @('pull', '--adb', $adb, '--destination', $Destination)
+        if ($Previous) { $a += @('--previous', $Previous) }
+        if ($Serial) { $a += @('--serial', $Serial) }
+        Build-Tool tools\ArchiveRefresh\ArchiveRefresh.csproj
+        & $tool @a
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host ""
+            Write-Host "Next: decrypt $(Join-Path $Destination 'Databases\msgstore.db.crypt15'), then Plan with -MediaRoot '$(Join-Path $Destination 'WhatsApp')'."
+            Write-Host "Next month: -Previous '$Destination'."
+        }
+    }
     'PsnFetch' {
         if (-not $PsnManifest -or -not $PsnDefinitions -or -not $PsnDecisions -or -not $PsnAccountA -or -not $PsnAccountB -or -not $PsnLocal -or -not $PsnOut) {
             throw "Give -PsnManifest (last game list), -PsnDefinitions, -PsnDecisions (your decisions csv), -PsnAccountA, -PsnAccountB, -PsnLocal and -PsnOut (a new folder)."
