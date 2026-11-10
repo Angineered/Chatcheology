@@ -14,6 +14,9 @@ namespace Chatcheology.Android.Pages
     /// shared, from the viewer (CH-59); everything was read when the archive opened.
     /// <para>One of the phone owner's own memories (CH-54) also has Edit and Delete (Delete asks first); an archive's
     /// memory stays read-only.</para>
+    /// <para>A game (PSN) memory (CH-67, <see cref="MemoryDetails.Game"/>): heading, date with play window and the
+    /// day's evidence block (a tap shows its meaning), the game picture uncropped, Show in chat, then the trophies
+    /// (together trophies on one row). Nothing below the trophies.</para>
     /// </summary>
     internal sealed class MemoryDetailsPage : ContentPage
     {
@@ -74,7 +77,15 @@ namespace Chatcheology.Android.Pages
             var body = new VerticalStackLayout { Padding = SidePadding, Spacing = 6 };
 
             body.Add(new Label { Text = details.Title, FontSize = 22, FontAttributes = FontAttributes.Bold });
-            body.Add(Muted(details.DateText, 14));
+
+            if (details.Game is { } game)
+            {
+                AddGameDate(body, game);
+            }
+            else
+            {
+                body.Add(Muted(details.DateText, 14));
+            }
 
             if (_photoLayout.Arrangement != MemoryPhotoArrangement.None)
             {
@@ -124,6 +135,23 @@ namespace Chatcheology.Android.Pages
                 body.Add(buttons);
             }
 
+            if (details.Game is { } gameDetails)
+            {
+                // CH-67: a game memory ends with its trophies; nothing shows below them.
+                if (gameDetails.Trophies.Count > 0)
+                {
+                    body.Add(Heading(MemoryWording.ItemsHeading));
+
+                    foreach (var trophy in gameDetails.Trophies)
+                    {
+                        body.Add(ItemView(trophy.First, MemoryWording.GameItemMeta(trophy)));
+                    }
+                }
+
+                Content = new ScrollView { Content = body };
+                return;
+            }
+
             if (details.Summary.Length > 0)
             {
                 body.Add(new Label { Text = details.Summary, FontSize = 15 });
@@ -140,7 +168,7 @@ namespace Chatcheology.Android.Pages
 
                 foreach (var item in details.Items)
                 {
-                    body.Add(ItemView(item));
+                    body.Add(ItemView(item, MemoryWording.ItemMeta(item)));
                 }
             }
 
@@ -441,7 +469,62 @@ namespace Chatcheology.Android.Pages
             return [edit, delete];
         }
 
-        private static View ItemView(MemoryItemLine item)
+        /// <summary>
+        /// A game memory's date line (CH-67): the day and play window, then the day's evidence as a colour block when
+        /// its level is known. A tap on the block shows its one-line meaning under the date; another tap hides it.
+        /// </summary>
+        private static void AddGameDate(VerticalStackLayout body, GameDetails game)
+        {
+            var date = Muted(game.DateText, 14);
+            date.LineBreakMode = LineBreakMode.WordWrap;
+            date.VerticalOptions = LayoutOptions.Start;
+
+            if (game.EvidenceBlock is not { } block || game.EvidenceMeaning is not { } meaning)
+            {
+                body.Add(date);
+                return;
+            }
+
+            var blockLabel = new Label
+            {
+                Text = block,
+                FontSize = 16,
+                VerticalOptions = LayoutOptions.Start,
+                Padding = new Thickness(8, 0, 8, 4),
+            };
+            SemanticProperties.SetDescription(blockLabel, game.EvidenceDescription ?? meaning);
+
+            var meaningLabel = Muted(meaning, 13);
+            meaningLabel.IsVisible = false;
+
+            var tap = new TapGestureRecognizer();
+            tap.Tapped += (_, _) =>
+            {
+                try
+                {
+                    meaningLabel.IsVisible = !meaningLabel.IsVisible;
+                }
+                catch (Exception)
+                {
+                    // A tap handler: nothing here may end the app.
+                }
+            };
+            blockLabel.GestureRecognizers.Add(tap);
+
+            // The date takes the rest of the width and wraps; the block keeps its own width, so at any font scale or
+            // date length it stays on screen and tappable.
+            var line = new Grid
+            {
+                ColumnDefinitions = { new ColumnDefinition(GridLength.Star), new ColumnDefinition(GridLength.Auto) },
+                ColumnSpacing = 2,
+            };
+            line.Add(date, 0);
+            line.Add(blockLabel, 1);
+            body.Add(line);
+            body.Add(meaningLabel);
+        }
+
+        private static View ItemView(MemoryItemLine item, string meta)
         {
             var text = new VerticalStackLayout
             {
@@ -449,7 +532,7 @@ namespace Chatcheology.Android.Pages
                 Children =
                 {
                     new Label { Text = item.Name, FontSize = 15, FontAttributes = FontAttributes.Bold },
-                    Muted(MemoryWording.ItemMeta(item), 12),
+                    Muted(meta, 12),
                 },
             };
 

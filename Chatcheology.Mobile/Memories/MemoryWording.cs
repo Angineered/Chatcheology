@@ -130,6 +130,81 @@ namespace Chatcheology.Mobile.Memories
             return item.TimeText + " · " + item.ParticipantName + (item.IsHidden ? " · hidden trophy" : string.Empty);
         }
 
+        /// <summary>
+        /// A game memory's date line (CH-67): the day and the play window, first to last shown trophy, such as
+        /// "Sat 8 Nov 2026, 19:40-22:15"; "Sat 8 Nov 2026, 19:40" when both are the same minute; "23:40-00:35 next day"
+        /// when the last is on the next day; "23:40 to 11 Nov, 00:35" when later. Observed times, never a duration.
+        /// </summary>
+        public static string GameDateLine(DateTime first, DateTime last)
+        {
+            var from = MessageRow.TimeTextOf(first);
+            var to = MessageRow.TimeTextOf(last);
+            var fromDay = DateOnly.FromDateTime(first);
+            var toDay = DateOnly.FromDateTime(last);
+
+            var window = fromDay == toDay
+                ? from == to ? from : from + "-" + to
+                : toDay == fromDay.AddDays(1)
+                    ? from + "-" + to + " next day"
+                    : from + " to " + last.ToString(toDay.Year == fromDay.Year ? "d MMM" : "d MMM yyyy", CultureInfo.CurrentCulture) + ", " + to;
+
+            return GameDay(first) + ", " + window;
+        }
+
+        /// <summary>A game memory's day without times (no trophy shown): "Sat 8 Nov 2026".</summary>
+        public static string GameDay(DateTime local) => local.ToString("ddd d MMM yyyy", CultureInfo.CurrentCulture);
+
+        /// <summary>
+        /// A game memory's day evidence as a colour block (CH-67): 🟩 strong, 🟨 supporting, 🟧 same day. Any other
+        /// level, or none, has no block: nothing is guessed.
+        /// </summary>
+        public static string? DayEvidenceBlock(string? dayLevel) => dayLevel switch
+        {
+            "strong" => "\U0001F7E9",
+            "supporting" => "\U0001F7E8",
+            "same-day" => "\U0001F7E7",
+            _ => null,
+        };
+
+        /// <summary>
+        /// The one line a tap on the evidence block shows (CH-67), from the import's rules: the same trophy (same
+        /// trophy set) earned by both that day within a minute (strong), or not within a minute (supporting), or
+        /// trophies by both that day with no identical trophy matched (same day; also every game whose two trophy sets differ, since sets are never matched across). <see langword="null"/> when there is no block.
+        /// </summary>
+        public static string? DayEvidenceMeaning(string? dayLevel) => dayLevel switch
+        {
+            "strong" => "Strong: you both earned the same trophy within a minute of each other this day.",
+            "supporting" => "Supporting: you both earned the same trophy this day, but not within a minute.",
+            "same-day" => "Same day: you both earned trophies in this game this day, with no identical trophy matched.",
+            _ => null,
+        };
+
+        /// <summary>What a screen reader hears for the evidence block: "Day evidence: strong. Tap for what it means."</summary>
+        public static string? DayEvidenceBlockDescription(string? dayLevel) =>
+            DayEvidenceBlock(dayLevel) is null
+                ? null
+                : "Day evidence: " + (dayLevel == "same-day" ? "same day" : dayLevel) + ". Tap for what it means.";
+
+        /// <summary>
+        /// A game trophy row's second line (CH-67): as <see cref="ItemMeta"/> for one trophy; both times and names for
+        /// a together trophy, earlier first: "19:41:05 Alex · 19:41:12 Sam", with " · hidden trophy" once when hidden.
+        /// Never a trophy type.
+        /// </summary>
+        public static string GameItemMeta(GameTrophyLine line)
+        {
+            ArgumentNullException.ThrowIfNull(line);
+
+            if (line.Second is not { } second)
+            {
+                return ItemMeta(line.First);
+            }
+
+            var first = line.First;
+
+            return first.TimeText + " " + first.ParticipantName + " · " + second.TimeText + " " + second.ParticipantName
+                   + (first.IsHidden ? " · hidden trophy" : string.Empty);
+        }
+
         /// <summary>The details' source line, "Source: PSN trophies".</summary>
         public static string SourceLine(string source) => "Source: " + source;
 
