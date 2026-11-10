@@ -15,6 +15,16 @@ internal sealed class FakeAdb(string phoneFolder) : IAdbRunner
     /// <summary>When set, the pull call with this number (1-based) stops after copying its first file.</summary>
     internal int? FailOnPull { get; set; }
 
+    /// <summary>What the listing call adds on stderr, and its exit code (find exits 1 when stat reported an error).</summary>
+    internal string ListingError { get; set; } = "";
+    internal int ListingExit { get; set; }
+
+    /// <summary>Extra listing lines (as if stat had listed a name the synthetic folder cannot hold).</summary>
+    internal string ExtraListing { get; set; } = "";
+
+    /// <summary>False: pull copies without setting the phone's mtime (an adb that ignores -a).</summary>
+    internal bool KeepTimes { get; set; } = true;
+
     internal int PullCalls { get; private set; }
     internal List<string> PulledRemotes { get; } = [];
     internal List<IReadOnlyList<string>> Calls { get; } = [];
@@ -36,7 +46,7 @@ internal sealed class FakeAdb(string phoneFolder) : IAdbRunner
             case "shell":
                 Assert.Equal(AdbCommands.ListCommand, args[1]);
 
-                return new AdbResult(0, Listing(), "");
+                return new AdbResult(ListingExit, Listing() + ExtraListing, ListingError);
             case "pull":
                 Assert.Equal("-a", args[1]);
                 PullCalls++;
@@ -50,7 +60,9 @@ internal sealed class FakeAdb(string phoneFolder) : IAdbRunner
                     var source = PhonePath(remotes[i]);
                     var target = Path.Combine(local, Path.GetFileName(source));
                     File.Copy(source, target, overwrite: true);
-                    File.SetLastWriteTimeUtc(target, DateTimeOffset.FromUnixTimeSeconds(Seconds(source)).UtcDateTime);
+                    File.SetLastWriteTimeUtc(target, KeepTimes
+                        ? DateTimeOffset.FromUnixTimeSeconds(Seconds(source)).UtcDateTime
+                        : new DateTime(2098, 6, 1, 12, 0, 0, DateTimeKind.Utc).AddSeconds(PulledRemotes.Count));
                     PulledRemotes.Add(remotes[i]);
 
                     if (FailOnPull == PullCalls)
@@ -157,7 +169,8 @@ public sealed class PullTests : IDisposable
     private string Dest(string name) => Path.Combine(_root, name);
 
     private (int Exit, string Out, string Err) Pull(string destination, string? previous = null, string? serial = null,
-        IFileLinker? linker = null, long free = long.MaxValue / 4, string[]? extra = null)
+        IFileLinker? linker = null, long free = long.MaxValue / 4, string[]? extra = null, long cluster = 1,
+        Func<string, string?>? format = null)
     {
         var args = new List<string> { "pull", "--adb", "adb.exe", "--destination", destination };
 
@@ -172,7 +185,15 @@ public sealed class PullTests : IDisposable
         }
 
         args.AddRange(extra ?? []);
-        var env = new PullEnvironment { Adb = _adb, Linker = linker ?? new NtfsLinker(), FreeBytes = _ => free, MaxPullArgumentChars = 200 };
+        var env = new PullEnvironment
+        {
+            Adb = _adb,
+            Linker = linker ?? new NtfsLinker(),
+            FreeBytes = _ => free,
+            ClusterBytes = _ => cluster,
+            DriveFormat = format ?? (_ => "NTFS"),
+            MaxPullArgumentChars = 200,
+        };
         var stdout = new StringWriter();
         var stderr = new StringWriter();
         var exit = PullTool.Run([.. args], stdout, stderr, env);
@@ -566,5 +587,167 @@ public sealed class PullTests : IDisposable
         Assert.Equal(2, run.Exit);
         Assert.DoesNotContain("SYNTH", run.Err, StringComparison.Ordinal);
         Assert.Equal(2, PullTool.Run(["pull", "--destination", Dest("y")], TextWriter.Null, TextWriter.Null, null));
+    }
+
+    // -------------------------------------------------------------------------------------------
+    // Review round: listing errors, refused names, FAT32, clusters, adb not keeping times.
+    // -------------------------------------------------------------------------------------------
+
+    [Fact]
+    public void Files_vanishing_while_listing_are_counted_and_the_pull_carries_on()
+    {
+        _adb.ListingExit = 1;
+        _adb.ListingError =
+            $"stat: '{AdbCommands.PhoneRoot}/Media/WhatsApp Images/IMG-SYNTH-gone.jpg': No such file or directory\n" +
+            $"find: '{AdbCommands.PhoneRoot}/Media/.Statuses/SYNTH.tmp': No such file or directory\n";
+        var destination = Dest("vanished");
+
+        var run = Pull(destination);
+
+        Assert.True(run.Exit == 0, run.Err);
+        AssertMirror(destination);
+        Assert.EndsWith("2", Line(run.Out, "vanished from the phone while listing"));
+        Assert.DoesNotContain("IMG-SYNTH", run.Out, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("find: '/sdcard/Android/media/com.whatsapp/WhatsApp/Media/x': Permission denied\n", "permission denied")]
+    [InlineData("stat: Unknown option 'c'\n", "unknown command or option")]
+    [InlineData("error: device 'SYNTHSERIAL01' not found\n", "adb lost the phone")]
+    [InlineData("", "exit code 1 and no message")]
+    [InlineData("stat: 'SYNTH': No such file or directory\nfind: 'SYNTH2': Permission denied\n", "permission denied")]
+    public void Other_listing_errors_refuse_naming_the_kind_not_the_lines(string error, string expected)
+    {
+        _adb.ListingExit = 1;
+        _adb.ListingError = error;
+        var destination = Dest("listing-error");
+
+        var run = Pull(destination);
+
+        Assert.Equal(2, run.Exit);
+        Assert.Contains(expected, run.Err, StringComparison.Ordinal);
+        Assert.DoesNotContain("keep the phone unlocked", run.Err, StringComparison.Ordinal);
+        Assert.DoesNotContain("SYNTH", run.Err, StringComparison.Ordinal);
+        Assert.DoesNotContain("/sdcard", run.Err, StringComparison.Ordinal);
+        Assert.False(Directory.Exists(destination));
+    }
+
+    [Fact]
+    public void Refused_names_are_listed_in_the_destination_and_a_rerun_after_renaming_starts_afresh()
+    {
+        _adb.ExtraListing =
+            $"81b0/5/1700000000/{AdbCommands.PhoneRoot}/Media/WhatsApp Documents/SYNTH: plan?.pdf\n" +
+            $"81b0/5/1700000000/{AdbCommands.PhoneRoot}/Media/WhatsApp Documents/synth\nbreak.txt\n" +
+            $"81b0/5/1700000000/{AdbCommands.PhoneRoot}/Media/WhatsApp Video/vid-20990101-wa0003.MP4\n";
+        var destination = Dest("refused-names");
+
+        var run = Pull(destination);
+
+        Assert.Equal(2, run.Exit);
+        Assert.Contains("refused-names.tsv", run.Err, StringComparison.Ordinal);
+        Assert.Contains("2 name(s) on the phone cannot be stored", run.Err, StringComparison.Ordinal);
+        Assert.Contains("2 differ from another only in upper/lower case", run.Err, StringComparison.Ordinal);
+        Assert.DoesNotContain("SYNTH", run.Err, StringComparison.Ordinal);
+        Assert.Equal(0, _adb.PullCalls);
+
+        var listed = File.ReadAllLines(Path.Combine(destination, PullFiles.RefusedNamesFileName));
+        Assert.Equal(5, listed.Length); // header + 2 + the clashing pair
+        Assert.Contains(listed, l => l.StartsWith("Media/WhatsApp Documents/SYNTH: plan?.pdf\t", StringComparison.Ordinal));
+        Assert.Contains(listed, l => l.StartsWith("Media/WhatsApp Documents/synth\\nbreak.txt\t", StringComparison.Ordinal));
+        Assert.Contains(listed, l => l.StartsWith("Media/WhatsApp Video/VID-20990101-WA0003.mp4\t", StringComparison.Ordinal));
+        Assert.Equal(["refused-names.tsv"], Directory.EnumerateFileSystemEntries(destination).Select(Path.GetFileName));
+
+        _adb.ExtraListing = "";
+        var rerun = Pull(destination);
+
+        Assert.True(rerun.Exit == 0, rerun.Err);
+        AssertMirror(destination);
+        Assert.False(File.Exists(Path.Combine(destination, PullFiles.RefusedNamesFileName)));
+    }
+
+    [Theory]
+    [InlineData("FAT32", "NTFS", "destination")]
+    [InlineData("FAT", "NTFS", "destination")]
+    [InlineData("NTFS", "FAT32", "previous copy")]
+    public void A_FAT32_destination_or_previous_copy_is_refused(string destinationFormat, string previousFormat, string what)
+    {
+        var previous = Dest("october");
+        Assert.Equal(0, Pull(previous).Exit);
+        var destination = Dest("november");
+
+        var run = Pull(destination, previous, format: p => p.StartsWith(previous, StringComparison.OrdinalIgnoreCase) ? previousFormat : destinationFormat);
+
+        Assert.Equal(2, run.Exit);
+        Assert.Contains($"The {what} is on a FAT32 drive", run.Err, StringComparison.Ordinal);
+        Assert.False(Directory.Exists(destination));
+    }
+
+    [Fact]
+    public void ExFAT_and_NTFS_are_fine()
+    {
+        Assert.Equal(0, Pull(Dest("exfat"), format: _ => "exFAT").Exit);
+        Assert.Equal(0, Pull(Dest("ntfs"), Dest("exfat"), format: _ => "NTFS").Exit);
+    }
+
+    [Fact]
+    public void Free_space_rounds_each_file_up_to_the_cluster()
+    {
+        const long cluster = 65536;
+        var files = Directory.EnumerateFiles(_phone, "*", SearchOption.AllDirectories).ToList();
+        var needed = (files.Count + 1) * cluster + PhonePuller.MarginBytes; // every synthetic file is under one cluster; +1 for the msgstore copy
+
+        Assert.Equal(2, Pull(Dest("small"), free: needed - 1, cluster: cluster).Exit);
+        Assert.Equal(0, Pull(Dest("fits"), free: needed, cluster: cluster).Exit);
+    }
+
+    [Fact]
+    public void When_most_pulled_files_lack_the_phone_time_it_says_adb_did_not_keep_times()
+    {
+        _adb.KeepTimes = false;
+
+        var run = Pull(Dest("no-times"));
+
+        Assert.Equal(0, run.Exit);
+        Assert.Contains("adb did not keep file times", run.Out, StringComparison.Ordinal);
+        Assert.DoesNotContain("WhatsApp was busy", run.Out, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void One_file_changing_during_the_copy_is_put_down_to_WhatsApp_being_busy()
+    {
+        var previous = Dest("october");
+        Assert.Equal(0, Pull(previous).Exit);
+
+        // An adb that keeps times for all but the first file it pulls (one of several).
+        WritePhone("Media/WhatsApp Images/IMG-20990201-WA0020.jpg", "SYNTH a");
+        WritePhone("Media/WhatsApp Images/IMG-20990201-WA0021.jpg", "SYNTH b");
+        WritePhone("Media/WhatsApp Images/IMG-20990201-WA0022.jpg", "SYNTH c");
+        var busy = new BusyAdb(_adb);
+        var env = new PullEnvironment { Adb = busy, FreeBytes = _ => long.MaxValue / 4, ClusterBytes = _ => 1, DriveFormat = _ => "NTFS" };
+        var report = PhonePuller.Run(new PullOptions("adb.exe", Dest("november"), previous, null), env, TextWriter.Null);
+
+        Assert.Contains("1 file(s) changed on the phone while copying", report, StringComparison.Ordinal);
+        Assert.DoesNotContain("adb did not keep file times", report, StringComparison.Ordinal);
+    }
+
+    /// <summary>Passes through to the fake adb, then moves the first pulled file's time on by a minute.</summary>
+    private sealed class BusyAdb(FakeAdb inner) : IAdbRunner
+    {
+        private bool _done;
+
+        public AdbResult Run(IReadOnlyList<string> arguments)
+        {
+            var result = inner.Run(arguments);
+
+            if (!_done && arguments.Contains("pull") && arguments[^2].Contains("/Media/", StringComparison.Ordinal))
+            {
+                var local = arguments[^1];
+                var file = Path.Combine(local, Path.GetFileName(arguments[^2]));
+                File.SetLastWriteTimeUtc(file, File.GetLastWriteTimeUtc(file).AddMinutes(1));
+                _done = true;
+            }
+
+            return result;
+        }
     }
 }

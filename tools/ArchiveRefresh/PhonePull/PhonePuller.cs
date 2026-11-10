@@ -65,6 +65,12 @@ internal sealed class PullEnvironment
     /// <summary>Free bytes on the volume holding the given existing folder.</summary>
     internal Func<string, long> FreeBytes { get; init; } = folder => new DriveInfo(Path.GetPathRoot(folder)!).AvailableFreeSpace;
 
+    /// <summary>The file system of the volume holding the given existing folder ("NTFS", "exFAT", "FAT32"...), or null.</summary>
+    internal Func<string, string?> DriveFormat { get; init; } = Volumes.Format;
+
+    /// <summary>The allocation unit (cluster) of the volume holding the given existing folder, in bytes.</summary>
+    internal Func<string, long> ClusterBytes { get; init; } = Volumes.ClusterBytes;
+
     /// <summary>Most characters of remote paths in one <c>adb pull</c> (Windows allows 32,767 on a command line).</summary>
     internal int MaxPullArgumentChars { get; init; } = 24_000;
 }
@@ -129,6 +135,14 @@ internal static class PhonePuller
         }
 
         var resume = false;
+        var refusedList = Path.Combine(destination, PullFiles.RefusedNamesFileName);
+
+        if (Directory.Exists(destination) && File.Exists(refusedList) && Directory.EnumerateFileSystemEntries(destination).Count() == 1)
+        {
+            // Only the list of refused names from an earlier refusal: start afresh.
+            File.Delete(refusedList);
+            Directory.Delete(destination);
+        }
 
         if (Directory.Exists(destination) || File.Exists(destination))
         {
@@ -155,20 +169,28 @@ internal static class PhonePuller
             }
         }
 
+        RefuseFat(env.DriveFormat(Existing(destination)), "destination");
+
+        if (previous is not null)
+        {
+            RefuseFat(env.DriveFormat(previous), "previous copy");
+        }
+
         // 1. Connect and check: exactly one authorised phone, or the one named by --serial.
         var target = SelectPhone(env.Adb, options.Serial, progress);
 
         // 2. One listing of the phone's WhatsApp folder (files and folders, size and whole-second mtime).
         var listed = env.Adb.Run([.. target, "shell", AdbCommands.ListCommand]);
+        var vanished = 0;
 
         if (listed.ExitCode != 0)
         {
-            throw new PullRefusedException(
-                "Listing the phone's WhatsApp folder failed (keep the phone unlocked and connected, then run again). Nothing was copied.");
+            vanished = ListingErrors.VanishedOnly(listed.Error)
+                       ?? throw new PullRefusedException(ListingErrors.Describe(listed) + " Nothing was copied.");
         }
 
         var listing = PhoneListingParser.Parse(listed.Output, AdbCommands.PhoneRoot);
-        CheckNames(listing);
+        CheckNames(listing, destination);
 
         var msgstore = listing.Files.FirstOrDefault(f => f.RelativePath == PullFiles.DatabasesFolderName + "/" + PullFiles.MsgstoreName)
                        ?? throw new PullRefusedException(
@@ -223,8 +245,10 @@ internal static class PhonePuller
         var linkLikely = previous is not null && env.Linker.LikelySameVolume(previous, Existing(destination));
         var toPull = items.Where(i => !i.Done && i.Kind != Kind.Same).ToList();
         var toLink = items.Where(i => !i.Done && i.Kind == Kind.Same).ToList();
-        var needed = toPull.Sum(i => i.File.Size) + (msgstoreDone ? 0 : msgstore.Size)
-                     + (linkLikely ? 0 : toLink.Sum(i => i.File.Size)) + MarginBytes;
+        var cluster = Math.Max(1, env.ClusterBytes(Existing(destination)));
+        long OnDisk(long size) => (size + cluster - 1) / cluster * cluster;
+        var needed = toPull.Sum(i => OnDisk(i.File.Size)) + (msgstoreDone ? 0 : OnDisk(msgstore.Size))
+                     + (linkLikely ? 0 : toLink.Sum(i => OnDisk(i.File.Size))) + MarginBytes;
         var free = env.FreeBytes(Existing(destination));
 
         if (free < needed)
@@ -350,6 +374,8 @@ internal static class PhonePuller
 
         var entries = new List<ManifestEntry>(items.Count);
         var differ = 0;
+        var pulledNow = 0;
+        var pulledNowTimeDiffers = 0;
 
         foreach (var item in items)
         {
@@ -363,6 +389,16 @@ internal static class PhonePuller
             if (!Matches(got, item.File))
             {
                 differ++;
+            }
+
+            if (item.How == Obtained.Pulled)
+            {
+                pulledNow++;
+
+                if (PullFiles.MtimeSeconds(got) != item.File.MtimeSeconds)
+                {
+                    pulledNowTimeDiffers++;
+                }
             }
 
             entries.Add(new ManifestEntry(item.File.RelativePath, got.Length, PullFiles.MtimeSeconds(got),
@@ -383,6 +419,7 @@ internal static class PhonePuller
         report.AppendLine($"  changed since the previous copy (pulled)              {Count(items.Count(i => i.Kind == Kind.Changed))}");
         report.AppendLine($"  Databases folder files (always pulled)                {Count(items.Count(i => i.Kind == Kind.Database))}");
         report.AppendLine($"  on the previous copy, gone from the phone (not copied) {Count(gone)}");
+        report.AppendLine($"  vanished from the phone while listing (not copied)    {Count(vanished)}");
 
         if (resume)
         {
@@ -394,7 +431,13 @@ internal static class PhonePuller
         report.AppendLine($"  duration                                              {clock.Elapsed:hh\\:mm\\:ss}");
         report.AppendLine($"  msgstore.db.crypt15 on the phone dated                {DateTimeOffset.FromUnixTimeSeconds(msgstore.MtimeSeconds).ToLocalTime():yyyy-MM-dd HH:mm}");
 
-        if (differ > 0)
+        if (pulledNow >= 2 && pulledNowTimeDiffers * 2 > pulledNow)
+        {
+            report.AppendLine(
+                $"ATTENTION: {Count(pulledNowTimeDiffers)} of {Count(pulledNow)} pulled file(s) do not have the phone's file time. It looks " +
+                "like adb did not keep file times (pull -a); next month's pull would then copy everything again. The files themselves are complete.");
+        }
+        else if (differ > 0)
         {
             report.AppendLine($"ATTENTION: {Count(differ)} file(s) changed on the phone while copying (kept as copied; WhatsApp was busy). Run a new pull if that matters.");
         }
@@ -442,25 +485,44 @@ internal static class PhonePuller
         return AdbCommands.Target(null);
     }
 
-    private static void CheckNames(PhoneListing listing)
+    /// <summary>
+    /// Refuses names Windows cannot hold, or that differ from another only in case. Their relative paths and the reason
+    /// go to refused-names.tsv in the destination (private, like the copy itself); the screen shows counts only. A rerun
+    /// into a destination holding only that file starts afresh.
+    /// </summary>
+    private static void CheckNames(PhoneListing listing, string destination)
     {
         var all = listing.Files.Select(f => f.RelativePath).Concat(listing.Folders).ToList();
-        var cannot = all.Count(p => !PhoneListingParser.WindowsCanHold(p));
+        var refused = all.Where(p => !PhoneListingParser.WindowsCanHold(p))
+            .Select(p => (Path: p, Reason: "a character Windows cannot hold, a trailing dot or space, or a reserved name"))
+            .ToList();
+        var cannot = refused.Count;
 
-        if (cannot > 0)
+        var clashing = all.GroupBy(p => p, StringComparer.OrdinalIgnoreCase).Where(g => g.Count() > 1).SelectMany(g => g).ToList();
+        refused.AddRange(clashing.Select(p => (Path: p, Reason: "differs from another name only in upper/lower case")));
+
+        if (refused.Count == 0)
         {
-            throw new PullRefusedException(
-                $"{Count(cannot)} name(s) on the phone cannot be stored on Windows (a character such as : ? * \" or a line break, a " +
-                "trailing dot or space, or a reserved name); a full copy would fail on them too. Nothing was copied.");
+            return;
         }
 
-        var clashes = all.Count - all.Distinct(StringComparer.OrdinalIgnoreCase).Count();
+        PullFiles.WriteRefusedNames(destination, refused);
 
-        if (clashes > 0)
+        throw new PullRefusedException(
+            $"{Count(cannot)} name(s) on the phone cannot be stored on Windows (a character such as : ? * \" or a line break, a " +
+            $"trailing dot or space, or a reserved name) and {Count(clashing.Count)} differ from another only in upper/lower case " +
+            "(Windows keeps those as one file). The old pull script stored such names altered or overwrote one of them, so the " +
+            "copy would not match the phone. They are listed in refused-names.tsv in the destination folder; rename them on the " +
+            "phone (or ask for help), then run the same command again. Nothing was copied.");
+    }
+
+    private static void RefuseFat(string? format, string what)
+    {
+        if (format is not null && (format.Equals("FAT", StringComparison.OrdinalIgnoreCase) || format.Equals("FAT32", StringComparison.OrdinalIgnoreCase)))
         {
             throw new PullRefusedException(
-                $"{Count(clashes)} name(s) on the phone differ from another only in upper/lower case, which Windows keeps as one " +
-                "file; a full copy would lose one of each. Nothing was copied.");
+                $"The {what} is on a FAT32 drive, which cannot hold files over 4 GB and keeps file times only to 2 seconds. " +
+                "Use an NTFS (or exFAT) drive. Nothing was copied.");
         }
     }
 

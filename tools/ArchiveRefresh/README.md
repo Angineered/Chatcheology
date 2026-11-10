@@ -81,22 +81,30 @@ Read-only on the phone: it runs only `adb devices`, one listing and `adb pull -a
 
 1. Refuses unless exactly one phone is connected and authorised (state `device`; emulators ignored), or the
    one `-Serial` names; unless the destination is new (or an unfinished pull, see below); unless the previous
-   copy holds `WhatsApp\`, is not itself unfinished, and is separate from the destination.
+   copy holds `WhatsApp\`, is not itself unfinished, and is separate from the destination. A destination or
+   previous copy on a FAT32 drive is refused (4 GB file limit, 2-second file times); NTFS or exFAT is fine.
 2. Lists the phone's WhatsApp folder in one call: `find <folder> '(' -type f -o -type d ')' -exec stat -c
    '%f/%s/%Y/%n' {} +` (toybox: mode in hex, size, mtime in whole seconds, full path). The three numbers
    come first and a name cannot hold `/`, so names with spaces, quotes or other characters split safely.
    The listing must include the folder itself in that format (otherwise the phone's stat is not as expected
-   and nothing is copied). Names Windows cannot hold (`: ? * "`, a line break, a trailing dot or space, a
-   reserved name) or that differ only in case are refused with a count: a full copy would fail on them too.
+   and nothing is copied). A file WhatsApp removes while the listing runs ("No such file or directory") is
+   counted as vanished, not copied; any other listing error refuses and says which kind it was. Names
+   Windows cannot hold (`: ? * "`, a line break, a trailing dot or space, a reserved name) or that differ
+   only in case are refused with a count, and listed (path and reason) in `refused-names.tsv` in the
+   destination folder. The old pull script stored such names altered or overwrote one of a pair, so its copy
+   did not match the phone. Rename them on the phone, then run the same command again.
 3. For each file: the same relative path, size and mtime (whole seconds) as in the previous copy's
    `WhatsApp\` means a hard link from the previous copy (a local copy, with its mtime, when the two are not on
    one NTFS volume). Everything else is pulled with `adb pull -a`, which keeps the phone's mtime in whole
    seconds. The whole `Databases` folder, and `Databases\msgstore.db.crypt15` into `<destination>\Databases`,
    are always pulled. Files on the previous copy but no longer on the phone are counted, not copied. Empty
    folders are made too, so `WhatsApp\` ends up as a full pull would make it.
-4. Free space: what is pulled (plus what is copied locally when linking is not possible) plus 5 GB.
+4. Free space: what is pulled (plus what is copied locally when linking is not possible), each file rounded
+   up to the drive's cluster size, plus 5 GB.
 5. On screen, counts only: same (hard-linked / copied locally), new, changed, Databases files, gone from the
-   phone, bytes pulled, duration, and the date of the phone's msgstore backup.
+   phone, vanished while listing, bytes pulled, duration, and the date of the phone's msgstore backup. If most
+   pulled files lack the phone's file time, it says adb did not seem to keep file times (next month's pull
+   would then copy everything again).
 6. `pull-manifest.tsv` in the destination lists every file: how it was obtained (linked, copied, pulled),
    size, mtime and relative path.
 

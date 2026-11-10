@@ -73,6 +73,9 @@ $tool = "tools\ArchiveRefresh\bin\Release\net10.0\ArchiveRefresh.exe"
 switch ($Step) {
     'Pull' {
         if (-not $Destination) { throw "Give -Destination (a new folder; with -Previous, best on the same drive as the previous copy)." }
+        # CH-74: a trailing backslash before the closing quote reaches the tool as a quote in PowerShell 5.1.
+        $Destination = $Destination.TrimEnd('\')
+        if ($Previous) { $Previous = $Previous.TrimEnd('\') }
         if ($Previous -and -not (Test-Path -LiteralPath (Join-Path $Previous 'WhatsApp') -PathType Container)) {
             throw "Previous copy not found (it must hold the WhatsApp folder)."
         }

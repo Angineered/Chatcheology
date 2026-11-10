@@ -26,6 +26,7 @@ internal static class PullFiles
 {
     internal const string StateFileName = "pull-state.tsv";
     internal const string ManifestFileName = "pull-manifest.tsv";
+    internal const string RefusedNamesFileName = "refused-names.tsv";
     internal const string MediaFolderName = "WhatsApp";
     internal const string DatabasesFolderName = "Databases";
     internal const string MsgstoreName = "msgstore.db.crypt15";
@@ -60,6 +61,32 @@ internal static class PullFiles
         }
 
         return lines[2]["previous\t".Length..];
+    }
+
+    /// <summary>Writes the refused phone names (relative path, reason). Control characters in a name are shown as \n, \t, \xNN.</summary>
+    internal static void WriteRefusedNames(string destination, IEnumerable<(string Path, string Reason)> refused)
+    {
+        Directory.CreateDirectory(destination);
+        var text = new StringBuilder("# Phone names the pull refused (CH-76): path relative to WhatsApp, reason\n");
+
+        foreach (var (path, reason) in refused)
+        {
+            foreach (var c in path)
+            {
+                text.Append(c switch
+                {
+                    '\n' => "\\n",
+                    '\t' => "\\t",
+                    '\r' => "\\r",
+                    < ' ' => "\\x" + ((int)c).ToString("x2", CultureInfo.InvariantCulture),
+                    _ => c.ToString(),
+                });
+            }
+
+            text.Append('\t').Append(reason).Append('\n');
+        }
+
+        WriteWhole(Path.Combine(destination, RefusedNamesFileName), text.ToString());
     }
 
     internal static void DeleteState(string destination) => File.Delete(Path.Combine(destination, StateFileName));

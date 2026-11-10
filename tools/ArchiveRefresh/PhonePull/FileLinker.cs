@@ -16,6 +16,46 @@ internal interface IFileLinker
     bool TryLink(string existingPath, string newPath);
 }
 
+/// <summary>Facts about the volume holding a folder.</summary>
+internal static class Volumes
+{
+    internal static string? Format(string folder)
+    {
+        try
+        {
+            return new DriveInfo(Path.GetPathRoot(Path.GetFullPath(folder))!).DriveFormat;
+        }
+        catch (Exception exception) when (exception is IOException or ArgumentException or UnauthorizedAccessException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>Bytes per cluster (GetDiskFreeSpaceW); 4096 when the volume does not say.</summary>
+    internal static long ClusterBytes(string folder)
+    {
+        var root = Path.GetPathRoot(Path.GetFullPath(folder));
+
+        if (!string.IsNullOrEmpty(root)
+            && NativeMethods.GetDiskFreeSpace(root.EndsWith('\\') ? root : root + "\\", out var sectorsPerCluster, out var bytesPerSector, out _, out _)
+            && sectorsPerCluster > 0 && bytesPerSector > 0)
+        {
+            return (long)sectorsPerCluster * bytesPerSector;
+        }
+
+        return 4096;
+    }
+
+    private static class NativeMethods
+    {
+        [DllImport("kernel32.dll", EntryPoint = "GetDiskFreeSpaceW", CharSet = CharSet.Unicode, SetLastError = true, ExactSpelling = true)]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static extern bool GetDiskFreeSpace(
+            string rootPathName, out uint sectorsPerCluster, out uint bytesPerSector, out uint freeClusters, out uint totalClusters);
+    }
+}
+
 /// <summary>Windows hard links (CreateHardLinkW).</summary>
 internal sealed class NtfsLinker : IFileLinker
 {
