@@ -476,7 +476,8 @@ namespace Chatcheology.Android.Pages
         private static void AddGameDate(VerticalStackLayout body, GameDetails game)
         {
             var date = Muted(game.DateText, 14);
-            date.VerticalOptions = LayoutOptions.Center;
+            date.LineBreakMode = LineBreakMode.WordWrap;
+            date.VerticalOptions = LayoutOptions.Start;
 
             if (game.EvidenceBlock is not { } block || game.EvidenceMeaning is not { } meaning)
             {
@@ -488,8 +489,8 @@ namespace Chatcheology.Android.Pages
             {
                 Text = block,
                 FontSize = 16,
-                VerticalOptions = LayoutOptions.Center,
-                Padding = new Thickness(8, 4),
+                VerticalOptions = LayoutOptions.Start,
+                Padding = new Thickness(8, 0, 8, 4),
             };
             SemanticProperties.SetDescription(blockLabel, game.EvidenceDescription ?? meaning);
 
@@ -510,7 +511,16 @@ namespace Chatcheology.Android.Pages
             };
             blockLabel.GestureRecognizers.Add(tap);
 
-            body.Add(new HorizontalStackLayout { Spacing = 2, Children = { date, blockLabel } });
+            // The date takes the rest of the width and wraps; the block keeps its own width, so at any font scale or
+            // date length it stays on screen and tappable.
+            var line = new Grid
+            {
+                ColumnDefinitions = { new ColumnDefinition(GridLength.Star), new ColumnDefinition(GridLength.Auto) },
+                ColumnSpacing = 2,
+            };
+            line.Add(date, 0);
+            line.Add(blockLabel, 1);
+            body.Add(line);
             body.Add(meaningLabel);
         }
 

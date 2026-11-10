@@ -363,6 +363,11 @@ namespace Chatcheology.Mobile.Tests
 
             Assert.Equal(2, game.Trophies.Count);
             Assert.All(game.Trophies, t => Assert.False(t.IsTogether));
+
+            // A different-set game is always same-day (sets are never matched across); the meaning must not claim
+            // the trophies were different ones.
+            Assert.Equal("\U0001F7E7", game.EvidenceBlock);
+            Assert.Equal("Same day: you both earned trophies in this game this day, with no identical trophy matched.", game.EvidenceMeaning);
         });
 
         [Fact]

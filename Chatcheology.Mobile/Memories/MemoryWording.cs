@@ -169,13 +169,13 @@ namespace Chatcheology.Mobile.Memories
         /// <summary>
         /// The one line a tap on the evidence block shows (CH-67), from the import's rules: the same trophy (same
         /// trophy set) earned by both that day within a minute (strong), or not within a minute (supporting), or
-        /// trophies by both that day but never the same one (same day). <see langword="null"/> when there is no block.
+        /// trophies by both that day with no identical trophy matched (same day; also every game whose two trophy sets differ, since sets are never matched across). <see langword="null"/> when there is no block.
         /// </summary>
         public static string? DayEvidenceMeaning(string? dayLevel) => dayLevel switch
         {
             "strong" => "Strong: you both earned the same trophy within a minute of each other this day.",
             "supporting" => "Supporting: you both earned the same trophy this day, but not within a minute.",
-            "same-day" => "Same day: you both earned trophies in this game this day, but not the same one.",
+            "same-day" => "Same day: you both earned trophies in this game this day, with no identical trophy matched.",
             _ => null,
         };
 
