@@ -869,23 +869,29 @@ namespace Chatcheology.Mobile.Memories
             var selected = periodIndex is { } chosen ? Periods.FirstOrDefault(p => p.PeriodIndex == chosen) : null;
 
             var lines = new List<string>();
-            var items = new List<MemoryItemLine>();
+            var shown = new List<ArchiveEntryItem>();
             var others = new List<string>();
 
             if (selected is not null)
             {
                 lines.AddRange(ParticipantLines(selected));
                 lines.Add(MemoryWording.PeriodLabelLine(selected.Label));
-                items.AddRange(selected.Items.OrderBy(i => i.TimeLocal).ThenBy(i => i.EntryItemID).Select(ItemLine));
+                shown.AddRange(selected.Items.OrderBy(i => i.TimeLocal).ThenBy(i => i.EntryItemID));
                 others.AddRange(Periods.Where(p => p.PeriodIndex != selected.PeriodIndex).Select(ShortLine));
             }
             else if (Periods.Count > 0)
             {
                 // A "different times" line: every trophy of the record, then its periods as short lines.
                 lines.Add(MemoryWording.DifferentTimesLine(Entry.Title));
-                items.AddRange(Periods.SelectMany(p => p.Items).OrderBy(i => i.TimeLocal).ThenBy(i => i.EntryItemID).Select(ItemLine));
+                shown.AddRange(Periods.SelectMany(p => p.Items).OrderBy(i => i.TimeLocal).ThenBy(i => i.EntryItemID));
                 others.AddRange(Periods.Select(ShortLine));
             }
+
+            var items = shown.Select(ItemLine).ToList();
+
+            // CH-67: a game memory is an entry of an imported collection (the PSN layer); its phone page has its own
+            // layout. Personal (and own and yearly) memories get none of it.
+            var isGame = Collection.Kind == ArchiveMemoryVocabulary.KindImported;
 
             var links = _links
                 .Select(link => link.ToMessageSequenceNumber is { } sequence
@@ -924,6 +930,20 @@ namespace Chatcheology.Mobile.Memories
                 OtherPeriods = others,
                 Links = links,
                 Galleries = Galleries,
+                Game = isGame
+                    ? new GameDetails
+                    {
+                        DateText = shown.Count > 0
+                            ? MemoryWording.GameDateLine(shown.Min(i => i.TimeLocal), shown.Max(i => i.TimeLocal))
+                            : MemoryWording.GameDay(Entry.StartLocal),
+                        EvidenceBlock = MemoryWording.DayEvidenceBlock(Entry.DayLevel),
+                        EvidenceMeaning = MemoryWording.DayEvidenceMeaning(Entry.DayLevel),
+                        EvidenceDescription = MemoryWording.DayEvidenceBlockDescription(Entry.DayLevel),
+                        Trophies = TogetherTrophies.Pair(shown)
+                            .Select(row => new GameTrophyLine(ItemLine(row.First), row.Second is { } later ? ItemLine(later) : null))
+                            .ToList(),
+                    }
+                    : null,
             };
         }
 
@@ -1036,6 +1056,15 @@ namespace Chatcheology.Mobile.Memories
         /// </summary>
         public IReadOnlyList<GalleryLink> Galleries { get; init; } = [];
 
+        /// <summary>
+        /// What a game (PSN) memory's phone page shows instead of the general layout (CH-67); <see langword="null"/>
+        /// for any other memory, whose page is unchanged. The desktop does not use it.
+        /// </summary>
+        public GameDetails? Game { get; init; }
+
+        /// <summary>Whether this is a game memory, laid out by <see cref="Game"/>.</summary>
+        public bool IsGame => Game is not null;
+
         /// <summary>Whether there is an image.</summary>
         public bool HasImage => ImagePath is not null;
 
@@ -1045,6 +1074,29 @@ namespace Chatcheology.Mobile.Memories
         /// <summary>The share text: none, ever. Memories are not shared (CH-42).</summary>
 
         public string? ShareText => null;
+    }
+
+    /// <summary>
+    /// A game memory's phone page (CH-67), top to bottom: heading (<see cref="MemoryDetails.Title"/>), this date line
+    /// with the evidence block, the game picture (<see cref="MemoryDetails.Photos"/>), Show in chat, then
+    /// <see cref="Trophies"/>. Nothing else is shown.
+    /// </summary>
+    public sealed class GameDetails
+    {
+        /// <summary>The day and the play window, first to last shown trophy: "Sat 8 Nov 2026, 19:40-22:15".</summary>
+        public required string DateText { get; init; }
+
+        /// <summary>The day's evidence level as a colour block (🟩, 🟨, 🟧), or <see langword="null"/> for none or an unknown level.</summary>
+        public required string? EvidenceBlock { get; init; }
+
+        /// <summary>The one line a tap on the block shows, or <see langword="null"/> when there is no block.</summary>
+        public required string? EvidenceMeaning { get; init; }
+
+        /// <summary>What a screen reader hears for the block, or <see langword="null"/> when there is no block.</summary>
+        public required string? EvidenceDescription { get; init; }
+
+        /// <summary>The trophies in time order, together trophies as one row at the earlier time.</summary>
+        public required IReadOnlyList<GameTrophyLine> Trophies { get; init; }
     }
 
     /// <summary>One layer as Settings lists it: its switch and, for an imported collection, its filters.</summary>
