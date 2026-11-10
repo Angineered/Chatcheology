@@ -29,17 +29,17 @@ namespace Chatcheology.Mobile.Tests
         {
             // CH-71 step 2 review note on step 1b: one fixed id for every option made the second install look like a
             // refresh of the first.
-            string?[] ids = [SyntheticDebugInstalls.Standard.ArchiveId, SyntheticDebugInstalls.MidDay.ArchiveId, SyntheticDebugInstalls.WithMemories.ArchiveId];
+            string?[] ids = [SyntheticDebugInstalls.Standard.ArchiveId, SyntheticDebugInstalls.MidDay.ArchiveId, SyntheticDebugInstalls.WithMemories.ArchiveId, SyntheticDebugInstalls.HeavyPhotoMonth.ArchiveId];
 
             Assert.All(ids, id => Assert.True(ArchiveFormat.IsArchiveId(id)));
-            Assert.Equal(3, ids.Distinct(StringComparer.Ordinal).Count());
+            Assert.Equal(4, ids.Distinct(StringComparer.Ordinal).Count());
             Assert.DoesNotContain(SyntheticArchive.ArchiveId, ids);
         }
 
         [Fact]
         public void Every_Debug_install_writes_version_four_with_its_yearly_memories_and_captions_and_validates()
         {
-            foreach (var options in new[] { SyntheticDebugInstalls.Standard, SyntheticDebugInstalls.MidDay, SyntheticDebugInstalls.WithMemories })
+            foreach (var options in new[] { SyntheticDebugInstalls.Standard, SyntheticDebugInstalls.MidDay, SyntheticDebugInstalls.WithMemories, SyntheticDebugInstalls.HeavyPhotoMonth })
             {
                 using var folder = new TemporaryFolder();
                 var counts = SyntheticArchive.Write(folder.Path, options);

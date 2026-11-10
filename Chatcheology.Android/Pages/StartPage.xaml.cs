@@ -314,6 +314,11 @@ namespace Chatcheology.Android.Pages
             memories.Clicked += async (_, _) => await InstallSyntheticAsync(SyntheticDebugInstalls.WithMemories);
             DevelopmentTools.Children.Add(memories);
 
+            // CH-66 scroll follow-up: 1,500 photos in one month, for the Photos gallery's scrolling.
+            var heavy = new Button { Text = "Install synthetic archive (heavy photo month)" };
+            heavy.Clicked += async (_, _) => await InstallSyntheticAsync(SyntheticDebugInstalls.HeavyPhotoMonth);
+            DevelopmentTools.Children.Add(heavy);
+
             var validate = new Button { Text = "Validate installed archives" };
             validate.Clicked += async (_, _) => await ValidateInstalledAsync();
             DevelopmentTools.Children.Add(validate);
