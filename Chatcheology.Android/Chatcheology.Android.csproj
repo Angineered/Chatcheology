@@ -52,6 +52,8 @@
     <MauiSplashScreen Include="Resources\Splash\splash_neon.png" Color="#000000" BaseSize="128,128" />
     <!-- The conversation's top-bar icons (CH-37, CH-38, CH-39), drawn for this app. -->
     <MauiImage Include="Resources\Images\*.svg" BaseSize="24,24" />
+    <!-- CH-78: the splash logo again, for the start screen's loading state that continues the splash (same 128 dp). -->
+    <MauiImage Include="Resources\Images\start_logo.png" BaseSize="128,128" />
   </ItemGroup>
 
   <ItemGroup>

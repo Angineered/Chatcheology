@@ -16,7 +16,9 @@ namespace Chatcheology.Android.Pages
     /// The start screen, following the opening rule: no archive, a note and "Import archive…"; exactly
     /// one, straight into its conversation; several, the list with the last opened first. With a readable archive
     /// installed, Import archive is a smaller entry under "More"; with none (or only unreadable ones) it stays the main
-    /// button (CH-78, <see cref="StartImport"/>).
+    /// button (CH-78, <see cref="StartImport"/>). On the app's first start only a loading state continuing the splash
+    /// shows until the list is read and any archive opened by itself (<see cref="StartAutoOpen"/>) is open, so the
+    /// import button does not flash before the conversation.
     /// </summary>
     public partial class StartPage : ContentPage
     {
@@ -28,6 +30,9 @@ namespace Chatcheology.Android.Pages
         private readonly Button _smallImportButton = new() { Text = "Import archive…", HorizontalOptions = LayoutOptions.Start };
         private bool _started;
         private bool _opening;
+
+        // CH-78: set by the first appearance, which alone hides the loading state when it is done.
+        private bool _appeared;
 
         internal StartPage(AppState state)
         {
@@ -49,33 +54,61 @@ namespace Chatcheology.Android.Pages
         }
 
         /// <inheritdoc />
+        /// <remarks>
+        /// On the first start the loading state stays up (CH-78) while the archive list is read and, when
+        /// <see cref="StartAutoOpen"/> picks an archive, until its conversation is open; then, or when the list could not
+        /// be read, nothing is to be opened or the open failed, the normal screen shows. Later appearances (back from
+        /// the conversation) show the normal screen.
+        /// </remarks>
         protected override async void OnAppearing()
         {
             base.OnAppearing();
 
-            var opening = await RefreshAsync();
-            var starting = !_started;
-            _started = true;
+            var firstAppearance = !_appeared;
+            _appeared = true;
 
-            if (!starting)
+            try
             {
-                // Coming back from the conversation shows this screen.
-                return;
-            }
+                var opening = await RefreshAsync();
+                var starting = !_started;
+                _started = true;
 
-            // Noted-date notifications (CH-47): scheduled again on every start.
-            _ = NotedDateNotifier.UpdateAsync();
+                if (!starting)
+                {
+                    // Coming back from the conversation shows this screen.
+                    return;
+                }
 
-            // Started from a noted-date notification: that archive, with its On this day card.
-            if (MainActivity.TakePendingArchive() is { } pending
-                && opening?.Archives.FirstOrDefault(archive => archive.InstallId == pending) is { IsReadable: true } notified)
-            {
-                await OpenAsync(notified, showOnThisDay: true);
+                // Noted-date notifications (CH-47): scheduled again on every start.
+                _ = NotedDateNotifier.UpdateAsync();
+
+                // Started from a noted-date notification: that archive, with its On this day card; otherwise the only one.
+                if (StartAutoOpen.Choose(opening, MainActivity.TakePendingArchive()) is { } open)
+                {
+                    await OpenAsync(open.Archive, open.ShowOnThisDay);
+                }
             }
-            else if (opening is { Screen: StartScreen.OpenConversation, Archive: { IsReadable: true } only })
+            finally
             {
-                await OpenAsync(only);
+                // Once the conversation is on top this screen is hidden under it, so the normal screen is ready for the
+                // way back; after a failed open it shows the reason in Status.
+                if (firstAppearance)
+                {
+                    ShowLoading(false);
+                }
             }
+        }
+
+        /// <summary>
+        /// The loading state alone (the first start, CH-78: the splash logo on black with a spinner, no navigation bar)
+        /// or the normal start screen. Once the first start has finished it is never shown again.
+        /// </summary>
+        private void ShowLoading(bool loading)
+        {
+            LoadingSpinner.IsRunning = loading;
+            Loading.IsVisible = loading;
+            StartContent.IsVisible = !loading;
+            NavigationPage.SetHasNavigationBar(this, !loading);
         }
 
         /// <summary>Opens the installed archive with folder name <paramref name="id"/>, after an import.</summary>
