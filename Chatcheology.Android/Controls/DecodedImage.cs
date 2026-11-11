@@ -67,7 +67,11 @@ namespace Chatcheology.Android.Controls
     /// <param name="ContentsSha256">The archive's identity.</param>
     /// <param name="AttachmentID">The photo's attachment.</param>
     /// <param name="MediaSha256">The photo's media hash.</param>
-    public sealed record SavedThumbnail(ThumbnailStore Store, string ContentsSha256, long AttachmentID, string MediaSha256)
+    /// <param name="IsWanted">
+    /// Whether a new thumbnail may still be saved: false once the page showing it closed (its archive may be removed next,
+    /// and a save must not make its folder again). Read on the decode worker.
+    /// </param>
+    public sealed record SavedThumbnail(ThumbnailStore Store, string ContentsSha256, long AttachmentID, string MediaSha256, Func<bool> IsWanted)
     {
         /// <summary>The key at <paramref name="width"/> by <paramref name="height"/> pixels.</summary>
         public ThumbnailKey KeyAt(int width, int height) => new(ContentsSha256, AttachmentID, MediaSha256, width, height);
@@ -271,12 +275,15 @@ namespace Chatcheology.Android.Controls
                         }
                     }
 
-                    if (bitmap is null)
+                    if (bitmap is null && videoKey is null)
                     {
-                        bitmap = videoKey is null
-                            ? ImageDecoding.DecodeToCover(path, width, height)
-                            : VideoFrames.FrameToCover(path, videoKey, width, height);
-                        fromPhoto = bitmap is not null;
+                        // A degraded decode (a fallback was taken) is shown but never saved: missing is better than wrong.
+                        bitmap = ImageDecoding.DecodeToCover(path, width, height, out var degraded);
+                        fromPhoto = bitmap is not null && !degraded;
+                    }
+                    else if (bitmap is null)
+                    {
+                        bitmap = VideoFrames.FrameToCover(path, videoKey!, width, height);
                     }
                 }
                 catch (Exception)
@@ -288,7 +295,7 @@ namespace Chatcheology.Android.Controls
                 PostResult(frame, generation, videoKey, bitmap);
 
                 // Saved after it is shown, on this worker; a failure only means the photo is decoded again next time.
-                if (fromPhoto && saved is not null && bitmap is not null)
+                if (fromPhoto && saved is not null && bitmap is not null && saved.IsWanted())
                 {
                     var shown = bitmap;
                     saved.Store.Save(saved.KeyAt(width, height), stream => ImageDecoding.WriteCoverJpeg(shown, width, height, stream));

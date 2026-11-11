@@ -34,6 +34,9 @@ namespace Chatcheology.Android.Pages
         private readonly ActivityIndicator _working = new() { IsVisible = false, IsRunning = false, HorizontalOptions = LayoutOptions.Center, VerticalOptions = LayoutOptions.Center };
         private readonly CancellationTokenSource _closing = new();
 
+        // Read by decode workers before saving a thumbnail (CH-66): nothing is saved once the page closed.
+        private readonly Func<bool> _isOpen;
+
         // The batches shown, in order, and their photos; changed only on the UI thread.
         private readonly List<GalleryBatch> _batches = [];
         private readonly List<AttachmentCard> _photos = [];
@@ -49,6 +52,7 @@ namespace Chatcheology.Android.Pages
             _state = state;
             _session = session;
             _conversation = conversation;
+            _isOpen = () => !Volatile.Read(ref _closed);
 
             Title = "Photos";
             _status.TextIn("MutedText");
@@ -72,7 +76,9 @@ namespace Chatcheology.Android.Pages
 
         /// <summary>Where a photo's saved thumbnail is kept (CH-66), or <see langword="null"/> when it has no media hash.</summary>
         internal SavedThumbnail? SavedFor(AttachmentCard photo) =>
-            photo.MediaSha256 is { } sha ? new SavedThumbnail(_state.Library.Thumbnails, _session.ContentsSha256, photo.AttachmentID, sha) : null;
+            photo.MediaSha256 is { } sha
+                ? new SavedThumbnail(_state.Library.Thumbnails, _session.ContentsSha256, photo.AttachmentID, sha, _isOpen)
+                : null;
 
         /// <inheritdoc />
         protected override void OnSizeAllocated(double width, double height)

@@ -48,24 +48,77 @@ namespace Chatcheology.Mobile.Tests
             Assert.Null(store.Find(Key(id: 8)));
             Assert.Null(store.Find(Key(photo: OtherPhoto)));
             Assert.Null(store.Find(Key(width: 200, height: 200)));
-            Assert.Equal(Path.Combine(_root.Path, "files", ThumbnailStore.FolderName), store.Root);
+            Assert.Equal(Path.Combine(_root.Path, "files", ThumbnailStore.FolderName, ThumbnailStore.Version), store.Root);
+            Assert.Equal(Path.Combine(_root.Path, "files", ThumbnailStore.FolderName), store.Folder);
         }
 
         [Theory]
-        [InlineData("../escape", 7, 300)]
-        [InlineData("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", 7, 300)]
-        [InlineData("", 0, 300)]
-        [InlineData("", 7, 0)]
-        public void A_key_that_cannot_name_a_file_is_never_saved_or_found(string archive, long id, int size)
+        [InlineData("../escape", 7, "", 300)]
+        [InlineData("..", 7, "", 300)]
+        [InlineData("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", 7, "", 300)]
+        [InlineData("", 0, "", 300)]
+        [InlineData("", -3, "", 300)]
+        [InlineData("", 7, "", 0)]
+        [InlineData("", 7, "..", 300)]
+        [InlineData("", 7, "../../escape", 300)]
+        [InlineData("", 7, "1111111111111111111111111111111111111111111111111111111111111111/..", 300)]
+        [InlineData("", 7, "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF", 300)]
+        [InlineData("", 7, "111111111111111111111111111111111111111111111111111111111111111", 300)]
+        [InlineData("", 7, "11111111111111111111111111111111111111111111111111111111111111111", 300)]
+        [InlineData("", 7, "not-a-hash", 300)]
+        public void A_key_that_cannot_name_a_file_is_never_saved_or_found(string archive, long id, string photo, int size)
         {
             var store = Store();
-            var key = Key(archive: archive, id: id, width: size, height: size);
+            var key = photo.Length == 0
+                ? Key(archive: archive, id: id, width: size, height: size)
+                : Key(archive: archive, id: id, width: size, height: size) with { MediaSha256 = photo };
 
             Assert.False(key.IsValid);
             Assert.False(store.Save(key, Jpeg));
             Assert.Null(store.Find(key));
+            store.Remove(key);
             Assert.Empty(FilesLeft(store));
-            Assert.False(store.Save(Key(photo: "not-a-hash"), Jpeg));
+            Assert.False(Directory.Exists(store.Folder));
+        }
+
+        [Fact]
+        public void One_size_is_kept_per_attachment_so_a_new_cell_size_replaces_the_old_thumbnail()
+        {
+            var store = Store();
+            Assert.True(store.Save(Key(id: 7, width: 300, height: 300), Jpeg));
+            Assert.True(store.Save(Key(id: 70), Jpeg));
+            Assert.True(store.Save(Key(id: 8), Jpeg));
+
+            // Rotated or split screen: a new size for attachment 7 replaces its thumbnail.
+            Assert.True(store.Save(Key(id: 7, width: 540, height: 540), Jpeg));
+
+            Assert.Null(store.Find(Key(id: 7, width: 300, height: 300)));
+            Assert.NotNull(store.Find(Key(id: 7, width: 540, height: 540)));
+            Assert.NotNull(store.Find(Key(id: 70)));   // "70-" is not attachment 7
+            Assert.NotNull(store.Find(Key(id: 8)));
+            Assert.Equal(3, FilesLeft(store).Length);
+
+            // A failed save at another size keeps the one there is.
+            Assert.False(store.Save(Key(id: 7, width: 200, height: 200), _ => false));
+            Assert.NotNull(store.Find(Key(id: 7, width: 540, height: 540)));
+        }
+
+        [Fact]
+        public void Start_up_cleanup_removes_everything_not_under_the_current_version()
+        {
+            var store = Store();
+            Assert.True(store.Save(Key(), Jpeg));
+
+            var earlier = Path.Combine(store.Folder, "v0", Archive);
+            Directory.CreateDirectory(earlier);
+            File.WriteAllBytes(Path.Combine(earlier, "7-" + Photo + "-300x300.jpg"), [1]);
+            Directory.CreateDirectory(Path.Combine(store.Folder, Archive));   // the unversioned layout
+            File.WriteAllBytes(Path.Combine(store.Folder, "stray"), [1]);
+
+            store.RemoveOrphans([Archive]);
+
+            Assert.Equal([store.Root], Directory.GetFileSystemEntries(store.Folder));
+            Assert.NotNull(store.Find(Key()));
         }
 
         [Fact]
@@ -136,7 +189,6 @@ namespace Chatcheology.Mobile.Tests
         {
             var store = Store();
             Assert.True(store.Save(Key(id: 7), Jpeg));
-            Assert.True(store.Save(Key(id: 7, width: 200, height: 200), Jpeg));
             Assert.True(store.Save(Key(id: 8, photo: OtherPhoto), Jpeg));
             Assert.True(store.Save(Key(id: 9), Jpeg));
             File.WriteAllBytes(Path.Combine(store.Root, Archive, "not-a-thumbnail.jpg"), [1]);
@@ -144,11 +196,10 @@ namespace Chatcheology.Mobile.Tests
             store.Carry(Archive, OtherArchive, (id, sha) => (id, sha) == (7, Photo) || (id, sha) == (8, Photo));
 
             Assert.NotNull(store.Find(Key(archive: OtherArchive, id: 7)));
-            Assert.NotNull(store.Find(Key(archive: OtherArchive, id: 7, width: 200, height: 200)));
             Assert.Null(store.Find(Key(archive: OtherArchive, id: 8, photo: OtherPhoto)));   // same id, other media
             Assert.Null(store.Find(Key(archive: OtherArchive, id: 9)));
             Assert.False(Directory.Exists(Path.Combine(store.Root, Archive)));
-            Assert.Equal(2, FilesLeft(store).Length);
+            Assert.Single(FilesLeft(store));
         }
 
         [Fact]

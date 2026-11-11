@@ -9,8 +9,8 @@ namespace Chatcheology.Mobile.Library
     /// made the first time the photo is shown and read instead of the photo afterwards, also after a restart.
     /// </summary>
     /// <remarks>
-    /// <para>Layout under the app's private files folder: <c>thumbnails/&lt;contents hash&gt;/&lt;attachment id&gt;-&lt;media
-    /// sha256&gt;-&lt;width&gt;x&lt;height&gt;.jpg</c>, beside the installed archives and never inside one (nothing writes in
+    /// <para>Layout under the app's private files folder: <c>thumbnails/v1/&lt;contents hash&gt;/&lt;attachment id&gt;-&lt;media
+    /// sha256&gt;-&lt;width&gt;x&lt;height&gt;.jpg</c>, one size per attachment (saving one deletes its others), beside the installed archives and never inside one (nothing writes in
     /// <c>archives/</c>). The contents hash is the installed archive's identity (<see cref="ArchiveLibrary.ContentsSha256Of"/>).</para>
     /// <para>Only a cache: a missing, unreadable or unwritable thumbnail means the photo is decoded as before. Nothing here
     /// throws to its caller. Removing an archive removes its folder (<see cref="RemoveArchive"/>); a refresh carries the
@@ -35,11 +35,21 @@ namespace Chatcheology.Mobile.Library
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(filesFolder);
 
-            Root = Path.Combine(Path.TrimEndingDirectorySeparator(Path.GetFullPath(filesFolder)), FolderName);
+            Folder = Path.Combine(Path.TrimEndingDirectorySeparator(Path.GetFullPath(filesFolder)), FolderName);
+            Root = Path.Combine(Folder, Version);
             _space = space;
         }
 
-        /// <summary>Where the thumbnails live.</summary>
+        /// <summary>
+        /// The layout version: the thumbnails live under <c>thumbnails/&lt;version&gt;/</c>, and anything in
+        /// <c>thumbnails/</c> not under it is deleted at start, so a later change of size, crop or encoding starts afresh.
+        /// </summary>
+        public const string Version = "v1";
+
+        /// <summary>The thumbnails folder, holding the current version's <see cref="Root"/> only.</summary>
+        public string Folder { get; }
+
+        /// <summary>Where the current version's thumbnails live, one folder per archive.</summary>
         public string Root { get; }
 
         /// <summary>The saved thumbnail's file, or <see langword="null"/> when there is none (or the key is not valid).</summary>
@@ -95,6 +105,12 @@ namespace Chatcheology.Mobile.Library
                 using (var stream = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None))
                 {
                     written = write(stream) && stream.Length > 0;
+
+                    if (written)
+                    {
+                        // On the storage before the move: a power cut never leaves an empty file under the final name.
+                        stream.Flush(flushToDisk: true);
+                    }
                 }
 
                 if (!written)
@@ -104,6 +120,9 @@ namespace Chatcheology.Mobile.Library
                 }
 
                 File.Move(temporary, path, overwrite: true);
+
+                // One size per attachment: a rotation or split screen replaces the thumbnail, never adds a second set.
+                RemoveOtherSizes(folder, key, Path.GetFileName(path));
 
                 return true;
             }
@@ -191,6 +210,23 @@ namespace Chatcheology.Mobile.Library
 
             try
             {
+                // Anything not under the current version: an earlier layout, or a stray file.
+                if (Directory.Exists(Folder))
+                {
+                    foreach (var entry in Directory.EnumerateDirectories(Folder))
+                    {
+                        if (!string.Equals(Path.GetFileName(entry), Version, StringComparison.Ordinal))
+                        {
+                            DeleteFolder(entry);
+                        }
+                    }
+
+                    foreach (var file in Directory.EnumerateFiles(Folder))
+                    {
+                        Delete(file);
+                    }
+                }
+
                 if (!Directory.Exists(Root))
                 {
                     return;
@@ -286,6 +322,30 @@ namespace Chatcheology.Mobile.Library
             mediaSha256 = parts[1];
 
             return true;
+        }
+
+        /// <summary>Deletes the attachment's other saved thumbnails (another size, or an earlier media) in its archive folder.</summary>
+        private static void RemoveOtherSizes(string folder, ThumbnailKey key, string kept)
+        {
+            try
+            {
+                var prefix = key.AttachmentID.ToString(CultureInfo.InvariantCulture) + "-";
+
+                foreach (var file in Directory.EnumerateFiles(folder, prefix + "*" + Extension))
+                {
+                    var name = Path.GetFileName(file);
+
+                    if (!string.Equals(name, kept, StringComparison.Ordinal)
+                        && TryParse(name, out var id, out _, out _, out _) && id == key.AttachmentID)
+                    {
+                        Delete(file);
+                    }
+                }
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                // Left until this attachment is saved again or the archive is removed.
+            }
         }
 
         private static void Delete(string file)

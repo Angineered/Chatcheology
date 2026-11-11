@@ -184,7 +184,6 @@ namespace Chatcheology.Mobile.Tests
             ThumbnailKey Key(string hash, long id, string sha) => new(hash, id, sha, 300, 300);
 
             Assert.True(store.Save(Key(oldHash, 501, photo), Jpeg));
-            Assert.True(store.Save(Key(oldHash, 501, photo) with { Width = 200, Height = 200 }, Jpeg));
             Assert.True(store.Save(Key(oldHash, 502, other), Jpeg));   // that attachment's media is different now
             Assert.True(store.Save(Key(oldHash, 999, photo), Jpeg));   // no such attachment in the new copy
 
@@ -193,11 +192,10 @@ namespace Chatcheology.Mobile.Tests
             var newHash = refreshed.ContentsSha256!;
 
             Assert.NotNull(store.Find(Key(newHash, 501, photo)));
-            Assert.NotNull(store.Find(Key(newHash, 501, photo) with { Width = 200, Height = 200 }));
             Assert.Null(store.Find(Key(newHash, 502, other)));
             Assert.Null(store.Find(Key(newHash, 999, photo)));
             Assert.False(Directory.Exists(Path.Combine(store.Root, oldHash)));
-            Assert.Equal(2, Directory.GetFiles(Path.Combine(store.Root, newHash)).Length);
+            Assert.Single(Directory.GetFiles(Path.Combine(store.Root, newHash)));
         }
 
         [Fact]
