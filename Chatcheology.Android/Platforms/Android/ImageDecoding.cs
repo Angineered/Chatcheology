@@ -20,8 +20,17 @@ namespace Chatcheology.Android
         /// is there; <see langword="null"/> when it cannot be decoded. Call it off the UI thread. Cached
         /// bitmaps are shared: the caller must not recycle them.
         /// </summary>
-        internal static Bitmap? DecodeToCover(string path, int targetWidth, int targetHeight)
+        internal static Bitmap? DecodeToCover(string path, int targetWidth, int targetHeight) =>
+            DecodeToCover(path, targetWidth, targetHeight, out _);
+
+        /// <summary>
+        /// As <see cref="DecodeToCover(string, int, int)"/>; <paramref name="degraded"/> tells whether a fallback was taken
+        /// (orientation unread, turning or cropping failed). A degraded thumbnail is shown but never cached or saved (CH-66:
+        /// missing is better than wrong), so the next decode tries again and a cached one is always a full one.
+        /// </summary>
+        internal static Bitmap? DecodeToCover(string path, int targetWidth, int targetHeight, out bool degraded)
         {
+            degraded = false;
             var key = CoverKey(path, targetWidth, targetHeight);
 
             if (Cache.Get(key) is Bitmap cached)
@@ -29,7 +38,7 @@ namespace Chatcheology.Android
                 return cached;
             }
 
-            var bitmap = Decode(path, (width, height) => ImageSampling.CoverSample(width, height, targetWidth, targetHeight));
+            var bitmap = Decode(path, (width, height) => ImageSampling.CoverSample(width, height, targetWidth, targetHeight), out degraded);
 
             if (bitmap is null)
             {
@@ -42,7 +51,51 @@ namespace Chatcheology.Android
 
             if (!crop.IsWhole(bitmap.Width, bitmap.Height))
             {
-                bitmap = Crop(bitmap, crop);
+                bitmap = Crop(bitmap, crop, out var cropFailed);
+                degraded |= cropFailed;
+            }
+
+            if (!degraded)
+            {
+                Cache.Put(key, bitmap);
+            }
+
+            return bitmap;
+        }
+
+        /// <summary>
+        /// The thumbnail <see cref="DecodeToCover(string, int, int)"/> made for these arguments when it is still in the cache, else
+        /// <see langword="null"/>. Reads memory only, so it may be called on the UI thread: a cell scrolled back to
+        /// is drawn at once instead of after a trip through a worker.
+        /// </summary>
+        internal static Bitmap? CachedCover(string path, int targetWidth, int targetHeight) =>
+            Cache.Get(CoverKey(path, targetWidth, targetHeight)) as Bitmap;
+
+        private static string CoverKey(string path, int targetWidth, int targetHeight) => $"{targetWidth}x{targetHeight}:{path}";
+
+        /// <summary>
+        /// A saved thumbnail (CH-66) of the picture at <paramref name="path"/>, read from <paramref name="savedPath"/> and
+        /// kept in the memory cache as <see cref="DecodeToCover(string, int, int)"/> would keep the picture's own, so
+        /// <see cref="CachedCover"/> finds it. <see langword="null"/> when the saved file does not decode. Off the UI thread.
+        /// </summary>
+        internal static Bitmap? DecodeSavedCover(string savedPath, string path, int targetWidth, int targetHeight)
+        {
+            var key = CoverKey(path, targetWidth, targetHeight);
+
+            if (Cache.Get(key) is Bitmap cached)
+            {
+                return cached;
+            }
+
+            Bitmap? bitmap;
+
+            try
+            {
+                bitmap = BitmapFactory.DecodeFile(savedPath);
+            }
+            catch (Java.Lang.Throwable)
+            {
+                return null;
             }
 
             if (bitmap is not null)
@@ -54,14 +107,45 @@ namespace Chatcheology.Android
         }
 
         /// <summary>
-        /// The thumbnail <see cref="DecodeToCover"/> made for these arguments when it is still in the cache, else
-        /// <see langword="null"/>. Reads memory only, so it may be called on the UI thread: a cell scrolled back to
-        /// is drawn at once instead of after a trip through a worker.
+        /// Writes <paramref name="bitmap"/> (a cover thumbnail) to <paramref name="stream"/> as a JPEG of at most
+        /// <paramref name="targetWidth"/> by <paramref name="targetHeight"/>, for the saved thumbnails (CH-66). The bitmap is
+        /// shared and left as it is. Whether it was written.
         /// </summary>
-        internal static Bitmap? CachedCover(string path, int targetWidth, int targetHeight) =>
-            Cache.Get(CoverKey(path, targetWidth, targetHeight)) as Bitmap;
+        internal static bool WriteCoverJpeg(Bitmap bitmap, int targetWidth, int targetHeight, System.IO.Stream stream)
+        {
+            Bitmap? scaled = null;
 
-        private static string CoverKey(string path, int targetWidth, int targetHeight) => $"{targetWidth}x{targetHeight}:{path}";
+            try
+            {
+                // JPEG has no transparency: a see-through picture is never saved, so it keeps looking as it does.
+                if (bitmap.HasAlpha)
+                {
+                    return false;
+                }
+
+                // A thumbnail kept up to half again larger in memory is saved at the cell's size: smaller files.
+                var scale = Math.Max((double)targetWidth / bitmap.Width, (double)targetHeight / bitmap.Height);
+
+                if (scale < 1)
+                {
+                    scaled = Bitmap.CreateScaledBitmap(
+                        bitmap, Math.Max(1, (int)Math.Round(bitmap.Width * scale)), Math.Max(1, (int)Math.Round(bitmap.Height * scale)), filter: true);
+                }
+
+                return (scaled ?? bitmap).Compress(Bitmap.CompressFormat.Jpeg!, 85, stream);
+            }
+            catch (Java.Lang.Throwable)
+            {
+                return false;
+            }
+            finally
+            {
+                if (scaled is not null && !ReferenceEquals(scaled, bitmap))
+                {
+                    scaled.Recycle();
+                }
+            }
+        }
 
         /// <summary>
         /// The picture at <paramref name="path"/> for the full-screen viewer: reduced while decoding to no
@@ -112,10 +196,18 @@ namespace Chatcheology.Android
         /// Reads the picture's size and EXIF orientation, decodes it at the sample size
         /// <paramref name="sample"/> gives for its upright size, then turns it the right way up (CH-57).
         /// </summary>
-        private static Bitmap? Decode(string path, Func<int, int, int> sample)
+        private static Bitmap? Decode(string path, Func<int, int, int> sample) => Decode(path, sample, out _);
+
+        /// <summary>
+        /// As <see cref="Decode(string, Func{int, int, int})"/>; <paramref name="degraded"/> tells whether a fallback was taken
+        /// (the orientation could not be read, or turning the picture failed), so the bitmap may not be the right way up.
+        /// </summary>
+        private static Bitmap? Decode(string path, Func<int, int, int> sample, out bool degraded)
         {
             Bitmap? bitmap;
             ImageOrientation orientation;
+            var orientationRead = true;
+            degraded = false;
 
             try
             {
@@ -127,7 +219,7 @@ namespace Chatcheology.Android
                     return null;
                 }
 
-                orientation = ReadOrientation(path);
+                orientation = ReadOrientation(path, out orientationRead);
 
                 // The reduction is chosen for the shape the picture is shown at, not the one it is stored at.
                 var (width, height) = orientation.UprightSize(bounds.OutWidth, bounds.OutHeight);
@@ -141,12 +233,27 @@ namespace Chatcheology.Android
                 return null;
             }
 
-            return bitmap is null || orientation.IsAsStored ? bitmap : Orient(bitmap, orientation);
+            degraded = !orientationRead;
+
+            if (bitmap is null || orientation.IsAsStored)
+            {
+                return bitmap;
+            }
+
+            var turned = Orient(bitmap, orientation, out var orientFailed);
+            degraded |= orientFailed;
+
+            return turned;
         }
 
         /// <summary>The picture's EXIF orientation; as stored when there is none or it cannot be read.</summary>
-        private static ImageOrientation ReadOrientation(string path)
+        private static ImageOrientation ReadOrientation(string path) => ReadOrientation(path, out _);
+
+        /// <summary>As <see cref="ReadOrientation(string)"/>; <paramref name="read"/> is false when the EXIF could not be read.</summary>
+        private static ImageOrientation ReadOrientation(string path, out bool read)
         {
+            read = true;
+
             try
             {
                 using var exif = new ExifInterface(path);
@@ -155,10 +262,12 @@ namespace Chatcheology.Android
             }
             catch (Java.Lang.Throwable)
             {
+                read = false;
                 return ImageOrientation.AsStored;
             }
             catch (Exception exception) when (exception is IOException or ArgumentException or NotSupportedException)
             {
+                read = false;
                 return ImageOrientation.AsStored;
             }
         }
@@ -168,8 +277,10 @@ namespace Chatcheology.Android
         /// <see cref="ImageOrientation"/> defines); the original is released. When turning it fails the
         /// picture is shown as stored, as it was before CH-57, rather than not at all.
         /// </summary>
-        private static Bitmap Orient(Bitmap bitmap, ImageOrientation orientation)
+        private static Bitmap Orient(Bitmap bitmap, ImageOrientation orientation, out bool failed)
         {
+            failed = false;
+
             try
             {
                 using var matrix = new Matrix();
@@ -192,16 +303,19 @@ namespace Chatcheology.Android
             }
             catch (Java.Lang.Throwable)
             {
+                failed = true;
                 return bitmap;
             }
         }
 
         /// <summary>
         /// The part of the bitmap <paramref name="crop"/> names, at its scale; the original is released. When that
-        /// fails the bitmap is kept whole: the view's centre crop shows the same part.
+        /// fails the bitmap is kept whole (<paramref name="failed"/>): the view's centre crop shows the same part.
         /// </summary>
-        private static Bitmap Crop(Bitmap bitmap, CoverCrop crop)
+        private static Bitmap Crop(Bitmap bitmap, CoverCrop crop, out bool failed)
         {
+            failed = false;
+
             try
             {
                 using var matrix = new Matrix();
@@ -218,6 +332,7 @@ namespace Chatcheology.Android
             }
             catch (Java.Lang.Throwable)
             {
+                failed = true;
                 return bitmap;
             }
         }

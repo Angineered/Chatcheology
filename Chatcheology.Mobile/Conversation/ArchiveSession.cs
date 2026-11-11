@@ -359,6 +359,9 @@ namespace Chatcheology.Mobile.Conversation
         /// <summary>The conversation's title, for the conversation screen's heading.</summary>
         public string Title => Reader.Info.ConversationTitle;
 
+        /// <summary>The archive's identity (its contents hash), the key of its settings and saved thumbnails (CH-66).</summary>
+        public string ContentsSha256 => _identity;
+
         /// <summary>Every participant, by identifier.</summary>
         public IReadOnlyList<ArchiveParticipant> Participants { get; }
 

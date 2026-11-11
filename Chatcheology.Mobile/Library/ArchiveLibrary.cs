@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using Chatcheology.Archive;
+using Chatcheology.Mobile.Import;
 using Chatcheology.Mobile.Settings;
 using Microsoft.Data.Sqlite;
 
@@ -26,8 +27,11 @@ namespace Chatcheology.Mobile.Library
         /// <summary>The folder name, under the files folder, of imports being checked.</summary>
         public const string StagingFolderName = "staging";
 
-        /// <summary>A library rooted at the app's private files folder.</summary>
-        public ArchiveLibrary(string filesFolder)
+        /// <summary>
+        /// A library rooted at the app's private files folder; <paramref name="space"/> reports its free space, for the
+        /// saved thumbnails (CH-66), if known.
+        /// </summary>
+        public ArchiveLibrary(string filesFolder, IStorageSpace? space = null)
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(filesFolder);
 
@@ -35,7 +39,11 @@ namespace Chatcheology.Mobile.Library
 
             ArchivesFolder = Path.Combine(root, ArchivesFolderName);
             StagingFolder = Path.Combine(root, StagingFolderName);
+            Thumbnails = new ThumbnailStore(root, space);
         }
+
+        /// <summary>The gallery's saved thumbnails, beside the installed archives (CH-66).</summary>
+        public ThumbnailStore Thumbnails { get; }
 
         /// <summary>Where installed archives live.</summary>
         public string ArchivesFolder { get; }
@@ -49,6 +57,22 @@ namespace Chatcheology.Mobile.Library
             if (Directory.Exists(StagingFolder))
             {
                 Directory.Delete(StagingFolder, recursive: true);
+            }
+        }
+
+        /// <summary>
+        /// Deletes saved thumbnails of archives no longer installed and unfinished thumbnail writes (CH-66). Reads each
+        /// installed archive's contents list; call it off the UI thread. Never throws.
+        /// </summary>
+        public void CleanThumbnails()
+        {
+            try
+            {
+                Thumbnails.RemoveOrphans(ListInstalled().Select(ContentsSha256Of).ToList());
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                // Tried again at the next start.
             }
         }
 
@@ -118,6 +142,9 @@ namespace Chatcheology.Mobile.Library
             if (archive.ContentsSha256 is { } hash)
             {
                 settings.Forget(hash);
+
+                // Its saved thumbnails go with it (CH-66).
+                Thumbnails.RemoveArchive(hash);
             }
         }
 

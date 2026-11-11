@@ -3,6 +3,7 @@ using Android.Graphics;
 using Android.Views;
 using Android.Widget;
 using Chatcheology.Mobile.Conversation;
+using Chatcheology.Mobile.Library;
 using Chatcheology.Mobile.Presentation;
 using Microsoft.Maui.Handlers;
 using Microsoft.Maui.Platform;
@@ -49,10 +50,31 @@ namespace Chatcheology.Android.Controls
         /// </summary>
         public string FailedText { get; set; } = AttachmentCard.CannotPreviewHeading;
 
+        /// <summary>
+        /// Where the picture's saved thumbnail is kept (CH-66, the gallery's cells), or <see langword="null"/> for none: the
+        /// saved copy is read first, and made after the first decode. Set it before <see cref="Path"/>.
+        /// </summary>
+        public SavedThumbnail? Saved { get; set; }
+
         /// <summary>Raised on the UI thread when the current file could not be decoded.</summary>
         public event EventHandler? Failed;
 
         internal void RaiseFailed() => Failed?.Invoke(this, EventArgs.Empty);
+    }
+
+    /// <summary>A picture's place in the saved thumbnails (CH-66): the store, the archive and the photo; the size comes from the view.</summary>
+    /// <param name="Store">The saved thumbnails.</param>
+    /// <param name="ContentsSha256">The archive's identity.</param>
+    /// <param name="AttachmentID">The photo's attachment.</param>
+    /// <param name="MediaSha256">The photo's media hash.</param>
+    /// <param name="IsWanted">
+    /// Whether a new thumbnail may still be saved: false once the page showing it closed (its archive may be removed next,
+    /// and a save must not make its folder again). Read on the decode worker.
+    /// </param>
+    public sealed record SavedThumbnail(ThumbnailStore Store, string ContentsSha256, long AttachmentID, string MediaSha256, Func<bool> IsWanted)
+    {
+        /// <summary>The key at <paramref name="width"/> by <paramref name="height"/> pixels.</summary>
+        public ThumbnailKey KeyAt(int width, int height) => new(ContentsSha256, AttachmentID, MediaSha256, width, height);
     }
 
     /// <summary>Draws a <see cref="DecodedImage"/>: an image view, and the "Can't preview" heading when decoding fails.</summary>
@@ -217,6 +239,7 @@ namespace Chatcheology.Android.Controls
             var height = Math.Max(1, (int)Math.Round(Math.Max(VirtualView.HeightRequest, 1) * density));
             var frame = PlatformView;
             var videoKey = VirtualView.VideoKey;
+            var saved = videoKey is null ? VirtualView.Saved : null;
 
             // Decoded before and still cached (a cell scrolled back to): drawn now, with no worker trip and
             // no empty frame in between (CH-66 scroll follow-up). A picture's thumbnail only; a video's frame
@@ -235,43 +258,77 @@ namespace Chatcheology.Android.Controls
                     return;
                 }
 
-                Bitmap? bitmap;
+                Bitmap? bitmap = null;
+                var fromPhoto = false;
 
                 try
                 {
-                    bitmap = videoKey is null
-                        ? ImageDecoding.DecodeToCover(path, width, height)
-                        : VideoFrames.FrameToCover(path, videoKey, width, height);
+                    // The saved thumbnail first (CH-66): a small file, read instead of the whole photo.
+                    if (saved?.KeyAt(width, height) is { } key && saved.Store.Find(key) is { } savedPath)
+                    {
+                        bitmap = ImageDecoding.DecodeSavedCover(savedPath, path, width, height);
+
+                        if (bitmap is null)
+                        {
+                            // A saved file that does not decode is dropped and made again below.
+                            saved.Store.Remove(key);
+                        }
+                    }
+
+                    if (bitmap is null && videoKey is null)
+                    {
+                        // A degraded decode (a fallback was taken) is shown but never saved: missing is better than wrong.
+                        bitmap = ImageDecoding.DecodeToCover(path, width, height, out var degraded);
+                        fromPhoto = bitmap is not null && !degraded;
+                    }
+                    else if (bitmap is null)
+                    {
+                        bitmap = VideoFrames.FrameToCover(path, videoKey!, width, height);
+                    }
                 }
                 catch (Exception)
                 {
                     bitmap = null;
+                    fromPhoto = false;
                 }
 
-                frame.Post(() =>
+                PostResult(frame, generation, videoKey, bitmap);
+
+                // Saved after it is shown, on this worker; a failure only means the photo is decoded again next time.
+                if (fromPhoto && saved is not null && bitmap is not null && saved.IsWanted())
                 {
-                    if (generation != _generation || ((IElementHandler)this).VirtualView is null)
+                    var shown = bitmap;
+                    saved.Store.Save(saved.KeyAt(width, height), stream => ImageDecoding.WriteCoverJpeg(shown, width, height, stream));
+                }
+            });
+        }
+
+        /// <summary>Shows a decoded picture, or the failure, on the UI thread, unless the view was bound again meanwhile.</summary>
+        private void PostResult(FrameLayout frame, int generation, string? videoKey, Bitmap? bitmap)
+        {
+            frame.Post(() =>
+            {
+                if (generation != _generation || ((IElementHandler)this).VirtualView is null)
+                {
+                    return;
+                }
+
+                if (bitmap is not null)
+                {
+                    _image?.SetPicture(bitmap);
+                }
+                else
+                {
+                    VirtualView.HasFailed = true;
+
+                    if (_failed is not null && videoKey is null)
                     {
-                        return;
+                        _failed.Text = VirtualView.FailedText;
+                        _failed.Visibility = ViewStates.Visible;
                     }
 
-                    if (bitmap is not null)
-                    {
-                        _image?.SetPicture(bitmap);
-                    }
-                    else
-                    {
-                        VirtualView.HasFailed = true;
-
-                        if (_failed is not null && videoKey is null)
-                        {
-                            _failed.Text = VirtualView.FailedText;
-                            _failed.Visibility = ViewStates.Visible;
-                        }
-
-                        VirtualView.RaiseFailed();
-                    }
-                });
+                    VirtualView.RaiseFailed();
+                }
             });
         }
     }

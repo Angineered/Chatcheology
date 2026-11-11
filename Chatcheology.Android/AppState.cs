@@ -14,9 +14,11 @@ namespace Chatcheology.Android
 
         internal AppState(string filesFolder)
         {
-            Library = new ArchiveLibrary(filesFolder);
+            var space = new AppStorageSpace(filesFolder);
+
+            Library = new ArchiveLibrary(filesFolder, space);
             Settings = new ArchiveSettings(new PreferencesStore());
-            Importer = new ArchiveImporter(Library, new AppStorageSpace(filesFolder), Settings);
+            Importer = new ArchiveImporter(Library, space, Settings);
         }
 
         /// <summary>The installed archives and the staging area.</summary>

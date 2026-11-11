@@ -172,6 +172,67 @@ namespace Chatcheology.Mobile.Tests
         }
 
         [Fact]
+        public void A_refresh_keeps_the_saved_thumbnails_of_unchanged_attachments_and_drops_the_rest()
+        {
+            // CH-66 saved thumbnails: keyed by the archive's contents hash; a refresh moves them to the new hash.
+            var first = Import(Write(b => Earlier(b)));
+            var oldHash = first.ContentsSha256!;
+            var photo = PhotoOf(first.InstallId!, 501);
+            var store = _library.Thumbnails;
+            var other = new string('c', 64);
+
+            ThumbnailKey Key(string hash, long id, string sha) => new(hash, id, sha, 300, 300);
+
+            Assert.True(store.Save(Key(oldHash, 501, photo), Jpeg));
+            Assert.True(store.Save(Key(oldHash, 502, other), Jpeg));   // that attachment's media is different now
+            Assert.True(store.Save(Key(oldHash, 999, photo), Jpeg));   // no such attachment in the new copy
+
+            var refreshed = Import(Write(builder => { Earlier(builder); Newer(builder); }));
+            Assert.Equal(ImportOutcome.Refreshed, refreshed.Outcome);
+            var newHash = refreshed.ContentsSha256!;
+
+            Assert.NotNull(store.Find(Key(newHash, 501, photo)));
+            Assert.Null(store.Find(Key(newHash, 502, other)));
+            Assert.Null(store.Find(Key(newHash, 999, photo)));
+            Assert.False(Directory.Exists(Path.Combine(store.Root, oldHash)));
+            Assert.Single(Directory.GetFiles(Path.Combine(store.Root, newHash)));
+        }
+
+        [Fact]
+        public void Removing_an_archive_deletes_its_saved_thumbnails_only()
+        {
+            var first = Import(Write(b => Earlier(b)));
+            var second = Import(Write(b => Earlier(b, secondText: "Synthetic other line"), archiveId: OtherId));
+            Assert.Equal(ImportOutcome.Installed, second.Outcome);
+
+            var store = _library.Thumbnails;
+            var firstKey = new ThumbnailKey(first.ContentsSha256!, 501, PhotoOf(first.InstallId!, 501), 300, 300);
+            var secondKey = firstKey with { ContentsSha256 = second.ContentsSha256! };
+            Assert.True(store.Save(firstKey, Jpeg));
+            Assert.True(store.Save(secondKey, Jpeg));
+
+            _library.Remove(Installed(first.InstallId!), _settings);
+
+            Assert.Null(store.Find(firstKey));
+            Assert.False(Directory.Exists(Path.Combine(store.Root, first.ContentsSha256!)));
+            Assert.NotNull(store.Find(secondKey));
+        }
+
+        private static bool Jpeg(Stream stream)
+        {
+            stream.Write([0xFF, 0xD8, 0xFF, 0xD9]);
+            return true;
+        }
+
+        private string PhotoOf(string installId, long attachmentID)
+        {
+            using var reader = ArchiveReader.Open(Installed(installId).Folder);
+
+            return reader.ReadAllPages().SelectMany(p => p.Messages).SelectMany(m => m.Attachments)
+                .Single(a => a.AttachmentID == attachmentID).MediaSha256!;
+        }
+
+        [Fact]
         public void A_refresh_with_no_new_messages_and_a_caption_or_forwarded_fact_added_to_an_earlier_message_is_still_accepted()
         {
             // Captions and forwarded facts are not in the digest: a later export may add them to earlier messages.

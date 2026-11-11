@@ -471,6 +471,11 @@ namespace Chatcheology.Mobile.Import
                 // Any failure: the old copy stays installed with its settings; it can be removed from the start screen.
             }
 
+            if (retired)
+            {
+                CarryThumbnails(target.ContentsSha256, plan.Hash, folder);
+            }
+
             if (retired && target.ContentsSha256 is { } purged && _settings is not null)
             {
                 try
@@ -496,6 +501,30 @@ namespace Chatcheology.Mobile.Import
                 AvailableBytes = plan.Available,
                 CheckCount = plan.Checks,
             };
+        }
+
+        /// <summary>
+        /// The replaced archive's saved thumbnails (CH-66): those whose attachment is unchanged in the new copy (same id,
+        /// same media) move to the new archive, the rest are deleted. Never fails the refresh; if the new copy cannot be
+        /// read here, the old thumbnails are deleted and made again when shown.
+        /// </summary>
+        private void CarryThumbnails(string? oldHash, string newHash, string newFolder)
+        {
+            try
+            {
+                HashSet<(long AttachmentID, string MediaSha256)> attachments;
+
+                using (var reader = ArchiveReader.Open(newFolder))
+                {
+                    attachments = ThumbnailStore.AttachmentsOf(reader);
+                }
+
+                _library.Thumbnails.Carry(oldHash, newHash, (id, sha) => attachments.Contains((id, sha)));
+            }
+            catch (Exception)
+            {
+                _library.Thumbnails.RemoveArchive(oldHash);
+            }
         }
 
         private static void Copy(

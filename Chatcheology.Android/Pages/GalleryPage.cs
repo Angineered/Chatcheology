@@ -34,6 +34,9 @@ namespace Chatcheology.Android.Pages
         private readonly ActivityIndicator _working = new() { IsVisible = false, IsRunning = false, HorizontalOptions = LayoutOptions.Center, VerticalOptions = LayoutOptions.Center };
         private readonly CancellationTokenSource _closing = new();
 
+        // Read by decode workers before saving a thumbnail (CH-66): nothing is saved once the page closed.
+        private readonly Func<bool> _isOpen;
+
         // The batches shown, in order, and their photos; changed only on the UI thread.
         private readonly List<GalleryBatch> _batches = [];
         private readonly List<AttachmentCard> _photos = [];
@@ -49,6 +52,7 @@ namespace Chatcheology.Android.Pages
             _state = state;
             _session = session;
             _conversation = conversation;
+            _isOpen = () => !Volatile.Read(ref _closed);
 
             Title = "Photos";
             _status.TextIn("MutedText");
@@ -69,6 +73,12 @@ namespace Chatcheology.Android.Pages
 
         /// <summary>The side of one square cell, from the page's width.</summary>
         internal double CellSize => _cellSize;
+
+        /// <summary>Where a photo's saved thumbnail is kept (CH-66), or <see langword="null"/> when it has no media hash.</summary>
+        internal SavedThumbnail? SavedFor(AttachmentCard photo) =>
+            photo.MediaSha256 is { } sha
+                ? new SavedThumbnail(_state.Library.Thumbnails, _session.ContentsSha256, photo.AttachmentID, sha, _isOpen)
+                : null;
 
         /// <inheritdoc />
         protected override void OnSizeAllocated(double width, double height)
@@ -326,10 +336,12 @@ namespace Chatcheology.Android.Pages
             private readonly DecodedImage _image = new();
             private readonly Label _star = new() { Text = "★", FontSize = 16, Margin = new Thickness(4, 2), HorizontalOptions = LayoutOptions.End, VerticalOptions = LayoutOptions.Start, Shadow = new Shadow { Radius = 3, Opacity = 0.8f, Offset = new Point(0, 0), Brush = Colors.Black } };
             private readonly Label _lowQuality = new() { Text = AttachmentCard.LowQualityCopyLabel, FontSize = 10, TextColor = Colors.White, BackgroundColor = Color.FromRgba(0, 0, 0, 0.55), Padding = new Thickness(4, 1), HorizontalOptions = LayoutOptions.Start, VerticalOptions = LayoutOptions.End };
+            private readonly GalleryPage _page;
             private AttachmentCard? _photo;
 
             public PhotoCell(GalleryPage page)
             {
+                _page = page;
                 _star.TextIn("Star");
                 _star.SetBinding(IsVisibleProperty, nameof(AttachmentCard.IsStarred));
 
@@ -370,8 +382,9 @@ namespace Chatcheology.Android.Pages
 
                 WidthRequest = HeightRequest = size;
 
-                // The size first: the decode reads it when the path changes.
+                // The size and the saved thumbnail's place first: the decode reads them when the path changes.
                 _image.WidthRequest = _image.HeightRequest = size;
+                _image.Saved = _page.SavedFor(photo);
                 _image.Path = photo.FullPath;
                 _lowQuality.IsVisible = photo.LowQualityLabel.Length > 0;
             }
