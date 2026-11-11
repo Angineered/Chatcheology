@@ -1,23 +1,39 @@
 <?xml version="1.0" encoding="utf-8" ?>
 <!-- The start screen: the installed archives (last opened first) or a note that there are none, and
      "Import archive…": the main button with no archive installed, otherwise a smaller entry under "More" (CH-78).
-     Debug builds add development tools below. -->
+     Debug builds add development tools below. On the app's first start only a loading state continuing the splash
+     shows until the archive list is read and, when the app opens an archive by itself, until that conversation is
+     open (CH-78). -->
 <ContentPage xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
              xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
              x:Class="Chatcheology.Android.Pages.StartPage"
-             Title="Chatcheology">
-    <ScrollView>
-        <VerticalStackLayout Padding="16" Spacing="12">
-            <Label x:Name="Summary" FontSize="16" />
-            <VerticalStackLayout x:Name="Archives" Spacing="10" />
-            <VerticalStackLayout x:Name="MainImport" Spacing="12">
-                <Button x:Name="ImportButton" Text="Import archive…" Clicked="OnImportClicked"
-                        BackgroundColor="{AppThemeBinding Light={StaticResource PrimaryLight}, Dark={StaticResource PrimaryDark}}" TextColor="White" />
-                <Label x:Name="ImportHelp" FontSize="13" TextColor="{AppThemeBinding Light={StaticResource MutedTextLight}, Dark={StaticResource MutedTextDark}}" />
+             Title="Chatcheology"
+             NavigationPage.HasNavigationBar="False">
+    <Grid>
+        <ScrollView x:Name="StartContent" IsVisible="False">
+            <VerticalStackLayout Padding="16" Spacing="12">
+                <Label x:Name="Summary" FontSize="16" />
+                <VerticalStackLayout x:Name="Archives" Spacing="10" />
+                <VerticalStackLayout x:Name="MainImport" Spacing="12">
+                    <Button x:Name="ImportButton" Text="Import archive…" Clicked="OnImportClicked"
+                            BackgroundColor="{AppThemeBinding Light={StaticResource PrimaryLight}, Dark={StaticResource PrimaryDark}}" TextColor="White" />
+                    <Label x:Name="ImportHelp" FontSize="13" TextColor="{AppThemeBinding Light={StaticResource MutedTextLight}, Dark={StaticResource MutedTextDark}}" />
+                </VerticalStackLayout>
+                <ContentView x:Name="MoreImportHost" />
+                <Label x:Name="Status" FontSize="14" TextColor="{AppThemeBinding Light={StaticResource MutedTextLight}, Dark={StaticResource MutedTextDark}}" />
+                <VerticalStackLayout x:Name="DevelopmentTools" Spacing="8" />
             </VerticalStackLayout>
-            <ContentView x:Name="MoreImportHost" />
-            <Label x:Name="Status" FontSize="14" TextColor="{AppThemeBinding Light={StaticResource MutedTextLight}, Dark={StaticResource MutedTextDark}}" />
-            <VerticalStackLayout x:Name="DevelopmentTools" Spacing="8" />
-        </VerticalStackLayout>
-    </ScrollView>
+        </ScrollView>
+        <!-- CH-78: continues the Android splash (splash_neon.png on #000000, 128 dp): the same logo centred at the same
+             size on black, a small spinner below it. The navigation bar is hidden while it shows. -->
+        <Grid x:Name="Loading" BackgroundColor="#000000">
+            <Image Source="start_logo.png" WidthRequest="128" HeightRequest="128"
+                   HorizontalOptions="Center" VerticalOptions="Center"
+                   SemanticProperties.Description="Chatcheology" />
+            <ActivityIndicator x:Name="LoadingSpinner" IsRunning="True" WidthRequest="28" HeightRequest="28"
+                               HorizontalOptions="Center" VerticalOptions="Center" TranslationY="100"
+                               SemanticProperties.Description="Loading"
+                               Color="{AppThemeBinding Light={StaticResource PrimaryLight}, Dark={StaticResource PrimaryDark}}" />
+        </Grid>
+    </Grid>
 </ContentPage>
