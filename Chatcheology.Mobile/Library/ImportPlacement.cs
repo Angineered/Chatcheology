@@ -3,10 +3,13 @@ namespace Chatcheology.Mobile.Library
     /// <summary>Where the start screen puts "Import archive…" (CH-78).</summary>
     public enum ImportPlacement
     {
-        /// <summary>The main button: no archive is installed (first install), or the list could not be read (recovery).</summary>
+        /// <summary>
+        /// The main button: no readable archive is installed (none at all on first install, or only ones that cannot be
+        /// opened), or the list could not be read (recovery).
+        /// </summary>
         Main,
 
-        /// <summary>A smaller entry under a "More" control: at least one archive is installed.</summary>
+        /// <summary>A smaller entry under a "More" control: at least one readable archive is installed.</summary>
         UnderMore,
     }
 
@@ -14,10 +17,12 @@ namespace Chatcheology.Mobile.Library
     public static class StartImport
     {
         /// <summary>
-        /// Under More when any archive is installed (readable or not); the main button when none is, or when the
-        /// installed archives could not be listed (<paramref name="opening"/> is <see langword="null"/>).
+        /// Under More when a readable archive is installed; the main button when none is (no archive, or only unreadable
+        /// ones), or when the installed archives could not be listed (<paramref name="opening"/> is <see langword="null"/>).
         /// </summary>
         public static ImportPlacement For(Opening? opening) =>
-            opening is { Archives.Count: > 0 } ? ImportPlacement.UnderMore : ImportPlacement.Main;
+            opening is not null && opening.Archives.Any(archive => archive.IsReadable)
+                ? ImportPlacement.UnderMore
+                : ImportPlacement.Main;
     }
 }

@@ -1,20 +1,19 @@
 using System.Globalization;
 using Chatcheology.Mobile.Conversation;
 using Chatcheology.Mobile.Memories;
-using Chatcheology.Mobile.Notifications;
 using Chatcheology.Mobile.OwnMemories;
 using Microsoft.Data.Sqlite;
 
 namespace Chatcheology.Android.Pages
 {
     /// <summary>
-    /// Settings for the open archive. Shown (CH-78): On this day with one Notify me switch (<see cref="NotifyMeState"/>),
-    /// the notification time (per app) and "Notifications are off" when needed; a closed More settings; About. Under More
-    /// settings, working as before: Me (a participant, the archive's choice by default, remembered per archive), the On
-    /// this day switch (on unless turned off, per archive; CH-39), the archive's noted dates and yearly memories (CH-47,
-    /// CH-53; Notify switches only), Memories (one switch per layer, with filters for an imported one; CH-42), My memories
-    /// (per phone, for every archive; CH-54), Import archive (back to the start screen's import) and Remove archive (after
-    /// a confirmation).
+    /// Settings for the open archive. Shown (CH-78): an On this day heading with the notification time (per app) and
+    /// "Notifications are off" when needed; a closed More settings; About. Under More settings, working as before: Me (a
+    /// participant, the archive's choice by default, remembered per archive), the On this day switch (on unless turned off,
+    /// per archive; CH-39), the archive's noted dates and yearly memories (CH-47, CH-53; Notify switches only), Memories
+    /// (one switch per layer, with filters for an imported one; CH-42), My memories (per phone, for every archive; CH-54,
+    /// with its reminders switch), Import archive (back to the start screen's import) and Remove archive (after a
+    /// confirmation).
     /// </summary>
     /// <remarks>
     /// The phone's own noted dates (Add / Edit / Delete here, CH-47) were removed by CH-54 step 2: the phone owner's own
@@ -37,16 +36,6 @@ namespace Chatcheology.Android.Pages
         private readonly Func<Task> _importArchive;
         private bool _loading;
         private bool _importing;
-
-        /// <summary>The Notify me switch (CH-78) and its row (hidden when it stands for nothing).</summary>
-        private readonly Switch _notifyMe = new Switch { VerticalOptions = LayoutOptions.Center }.Themed(Switch.OnColorProperty, "Primary");
-        private readonly Grid _notifyMeRow;
-
-        /// <summary>Set while the page itself moves the Notify me switch, so that is not taken as a tap.</summary>
-        private bool _showingNotifyMe;
-
-        /// <summary>The My memories reminders switch as last read (off the UI thread), or none (no store, not read yet, unreadable).</summary>
-        private bool? _reminders;
         private bool _revertingLayer;
 
         /// <summary>A save or load is running (CH-54 step 3): the file buttons and Delete all are off.</summary>
@@ -113,30 +102,7 @@ namespace Chatcheology.Android.Pages
                 _ = NotedDateNotifier.UpdateAsync();
             };
             _noted.Spacing = 8;
-
-            // CH-78: one switch for the notify settings that exist (noted dates, yearly memories, My memories reminders).
-            _notifyMeRow = new Grid
-            {
-                ColumnDefinitions = { new ColumnDefinition(GridLength.Star), new ColumnDefinition(GridLength.Auto) },
-                ColumnSpacing = 12,
-            };
-
-            _notifyMeRow.Add(new VerticalStackLayout
-            {
-                Spacing = 0,
-                VerticalOptions = LayoutOptions.Center,
-                Children =
-                {
-                    new Label { Text = "Notify me", FontSize = 15 },
-                    new Label { Text = "On the day of noted dates and yearly memories, at the time below.", FontSize = 13 }.TextIn("MutedText"),
-                },
-            }, 0);
-            _notifyMeRow.Add(_notifyMe, 1);
-            SemanticProperties.SetDescription(_notifyMe, "Notify me on the day of noted dates and yearly memories");
-            _notifyMe.Toggled += OnNotifyMeToggled;
-
             RebuildNotedDates();
-            ShowNotifyMe();
 
             var memories = MemoriesSection(session, layersChanged);
             _ = RebuildOwnAsync();
@@ -177,7 +143,6 @@ namespace Chatcheology.Android.Pages
                     Children =
                     {
                         Heading("On this day"),
-                        _notifyMeRow,
                         NotificationTimeRow(),
                         _notificationsOff,
 
@@ -199,56 +164,6 @@ namespace Chatcheology.Android.Pages
 
             // Read again each time: the system settings may have been changed meanwhile.
             ShowNotificationState();
-        }
-
-        /// <summary>Shows the Notify me switch from the stored values (CH-78), without taking that as a tap.</summary>
-        private void ShowNotifyMe()
-        {
-            var state = _session.NotifyMeState(_reminders);
-
-            _showingNotifyMe = true;
-            _notifyMe.IsToggled = state.IsOn;
-            _showingNotifyMe = false;
-            _notifyMeRow.IsVisible = state.HasAny || _ownStore is not null;
-        }
-
-        /// <summary>
-        /// Notify me turned (CH-78): on sets every notify setting it stands for on, off sets every one off; the separate
-        /// switches under More settings are read again. Never throws.
-        /// </summary>
-        private async void OnNotifyMeToggled(object? sender, ToggledEventArgs e)
-        {
-            if (_showingNotifyMe)
-            {
-                return;
-            }
-
-            try
-            {
-                var changes = _session.NotifyMeState(_reminders).ChangesFor(e.Value);
-                _session.ApplyNotifyMe(changes);
-
-                if (changes.Reminders is { } reminders && _ownStore is { } store)
-                {
-                    try
-                    {
-                        await Task.Run(() => store.Settings.RemindersOn = reminders);
-                        _reminders = reminders;
-                    }
-                    catch (Exception exception) when (IsStoreFailure(exception))
-                    {
-                        await DisplayAlertAsync("Notify me", "Your memories' reminders could not be changed just now. Try again.", "OK");
-                    }
-                }
-
-                RebuildNotedDates();
-                _notedDatesChanged();
-                await RebuildOwnAsync();
-            }
-            catch (Exception)
-            {
-                // A switch handler: nothing here may end the app.
-            }
         }
 
         /// <summary>
@@ -368,7 +283,6 @@ namespace Chatcheology.Android.Pages
                 {
                     _session.SetYearlyMemoryMuted(memory.EntryID, !e.Value);
                     _notedDatesChanged();
-                    ShowNotifyMe();
                 };
 
                 var row = new Grid
@@ -405,7 +319,6 @@ namespace Chatcheology.Android.Pages
                 {
                     _session.SetNotedDateMuted(long.Parse(date.Id, CultureInfo.InvariantCulture), !e.Value);
                     _notedDatesChanged();
-                    ShowNotifyMe();
                 };
 
                 var row = new Grid
@@ -464,15 +377,11 @@ namespace Chatcheology.Android.Pages
 
             if (read is not { } values)
             {
-                _reminders = null;
-                ShowNotifyMe();
                 _own.Add(new Label { Text = "Your memories could not be read just now.", FontSize = 13 }.TextIn("ErrorText"));
                 return;
             }
 
             var (yearly, reminders, count) = values;
-            _reminders = reminders;
-            ShowNotifyMe();
 
             Switch? layerSwitch = null;
             var layerRow = SwitchRow("Show my memories in the chat", 15, _session.OwnLayerShown, async on =>
@@ -512,9 +421,6 @@ namespace Chatcheology.Android.Pages
                     _ = RebuildOwnAsync();
                     return Task.CompletedTask;
                 }
-
-                _reminders = on;
-                ShowNotifyMe();
 
                 _ = NotedDateNotifier.UpdateAsync();
                 return Task.CompletedTask;

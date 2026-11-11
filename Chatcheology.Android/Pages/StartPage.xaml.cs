@@ -14,8 +14,9 @@ namespace Chatcheology.Android.Pages
 {
     /// <summary>
     /// The start screen, following the opening rule: no archive, a note and "Import archive…"; exactly
-    /// one, straight into its conversation; several, the list with the last opened first. With any archive installed,
-    /// Import archive is a smaller entry under "More" (CH-78, <see cref="StartImport"/>).
+    /// one, straight into its conversation; several, the list with the last opened first. With a readable archive
+    /// installed, Import archive is a smaller entry under "More"; with none (or only unreadable ones) it stays the main
+    /// button (CH-78, <see cref="StartImport"/>).
     /// </summary>
     public partial class StartPage : ContentPage
     {
@@ -34,7 +35,7 @@ namespace Chatcheology.Android.Pages
 
             _state = state;
 
-            // CH-78: the same import, smaller, under More once an archive is installed (updates stay one tap away).
+            // CH-78: the same import, smaller, under More once a readable archive is installed (updates stay one tap away).
             ImportHelp.Text = ImportHelpText;
             _smallImportButton.Clicked += OnImportClicked;
             _moreImport.Items.Add(_smallImportButton);
