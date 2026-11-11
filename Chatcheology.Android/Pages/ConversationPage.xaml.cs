@@ -148,8 +148,8 @@ namespace Chatcheology.Android.Pages
 #if DEBUG
             // The trial's controlled step: a page added above with no scrolling under way, so a
             // screenshot before and after shows whether anything on screen moved.
+            // CH-78: "Load earlier" is gone from this menu; scrolling up loads earlier messages.
             ToolbarItems.Add(new ToolbarItem("Top", null, () => List.ScrollTo(0, position: ScrollToPosition.Start, animate: false)) { Order = ToolbarItemOrder.Secondary });
-            ToolbarItems.Add(new ToolbarItem("Load earlier", null, () => _ = LoadEarlierNow()) { Order = ToolbarItemOrder.Secondary });
 #endif
 
             AttachmentCardView.Tapped += OnAttachmentTapped;
@@ -1268,7 +1268,24 @@ namespace Chatcheology.Android.Pages
             }
 
             await Navigation.PushAsync(new SettingsPage(
-                _session, _session.HasOwnStore ? _state.OwnMemories : null, OnMeChangedAsync, RemoveArchiveAsync, OnThisDayChanged, OnLayersChangedAsync, () => OwnMemoriesChangedAsync()));
+                _session, _session.HasOwnStore ? _state.OwnMemories : null, OnMeChangedAsync, RemoveArchiveAsync, OnThisDayChanged, OnLayersChangedAsync, () => OwnMemoriesChangedAsync(), ImportArchiveAsync));
+        }
+
+        /// <summary>
+        /// Settings &gt; More settings &gt; Import archive (CH-78): closes this archive (an import may replace its folder),
+        /// goes back to the start screen and starts the import there, exactly as its own Import archive button does.
+        /// </summary>
+        private async Task ImportArchiveAsync()
+        {
+            var start = Navigation.NavigationStack.FirstOrDefault() as StartPage;
+
+            await CloseAsync();
+            await Navigation.PopToRootAsync();
+
+            if (start is not null)
+            {
+                await start.ImportAsync();
+            }
         }
 
         /// <summary>
@@ -1722,14 +1739,6 @@ namespace Chatcheology.Android.Pages
                     break;
             }
         }
-
-#if DEBUG
-        private async Task LoadEarlierNow()
-        {
-            _recycler?.StopScroll();
-            await _pager.LoadEarlierAsync();
-        }
-#endif
     }
 
     /// <summary>Picks a row's template: separator, my message, theirs, a system line, or a memory row.</summary>

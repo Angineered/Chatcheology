@@ -14,11 +14,18 @@ namespace Chatcheology.Android.Pages
 {
     /// <summary>
     /// The start screen, following the opening rule: no archive, a note and "Import archive…"; exactly
-    /// one, straight into its conversation; several, the list with the last opened first.
+    /// one, straight into its conversation; several, the list with the last opened first. With a readable archive
+    /// installed, Import archive is a smaller entry under "More"; with none (or only unreadable ones) it stays the main
+    /// button (CH-78, <see cref="StartImport"/>).
     /// </summary>
     public partial class StartPage : ContentPage
     {
+        private const string ImportHelpText =
+            "Copy the archive folder to the phone first. Put an empty file named .nomedia in that folder, so the gallery does not show the archive's photos. The app copies the archive into its own storage; afterwards you may delete the folder you copied.";
+
         private readonly AppState _state;
+        private readonly MoreExpander _moreImport = new("More", 15);
+        private readonly Button _smallImportButton = new() { Text = "Import archive…", HorizontalOptions = LayoutOptions.Start };
         private bool _started;
         private bool _opening;
 
@@ -27,6 +34,14 @@ namespace Chatcheology.Android.Pages
             InitializeComponent();
 
             _state = state;
+
+            // CH-78: the same import, smaller, under More once a readable archive is installed (updates stay one tap away).
+            ImportHelp.Text = ImportHelpText;
+            _smallImportButton.Clicked += OnImportClicked;
+            _moreImport.Items.Add(_smallImportButton);
+            _moreImport.Items.Add(new Label { Text = ImportHelpText, FontSize = 13 }.TextIn("MutedText"));
+            MoreImportHost.Content = _moreImport;
+            ShowImport(ImportPlacement.Main);
 
 #if DEBUG
             AddDevelopmentTools();
@@ -97,10 +112,23 @@ namespace Chatcheology.Android.Pages
             }
         }
 
+        /// <summary>Shows Import archive as the main button or under More (CH-78).</summary>
+        private void ShowImport(ImportPlacement placement)
+        {
+            MainImport.IsVisible = placement == ImportPlacement.Main;
+            MoreImportHost.IsVisible = placement == ImportPlacement.UnderMore;
+        }
+
+        private void EnableImport(bool enabled)
+        {
+            ImportButton.IsEnabled = enabled;
+            _smallImportButton.IsEnabled = enabled;
+        }
+
         private async Task<Opening?> RefreshAsync()
         {
             Archives.Children.Clear();
-            ImportButton.IsEnabled = !_state.Importing;
+            EnableImport(!_state.Importing);
 
             Opening opening;
 
@@ -111,8 +139,11 @@ namespace Chatcheology.Android.Pages
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
             {
                 Summary.Text = "The installed archives could not be listed.";
+                ShowImport(StartImport.For(null));
                 return null;
             }
+
+            ShowImport(StartImport.For(opening));
 
             Summary.Text = opening.Screen switch
             {
@@ -228,13 +259,29 @@ namespace Chatcheology.Android.Pages
 
         private async void OnImportClicked(object? sender, EventArgs e)
         {
-            if (_state.Importing || MainActivity.Current is not { } activity)
+            try
+            {
+                await ImportAsync();
+            }
+            catch (Exception)
+            {
+                // A button handler: nothing here may end the app.
+            }
+        }
+
+        /// <summary>
+        /// Import archive: the folder picker, then the import page. From either button here, and from Settings &gt; More
+        /// settings (CH-78) once that archive is closed and this screen is back on top.
+        /// </summary>
+        internal async Task ImportAsync()
+        {
+            if (_state.Importing || MainActivity.Current is not { } activity || Navigation.NavigationStack.LastOrDefault() != this)
             {
                 return;
             }
 
             _state.Importing = true;
-            ImportButton.IsEnabled = false;
+            EnableImport(false);
 
             try
             {
@@ -261,7 +308,7 @@ namespace Chatcheology.Android.Pages
                 if (Navigation.NavigationStack.LastOrDefault() is not ImportPage)
                 {
                     _state.Importing = false;
-                    ImportButton.IsEnabled = true;
+                    EnableImport(true);
                 }
             }
         }
