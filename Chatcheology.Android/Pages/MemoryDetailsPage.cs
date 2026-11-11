@@ -218,23 +218,44 @@ namespace Chatcheology.Android.Pages
         }
 
         /// <inheritdoc />
-        /// <remarks>The tiles and the single photo are sized from the page, as the Photos gallery sizes its cells.</remarks>
+        /// <remarks>
+        /// The tiles and the single photo are sized from the page, as the Photos gallery sizes its cells. They are drawn
+        /// after this layout pass, not inside it: content added during a layout pass asks for a new layout that Android
+        /// may drop, which left the section measured empty with the photo drawn over the title (a picture arriving no
+        /// longer asks for a layout since the CH-66 scroll fix, so nothing else corrected it).
+        /// </remarks>
         protected override void OnSizeAllocated(double width, double height)
         {
             base.OnSizeAllocated(width, height);
 
             try
             {
-                if (width > 0 && height > 0)
+                if (width > 0 && height > 0 && _photoLayout.Arrangement != MemoryPhotoArrangement.None)
                 {
                     _pageWidth = width;
                     _pageHeight = height;
-                    DrawPhotos();
+                    Dispatcher.Dispatch(DrawPhotosIfOpen);
                 }
             }
             catch (Exception)
             {
                 // A layout callback: nothing here may end the app; the photos are then not drawn.
+            }
+        }
+
+        /// <summary>Draws the photos from a posted callback, unless the page closed meanwhile.</summary>
+        private void DrawPhotosIfOpen()
+        {
+            try
+            {
+                if (Handler is not null)
+                {
+                    DrawPhotos();
+                }
+            }
+            catch (Exception)
+            {
+                // A posted callback: nothing here may end the app.
             }
         }
 
@@ -253,20 +274,10 @@ namespace Chatcheology.Android.Pages
                     {
                         Dispatcher.Dispatch(() =>
                         {
-                            try
-                            {
-                                _singleImageSize = size;
+                            _singleImageSize = size;
 
-                                // A page already closed draws nothing.
-                                if (Handler is not null)
-                                {
-                                    DrawPhotos();
-                                }
-                            }
-                            catch (Exception)
-                            {
-                                // A posted callback: nothing here may end the app.
-                            }
+                            // A page already closed draws nothing.
+                            DrawPhotosIfOpen();
                         });
                     }
                     catch (Exception)
@@ -281,6 +292,9 @@ namespace Chatcheology.Android.Pages
         /// Draws the photo section for the page's size: the single photo once its own size is read, or the grid.
         /// Each picture is decoded at the size it is shown (its requested size is set before its path), through
         /// <see cref="DecodedImage"/> and its cache. Redraws only when that size changes.
+        /// <para>Called outside a layout pass only. The section is given its height before its content, and is then
+        /// re-measured, so the page lays it out at the photos' size; a picture arriving later asks for a redraw only
+        /// (CH-66) and so must never be what makes room for it.</para>
         /// </summary>
         private void DrawPhotos()
         {
@@ -301,7 +315,7 @@ namespace Chatcheology.Android.Pages
                 }
 
                 _drawnAt = (width, height);
-                _photoSection.Content = SinglePhoto(width, height);
+                ShowPhotos(SinglePhoto(width, height), height);
             }
             else if (_photoLayout.Arrangement == MemoryPhotoArrangement.Grid)
             {
@@ -313,8 +327,16 @@ namespace Chatcheology.Android.Pages
                 }
 
                 _drawnAt = (tile, tile);
-                _photoSection.Content = PhotoGrid(tile);
+                ShowPhotos(PhotoGrid(tile), _photoLayout.GridHeight(tile));
             }
+        }
+
+        /// <summary>Puts <paramref name="photos"/> in the section at <paramref name="height"/>, and has the page measure it again.</summary>
+        private void ShowPhotos(View photos, double height)
+        {
+            _photoSection.HeightRequest = height;
+            _photoSection.Content = photos;
+            ((IView)_photoSection).InvalidateMeasure();
         }
 
         /// <summary>
