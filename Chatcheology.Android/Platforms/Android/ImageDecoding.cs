@@ -64,6 +64,80 @@ namespace Chatcheology.Android
         private static string CoverKey(string path, int targetWidth, int targetHeight) => $"{targetWidth}x{targetHeight}:{path}";
 
         /// <summary>
+        /// A saved thumbnail (CH-66) of the picture at <paramref name="path"/>, read from <paramref name="savedPath"/> and
+        /// kept in the memory cache as <see cref="DecodeToCover"/> would keep the picture's own, so
+        /// <see cref="CachedCover"/> finds it. <see langword="null"/> when the saved file does not decode. Off the UI thread.
+        /// </summary>
+        internal static Bitmap? DecodeSavedCover(string savedPath, string path, int targetWidth, int targetHeight)
+        {
+            var key = CoverKey(path, targetWidth, targetHeight);
+
+            if (Cache.Get(key) is Bitmap cached)
+            {
+                return cached;
+            }
+
+            Bitmap? bitmap;
+
+            try
+            {
+                bitmap = BitmapFactory.DecodeFile(savedPath);
+            }
+            catch (Java.Lang.Throwable)
+            {
+                return null;
+            }
+
+            if (bitmap is not null)
+            {
+                Cache.Put(key, bitmap);
+            }
+
+            return bitmap;
+        }
+
+        /// <summary>
+        /// Writes <paramref name="bitmap"/> (a cover thumbnail) to <paramref name="stream"/> as a JPEG of at most
+        /// <paramref name="targetWidth"/> by <paramref name="targetHeight"/>, for the saved thumbnails (CH-66). The bitmap is
+        /// shared and left as it is. Whether it was written.
+        /// </summary>
+        internal static bool WriteCoverJpeg(Bitmap bitmap, int targetWidth, int targetHeight, System.IO.Stream stream)
+        {
+            Bitmap? scaled = null;
+
+            try
+            {
+                // JPEG has no transparency: a see-through picture is never saved, so it keeps looking as it does.
+                if (bitmap.HasAlpha)
+                {
+                    return false;
+                }
+
+                // A thumbnail kept up to half again larger in memory is saved at the cell's size: smaller files.
+                var scale = Math.Max((double)targetWidth / bitmap.Width, (double)targetHeight / bitmap.Height);
+
+                if (scale < 1)
+                {
+                    scaled = Bitmap.CreateScaledBitmap(
+                        bitmap, Math.Max(1, (int)Math.Round(bitmap.Width * scale)), Math.Max(1, (int)Math.Round(bitmap.Height * scale)), filter: true);
+                }
+
+                return (scaled ?? bitmap).Compress(Bitmap.CompressFormat.Jpeg!, 85, stream);
+            }
+            catch (Java.Lang.Throwable)
+            {
+                return false;
+            }
+            finally
+            {
+                if (scaled is not null && !ReferenceEquals(scaled, bitmap))
+                {
+                    scaled.Recycle();
+                }
+            }
+        }
+
+        /// <summary>
         /// The picture at <paramref name="path"/> for the full-screen viewer: reduced while decoding to no
         /// smaller than it is shown when it fits the screen, then fitted inside twice the screen (at most
         /// 4096 pixels a side) so zooming in stays sharp. Not cached: the caller owns the bitmap and

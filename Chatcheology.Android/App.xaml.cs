@@ -26,6 +26,10 @@ namespace Chatcheology.Android
 
             // Shared memory-photo copies (CH-59) from an earlier run. Never throws.
             PhotoShareCopies.Clean();
+
+            // Saved thumbnails (CH-66) of archives no longer installed, and unfinished writes; off the UI thread, never throws.
+            var library = _state.Library;
+            _ = Task.Run(library.CleanThumbnails);
         }
 
         /// <inheritdoc />

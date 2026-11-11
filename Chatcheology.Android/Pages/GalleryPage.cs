@@ -70,6 +70,10 @@ namespace Chatcheology.Android.Pages
         /// <summary>The side of one square cell, from the page's width.</summary>
         internal double CellSize => _cellSize;
 
+        /// <summary>Where a photo's saved thumbnail is kept (CH-66), or <see langword="null"/> when it has no media hash.</summary>
+        internal SavedThumbnail? SavedFor(AttachmentCard photo) =>
+            photo.MediaSha256 is { } sha ? new SavedThumbnail(_state.Library.Thumbnails, _session.ContentsSha256, photo.AttachmentID, sha) : null;
+
         /// <inheritdoc />
         protected override void OnSizeAllocated(double width, double height)
         {
@@ -326,10 +330,12 @@ namespace Chatcheology.Android.Pages
             private readonly DecodedImage _image = new();
             private readonly Label _star = new() { Text = "★", FontSize = 16, Margin = new Thickness(4, 2), HorizontalOptions = LayoutOptions.End, VerticalOptions = LayoutOptions.Start, Shadow = new Shadow { Radius = 3, Opacity = 0.8f, Offset = new Point(0, 0), Brush = Colors.Black } };
             private readonly Label _lowQuality = new() { Text = AttachmentCard.LowQualityCopyLabel, FontSize = 10, TextColor = Colors.White, BackgroundColor = Color.FromRgba(0, 0, 0, 0.55), Padding = new Thickness(4, 1), HorizontalOptions = LayoutOptions.Start, VerticalOptions = LayoutOptions.End };
+            private readonly GalleryPage _page;
             private AttachmentCard? _photo;
 
             public PhotoCell(GalleryPage page)
             {
+                _page = page;
                 _star.TextIn("Star");
                 _star.SetBinding(IsVisibleProperty, nameof(AttachmentCard.IsStarred));
 
@@ -370,8 +376,9 @@ namespace Chatcheology.Android.Pages
 
                 WidthRequest = HeightRequest = size;
 
-                // The size first: the decode reads it when the path changes.
+                // The size and the saved thumbnail's place first: the decode reads them when the path changes.
                 _image.WidthRequest = _image.HeightRequest = size;
+                _image.Saved = _page.SavedFor(photo);
                 _image.Path = photo.FullPath;
                 _lowQuality.IsVisible = photo.LowQualityLabel.Length > 0;
             }
